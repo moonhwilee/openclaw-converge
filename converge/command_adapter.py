@@ -84,6 +84,19 @@ COMMAND_INVENTORY: tuple[CommandSurface, ...] = (
     ),
 )
 
+C7_1_CONTRACT_VERSION = "c7.1"
+
+ROUTE_FREE_FLAGS = {
+    "dry_run": True,
+    "live_route_changed": False,
+    "live_traffic_observed": False,
+    "shadow_routing_enabled": False,
+    "workflow_created": False,
+    "external_action_performed": False,
+    "gateway_restart_required": False,
+    "legacy_data_deleted": False,
+}
+
 
 def inventory() -> list[dict[str, str]]:
     return [surface.as_dict() for surface in COMMAND_INVENTORY]
@@ -108,17 +121,10 @@ def build_dry_run_packet(
         workflow_id=workflow_id,
         state_root=state_root,
     )
-    return {
+    packet: dict[str, Any] = {
         "schema_version": "converge.command_dry_run.v0.1",
         "ok": True,
-        "dry_run": True,
-        "live_route_changed": False,
-        "live_traffic_observed": False,
-        "shadow_routing_enabled": False,
-        "workflow_created": False,
-        "external_action_performed": False,
-        "gateway_restart_required": False,
-        "legacy_data_deleted": False,
+        **ROUTE_FREE_FLAGS,
         "input": {
             "raw_message": raw_message,
             "command": f"/{command}",
@@ -132,6 +138,7 @@ def build_dry_run_packet(
             "visible_delivery": delivery,
             "state_root": str(state_root) if state_root else None,
         },
+        "adapter_contract": build_adapter_contract(command=f"/{command}", mode=mode),
         "converge_invocation": {
             "argv": converge_argv,
             "display": " ".join(_shell_quote(part) for part in converge_argv),
@@ -148,6 +155,138 @@ def build_dry_run_packet(
             "push/PR/release",
         ],
     }
+    validate_dry_run_packet(packet)
+    return packet
+
+
+def build_adapter_contract(*, command: str, mode: str) -> dict[str, Any]:
+    return {
+        "version": C7_1_CONTRACT_VERSION,
+        "route_free_flags": dict(ROUTE_FREE_FLAGS),
+        "required_packet_fields": [
+            "input.raw_message",
+            "input.command",
+            "input.text",
+            "route.current_command",
+            "route.converge_mode",
+            "route.owner_session_key",
+            "route.visible_delivery",
+            "route.state_root",
+            "adapter_contract.command_metadata",
+            "converge_invocation.argv",
+            "blocked_without_approval",
+        ],
+        "shared_metadata": {
+            "state_root_field": "route.state_root",
+            "delivery_field": "route.visible_delivery",
+            "rollback_field": "inventory.rollback_switch",
+        },
+        "command_metadata": build_command_metadata(command=command, mode=mode),
+    }
+
+
+def build_command_metadata(*, command: str, mode: str) -> dict[str, Any]:
+    if command == "/goal":
+        return {
+            "command": command,
+            "mode": mode,
+            "intent": "goal_intake",
+            "draft_confirmation": {
+                "draft_required": True,
+                "confirmation_required": True,
+                "accepted_plan_metadata_required": True,
+            },
+            "required_fields": [
+                "objective",
+                "non_goals",
+                "success_criteria",
+                "approval_boundaries",
+            ],
+        }
+    if command == "/verify":
+        return {
+            "command": command,
+            "mode": mode,
+            "intent": "audit",
+            "audit": {
+                "default_intent": True,
+                "target_required": True,
+                "evidence_capture_required": True,
+                "residuals_required": True,
+            },
+            "required_fields": [
+                "target",
+                "check_plan",
+                "evidence",
+                "verdict",
+                "residuals",
+            ],
+        }
+    if command in {"/conv", "/converge"}:
+        return {
+            "command": command,
+            "mode": mode,
+            "intent": "repair_or_improve",
+            "rounds": {
+                "round_metadata_required": True,
+                "original_target_gate_required": True,
+                "delta_gate_required": True,
+                "material_change_followup_required": True,
+            },
+            "required_fields": [
+                "original_target",
+                "round_index",
+                "findings",
+                "accepted_changes",
+                "stop_reason",
+            ],
+        }
+    raise ValueError(f"unsupported command metadata for {command}")
+
+
+def validate_dry_run_packet(packet: dict[str, Any]) -> None:
+    for field, expected in ROUTE_FREE_FLAGS.items():
+        if packet.get(field) is not expected:
+            raise ValueError(f"C7.1 dry-run packet must keep {field}={expected!r}")
+
+    route = _expect_mapping(packet, "route")
+    contract = _expect_mapping(packet, "adapter_contract")
+    metadata = _expect_mapping(contract, "command_metadata")
+
+    current_command = route.get("current_command")
+    if metadata.get("command") != current_command:
+        raise ValueError("C7.1 command metadata must match route.current_command")
+    if metadata.get("mode") != route.get("converge_mode"):
+        raise ValueError("C7.1 command metadata must match route.converge_mode")
+    if not isinstance(route.get("visible_delivery"), dict):
+        raise ValueError("C7.1 route.visible_delivery must be a JSON object")
+    if "state_root" not in route:
+        raise ValueError("C7.1 route.state_root field is required")
+
+    shared = _expect_mapping(contract, "shared_metadata")
+    if shared.get("state_root_field") != "route.state_root":
+        raise ValueError("C7.1 contract must fix route.state_root as the state-root field")
+    if shared.get("delivery_field") != "route.visible_delivery":
+        raise ValueError("C7.1 contract must fix route.visible_delivery as the delivery field")
+    if shared.get("rollback_field") != "inventory.rollback_switch":
+        raise ValueError("C7.1 contract must fix inventory.rollback_switch as the rollback field")
+
+    required_metadata_keys = {
+        "/goal": "draft_confirmation",
+        "/verify": "audit",
+        "/conv": "rounds",
+        "/converge": "rounds",
+    }
+    expected_key = required_metadata_keys.get(str(current_command))
+    if not expected_key or expected_key not in metadata:
+        raise ValueError(f"C7.1 command metadata missing {expected_key!r} for {current_command}")
+
+
+def _expect_mapping(parent: dict[str, Any], key: str) -> dict[str, Any]:
+    value = parent.get(key)
+    if not isinstance(value, dict):
+        raise ValueError(f"C7.1 packet field {key!r} must be an object")
+    return value
 
 
 def parse_raw_message(raw_message: str) -> tuple[str, str]:

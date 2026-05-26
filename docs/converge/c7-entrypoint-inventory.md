@@ -15,7 +15,7 @@ approved routing layer may use. It does not change live routes.
 
 ## Adapter Contract
 
-The C7.0 adapter is exposed through:
+The C7 adapter is exposed through:
 
 ```bash
 converge command-dry-run --raw-message '/goal example' \
@@ -38,12 +38,21 @@ The command returns JSON with:
 - `inventory`: the command ownership matrix above, including current owner, C7
   owner, state root, delivery behavior, rollback switch, transitional behavior,
   and final behavior
+- `adapter_contract.version: c7.1`
+- `adapter_contract.shared_metadata`: fixed field locations for state root,
+  delivery metadata, and rollback metadata
+- `adapter_contract.command_metadata`: command-specific metadata:
+  - `/goal`: goal intake intent plus draft/confirmation metadata requirements
+  - `/verify`: audit intent plus evidence/residual metadata requirements
+  - `/conv`: repair/improve intent plus round, original-target, and delta
+    metadata requirements
+  - `/converge`: deprecated alias metadata mapped to `conv`
 
 ## Explicit Non-Goals
 
-C7.0 does not restart Gateway, observe traffic, enable shadow routing, replace
-slash routes, deploy, apply, install, push, open a PR, release, delete legacy
-data, or send external messages.
+C7.0/C7.1 do not restart Gateway, observe traffic, enable shadow routing,
+replace slash routes, deploy, apply, install, push, open a PR, release, delete
+legacy data, or send external messages.
 
 Live route replacement remains a later owner-approved operational task after
 the synthetic adapter and the C7 verification gates pass.

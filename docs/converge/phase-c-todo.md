@@ -36,12 +36,13 @@ runs should be added there instead of being left only in chat or ledger logs.
 - [x] C6 / Slice 10: Install Wiring.
 - [ ] C7 / Slice 11: Canonical Command Replacement + Legacy Retirement.
   - [x] C7.0: Entrypoint inventory + synthetic dry-run adapter.
-  - [ ] C7.1: Converge command adapter hardening.
+  - [x] C7.1: Converge command adapter hardening.
+  - [ ] C7.2: Converge recovery/report-proof takeover.
 
 ## Next Goal Command
 
 ```text
-/goal Converge Phase C7.1: command adapter hardening을 진행해줘. C7의 목표는 기존 /goal, /verify, /conv의 canonical backend를 Converge로 교체하고 GoalFlow/Ledger/legacy verify-conv 경로를 retirement 대상으로 전환하는 것이야. 이번 C7.1은 live-route 변경 없이 C7.0 synthetic dry-run packet을 더 명확한 adapter contract로 강화하고, /goal draft/confirmation metadata, /verify audit intent, /conv round metadata, state-root/delivery/rollback fields를 검증 가능한 packet fields로 고정하는 데 한정해줘. 새 artifact 저장소나 라우팅 계층을 만들지 말고 기존 `command-dry-run` 경계를 작게 보강해줘. Gateway restart, live traffic observation, shadow routing, live slash routing replacement, deploy/apply/install, legacy data deletion, external action, push/PR/release는 제외해줘.
+/goal Converge Phase C7.2: recovery/report-proof takeover를 진행해줘. 목표는 Converge-owned workflow의 복구와 완료 보고 증명을 Converge의 `scan`, `watchdog-check`, `recover`, `reserve-delivery`, `report-proof`, `complete-reported` 기준으로 처리하게 만드는 것이야. Work Ledger/GoalFlow/chat memory가 Converge workflow의 source of truth로 남지 않게 하고, duplicate visible report를 막아줘. Gateway restart, live traffic observation, shadow routing, live slash routing replacement, deploy/apply/install, legacy data deletion, external action, push/PR/release는 제외해줘.
 ```
 
 ## C0 Completed Scope
@@ -276,3 +277,18 @@ runs should be added there instead of being left only in chat or ledger logs.
 - Added smoke coverage proving command mapping, owner/session,
   visible-delivery, and state-root metadata preservation, no workflow state
   materialization, and `/converge` deprecated-alias handling.
+
+## C7.1 Completed Scope
+
+- Hardened `converge command-dry-run` with a C7.1 adapter contract block that
+  fixes required packet fields, shared state-root/delivery/rollback field
+  locations, route-free flags, and command-specific metadata.
+- Added `/goal` draft/confirmation metadata, `/verify` audit intent metadata,
+  and `/conv` round/original-target/delta metadata to the dry-run packet without
+  creating workflows or changing live routes.
+- Kept C7.1 limited to existing adapter packet fields and validation: no new
+  artifact store, no routing layer, no mode semantics implementation, no
+  Gateway restart, no live or shadow routing, no deploy/apply/install, no
+  legacy deletion, no external action, no push, no PR, and no release.
+- Extended adapter smoke coverage for the C7.1 contract and command-specific
+  metadata while preserving the C7.0 route-free checks.

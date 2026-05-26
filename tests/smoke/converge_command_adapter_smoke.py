@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Smoke coverage for C7.0 synthetic command dry-run adapter."""
+"""Smoke coverage for C7 synthetic command dry-run adapter."""
 
 from __future__ import annotations
 
@@ -39,6 +39,19 @@ def assert_dry_run_maps_command_without_state_creation(state_root: Path, raw_mes
     assert_true(result["route"]["owner_session_key"] == "session:test", "owner session should be preserved")
     assert_true(result["route"]["visible_delivery"] == json.loads(VISIBLE_DELIVERY), "visible delivery should be preserved")
     assert_true(result["route"]["state_root"] == str(state_root), "state root should be exposed in route metadata")
+    assert_true(result["adapter_contract"]["version"] == "c7.1", "adapter contract should expose C7.1 version")
+    assert_true(
+        result["adapter_contract"]["shared_metadata"]["state_root_field"] == "route.state_root",
+        "C7.1 contract should fix state-root field",
+    )
+    assert_true(
+        result["adapter_contract"]["shared_metadata"]["delivery_field"] == "route.visible_delivery",
+        "C7.1 contract should fix delivery field",
+    )
+    assert_true(
+        result["adapter_contract"]["shared_metadata"]["rollback_field"] == "inventory.rollback_switch",
+        "C7.1 contract should fix rollback field",
+    )
     assert_true(result["converge_invocation"]["argv"][0] == "converge", "dry-run should produce converge invocation")
     assert_true("--state-root" in result["converge_invocation"]["argv"], "invocation should include state root")
     assert_true(expected_mode in result["converge_invocation"]["argv"], "invocation should include target mode")
@@ -65,6 +78,36 @@ def assert_inventory_covers_managed_commands(state_root: Path) -> None:
         assert_true(item["rollback_switch"], f"{item['command']} should document rollback switch")
 
 
+def assert_c7_1_command_metadata_contract(state_root: Path) -> None:
+    goal = run("command-dry-run", "--raw-message", "/goal Implement accepted plan", state_root=state_root)
+    goal_metadata = goal["adapter_contract"]["command_metadata"]
+    assert_true(goal_metadata["intent"] == "goal_intake", "/goal should expose goal intake intent")
+    assert_true(
+        goal_metadata["draft_confirmation"]["draft_required"] is True,
+        "/goal should require draft metadata",
+    )
+    assert_true(
+        goal_metadata["draft_confirmation"]["confirmation_required"] is True,
+        "/goal should require confirmation metadata",
+    )
+    assert_true("approval_boundaries" in goal_metadata["required_fields"], "/goal should require approval boundaries")
+
+    verify = run("command-dry-run", "--raw-message", "/verify Audit C7 docs", state_root=state_root)
+    verify_metadata = verify["adapter_contract"]["command_metadata"]
+    assert_true(verify_metadata["intent"] == "audit", "/verify should expose audit intent")
+    assert_true(verify_metadata["audit"]["default_intent"] is True, "/verify should default to audit intent")
+    assert_true(verify_metadata["audit"]["evidence_capture_required"] is True, "/verify should require evidence capture")
+    assert_true("residuals" in verify_metadata["required_fields"], "/verify should require residual fields")
+
+    conv = run("command-dry-run", "--raw-message", "/conv Improve C7 plan", state_root=state_root)
+    conv_metadata = conv["adapter_contract"]["command_metadata"]
+    assert_true(conv_metadata["intent"] == "repair_or_improve", "/conv should expose repair/improve intent")
+    assert_true(conv_metadata["rounds"]["round_metadata_required"] is True, "/conv should require round metadata")
+    assert_true(conv_metadata["rounds"]["original_target_gate_required"] is True, "/conv should require original-target gate")
+    assert_true(conv_metadata["rounds"]["delta_gate_required"] is True, "/conv should require delta gate")
+    assert_true("round_index" in conv_metadata["required_fields"], "/conv should require round index")
+
+
 def assert_rejects_non_managed_or_empty_commands(state_root: Path) -> None:
     missing_text = run_fail("command-dry-run", "--raw-message", "/goal", state_root=state_root)
     assert_true("requires non-empty text" in missing_text["error"], "empty command should fail deterministically")
@@ -76,6 +119,7 @@ def main() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         state_root = Path(tmp) / "state"
         assert_inventory_covers_managed_commands(state_root)
+        assert_c7_1_command_metadata_contract(state_root)
         assert_dry_run_maps_command_without_state_creation(state_root, "/goal Build accepted plan", "goal")
         assert_dry_run_maps_command_without_state_creation(state_root, "/verify Audit docs", "verify")
         assert_dry_run_maps_command_without_state_creation(state_root, "/conv Improve plan", "conv")

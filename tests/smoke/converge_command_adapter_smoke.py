@@ -38,7 +38,9 @@ def assert_dry_run_maps_command_without_state_creation(state_root: Path, raw_mes
     assert_true(result["route"]["converge_mode"] == expected_mode, "command should map to expected Converge mode")
     assert_true(result["route"]["owner_session_key"] == "session:test", "owner session should be preserved")
     assert_true(result["route"]["visible_delivery"] == json.loads(VISIBLE_DELIVERY), "visible delivery should be preserved")
+    assert_true(result["route"]["state_root"] == str(state_root), "state root should be exposed in route metadata")
     assert_true(result["converge_invocation"]["argv"][0] == "converge", "dry-run should produce converge invocation")
+    assert_true("--state-root" in result["converge_invocation"]["argv"], "invocation should include state root")
     assert_true(expected_mode in result["converge_invocation"]["argv"], "invocation should include target mode")
     assert_true(not (state_root / "workflows").exists(), "dry-run should not materialize workflow state")
 

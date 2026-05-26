@@ -9,17 +9,20 @@ worklog initialization, atomic checkpoints, visible message formatting, shared
 mode-handler primitives, terminal delivery reservation, report proof, manual
 reconcile guards, C4 `goal` mode, C4.5 smoke helper/docs cleanup, C5 Recovery
 commands, C6 local install wiring for the standalone CLI and deterministic
-watchdog runner, and C7.0 command inventory plus a synthetic dry-run adapter.
-The next planned boundary is C7.1 Converge command adapter hardening.
+watchdog runner, C7.0 command inventory plus a synthetic dry-run adapter, C7.1
+command adapter contract hardening, and C7.2 recovery/report-proof ownership for
+Converge-owned workflows. The next planned boundary is C7.3 live route
+replacement planning.
 
 The package is intentionally not wired into existing slash commands yet.
 Development uses the local CLI. C7's target is to make Converge the canonical
 backend for managed `/goal`, `/verify`, and `/conv` work after command-routing,
 recovery, delivery-proof, and separately approved live-routing gates pass; it is
 not a permanent `/c*` coexistence path. C7.0 starts with source inventory and a
-synthetic dry-run adapter only; Gateway restart, live traffic observation,
-shadow routing, live slash-route replacement, push, PR, and release require
-separate owner approval.
+synthetic dry-run adapter only, C7.1 fixes the dry-run packet contract, and C7.2
+keeps Converge-owned recovery/report proof inside Converge workflow state.
+Gateway restart, live traffic observation, shadow routing, live slash-route
+replacement, push, PR, and release require separate owner approval.
 
 ```bash
 python -m converge.cli start --kind goal --text "demo" --json

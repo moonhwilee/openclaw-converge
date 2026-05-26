@@ -452,6 +452,11 @@ def main() -> int:
         after_reserve = workflow(state_root, "goal-runtime")
         assert_true(after_reserve["status"] == "completed_unreported", "reserve should preserve terminal unreported state")
         assert_true(after_reserve["active_delivery_reservation"]["reservation_id"] == reservation_id, "reservation should persist")
+        assert_true(
+            after_reserve["active_delivery_reservation"]["send_authority"] == "converge.reserve-delivery"
+            and after_reserve["active_delivery_reservation"]["source_of_truth"] == "converge.workflow",
+            "persisted active delivery reservation should carry Converge authority metadata",
+        )
         terminal_artifact = run_fail(
             "artifact",
             "--workflow-id",
@@ -481,6 +486,11 @@ def main() -> int:
             and terminal_delivery_event["payload"]["reservation_id"] == terminal["reservation_id"]
             and terminal_delivery_event["payload"]["visible_delivery"] == terminal["visible_delivery"],
             "delivery_reserved event should match authorized response",
+        )
+        assert_true(
+            terminal_delivery_event["payload"]["send_authority"] == "converge.reserve-delivery"
+            and terminal_delivery_event["payload"]["source_of_truth"] == "converge.workflow",
+            "delivery_reserved event should carry Converge authority metadata",
         )
         completed_status_mismatch = run(
             "reserve-delivery",
@@ -799,6 +809,88 @@ def main() -> int:
             json.dumps(delivery_workflow, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
+        missing_active_authority_workflow = json.loads(json.dumps(delivery_workflow))
+        missing_active_authority_workflow["active_delivery_reservation"].pop("send_authority", None)
+        (state_root / "workflows" / "goal-runtime" / "workflow.json").write_text(
+            json.dumps(missing_active_authority_workflow, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        bad_active_authority_proof = run_fail(
+            "report-proof",
+            "--workflow-id",
+            "goal-runtime",
+            "--reservation-id",
+            reservation_id,
+            "--delivery-message-id",
+            "20198-authority",
+            "--visible-delivery",
+            visible_delivery,
+            state_root=state_root,
+        )
+        assert_true(
+            "send_authority" in bad_active_authority_proof["error"],
+            "report-proof should reject active delivery reservations without Converge authority metadata",
+        )
+        bad_active_authority_complete = run_fail(
+            "complete-reported",
+            "--workflow-id",
+            "goal-runtime",
+            "--reservation-id",
+            reservation_id,
+            "--delivery-message-id",
+            "20198-authority",
+            "--visible-delivery",
+            visible_delivery,
+            state_root=state_root,
+        )
+        assert_true(
+            "send_authority" in bad_active_authority_complete["error"],
+            "complete-reported should reject active delivery reservations without Converge authority metadata",
+        )
+        (state_root / "workflows" / "goal-runtime" / "workflow.json").write_text(
+            json.dumps(delivery_workflow, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        delivery_events_before_authority_corruption = events(state_root, "goal-runtime")
+        missing_delivery_authority_before_proof_events = json.loads(json.dumps(delivery_events_before_authority_corruption))
+        for event in missing_delivery_authority_before_proof_events:
+            if event["event_type"] == "delivery_reserved":
+                event["payload"].pop("send_authority", None)
+                break
+        write_events(state_root, "goal-runtime", missing_delivery_authority_before_proof_events)
+        bad_delivery_authority_proof = run_fail(
+            "report-proof",
+            "--workflow-id",
+            "goal-runtime",
+            "--reservation-id",
+            reservation_id,
+            "--delivery-message-id",
+            "20198-event-authority",
+            "--visible-delivery",
+            visible_delivery,
+            state_root=state_root,
+        )
+        assert_true(
+            "send_authority" in bad_delivery_authority_proof["error"],
+            "report-proof should reject delivery_reserved events without Converge authority metadata",
+        )
+        bad_delivery_authority_complete = run_fail(
+            "complete-reported",
+            "--workflow-id",
+            "goal-runtime",
+            "--reservation-id",
+            reservation_id,
+            "--delivery-message-id",
+            "20198-event-authority",
+            "--visible-delivery",
+            visible_delivery,
+            state_root=state_root,
+        )
+        assert_true(
+            "send_authority" in bad_delivery_authority_complete["error"],
+            "complete-reported should reject delivery_reserved events without Converge authority metadata",
+        )
+        write_events(state_root, "goal-runtime", delivery_events_before_authority_corruption)
 
         mismatch = run_fail(
             "report-proof",
@@ -1130,6 +1222,96 @@ def main() -> int:
         run("validate", "--workflow-id", "goal-runtime", state_root=state_root)
         final_workflow = workflow(state_root, "goal-runtime")
         final_events = events(state_root, "goal-runtime")
+        missing_proof_authority_events = json.loads(json.dumps(final_events))
+        for event in missing_proof_authority_events:
+            if event["event_type"] == "report_proof":
+                event["payload"].pop("proof_authority", None)
+                break
+        write_events(state_root, "goal-runtime", missing_proof_authority_events)
+        proof_missing_authority_workflow = json.loads(json.dumps(final_workflow))
+        proof_missing_authority_workflow["visible_delivery_state"].pop("report_proof", None)
+        (state_root / "workflows" / "goal-runtime" / "workflow.json").write_text(
+            json.dumps(proof_missing_authority_workflow, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        missing_proof_authority = run_fail(
+            "report-proof",
+            "--workflow-id",
+            "goal-runtime",
+            "--reservation-id",
+            reservation_id,
+            "--delivery-message-id",
+            "20200",
+            "--visible-delivery",
+            visible_delivery,
+            state_root=state_root,
+        )
+        assert_true(
+            "proof_authority" in missing_proof_authority["error"],
+            "report-proof hydration should reject historical proof without Converge authority metadata",
+        )
+        assert_true(
+            "report_proof" not in workflow(state_root, "goal-runtime")["visible_delivery_state"],
+            "bad authority proof hydration should not mutate workflow state",
+        )
+        write_events(state_root, "goal-runtime", final_events)
+        (state_root / "workflows" / "goal-runtime" / "workflow.json").write_text(
+            json.dumps(final_workflow, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        missing_report_authority_events = json.loads(json.dumps(final_events))
+        for event in missing_report_authority_events:
+            if event["event_type"] == "report_sent":
+                event["payload"].pop("report_authority", None)
+                break
+        write_events(state_root, "goal-runtime", missing_report_authority_events)
+        report_missing_authority_workflow = json.loads(json.dumps(final_workflow))
+        report_missing_authority_workflow["visible_delivery_state"].pop("reported", None)
+        (state_root / "workflows" / "goal-runtime" / "workflow.json").write_text(
+            json.dumps(report_missing_authority_workflow, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        missing_report_authority = run_fail(
+            "complete-reported",
+            "--workflow-id",
+            "goal-runtime",
+            "--reservation-id",
+            reservation_id,
+            "--delivery-message-id",
+            "20200",
+            "--visible-delivery",
+            visible_delivery,
+            state_root=state_root,
+        )
+        assert_true(
+            "report_authority" in missing_report_authority["error"],
+            "complete-reported hydration should reject historical report without Converge authority metadata",
+        )
+        assert_true(
+            "reported" not in workflow(state_root, "goal-runtime")["visible_delivery_state"],
+            "bad authority report hydration should not mutate workflow state",
+        )
+        write_events(state_root, "goal-runtime", final_events)
+        (state_root / "workflows" / "goal-runtime" / "workflow.json").write_text(
+            json.dumps(final_workflow, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        corrupt_delivery_authority_events = json.loads(json.dumps(final_events))
+        for event in corrupt_delivery_authority_events:
+            if event["event_type"] == "delivery_reserved":
+                event["payload"].pop("send_authority", None)
+                break
+        write_events(state_root, "goal-runtime", corrupt_delivery_authority_events)
+        missing_delivery_authority = run_fail("validate", "--workflow-id", "goal-runtime", state_root=state_root)
+        assert_true(
+            "send_authority" in missing_delivery_authority["error"],
+            "delivery_reserved event should require Converge authority metadata",
+        )
+        write_events(state_root, "goal-runtime", final_events)
+        (state_root / "workflows" / "goal-runtime" / "workflow.json").write_text(
+            json.dumps(final_workflow, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
         corrupted_report_state = json.loads(json.dumps(final_workflow))
         corrupted_report_state["visible_delivery_state"]["report_proof"]["delivery_message_id"] = "tampered"
         (state_root / "workflows" / "goal-runtime" / "workflow.json").write_text(
@@ -1518,6 +1700,32 @@ def main() -> int:
             state_root=state_root,
         )
         assert_true("matching delivery_reserved" in wrong_target_manual["error"], "manual reconcile should bind historical visible target")
+        manual_events_before_authority_corruption = events(state_root, "manual-runtime")
+        manual_missing_delivery_authority_events = json.loads(json.dumps(manual_events_before_authority_corruption))
+        for event in manual_missing_delivery_authority_events:
+            if event["event_type"] == "delivery_reserved":
+                event["payload"].pop("send_authority", None)
+                break
+        write_events(state_root, "manual-runtime", manual_missing_delivery_authority_events)
+        bad_manual_authority = run_fail(
+            "complete-reported",
+            "--workflow-id",
+            "manual-runtime",
+            "--reservation-id",
+            manual_reservation_id,
+            "--delivery-message-id",
+            "20210",
+            "--visible-delivery",
+            visible_delivery,
+            "--manual-reconcile",
+            "existing Telegram message was verified manually",
+            state_root=state_root,
+        )
+        assert_true(
+            "send_authority" in bad_manual_authority["error"],
+            "manual reconcile should reject historical delivery reservations without Converge authority metadata",
+        )
+        write_events(state_root, "manual-runtime", manual_events_before_authority_corruption)
         manual_reported = run(
             "complete-reported",
             "--workflow-id",
@@ -1726,6 +1934,12 @@ def main() -> int:
                     "report sent crash retry hydration",
                     "reported proof crash retry hydration",
                     "reported state crash retry hydration",
+                    "report proof authority hydration guard",
+                    "report sent authority hydration guard",
+                    "delivery reservation authority guard",
+                    "report proof active delivery authority guard",
+                    "report proof historical delivery authority guard",
+                    "manual reconcile historical delivery authority guard",
                     "report proof delivery reservation binding",
                     "report proof required delivery message id",
                     "duplicate delivery reservation rejection",

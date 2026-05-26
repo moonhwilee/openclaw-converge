@@ -206,10 +206,11 @@ visible reports or replay side effects.
 
 ## Verification Gates
 
-C7.0 inventory and C7.1 dry-run adapter contract work are complete. C7.2 should
-prove Converge recovery/report-proof ownership for Converge-owned workflows
+C7.0 inventory, C7.1 dry-run adapter contract, and C7.2
+recovery/report-proof ownership work are complete. C7.2 proves Converge-owned
+workflows recover and finalize visible report proof from Converge workflow state
 without changing live routes. Live route replacement and route retirement are
-not ready until these gates are documented or tested:
+not ready until the remaining C7.3/C7.4 gates are documented or tested:
 
 - Command inventory proves every current `/goal`, `/verify`, `/conv`, and
   `/converge` entrypoint has one intended C7 owner.

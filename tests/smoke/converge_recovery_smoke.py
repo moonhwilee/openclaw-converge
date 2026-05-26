@@ -151,6 +151,22 @@ def main() -> int:
         )
         assert_true(reservation["send_authority"] == "converge.reserve-delivery", "reserve-delivery should own send authority")
         assert_true(reservation["source_of_truth"] == "converge.workflow", "reserve-delivery should source from Converge workflow state")
+        reserved_workflow = workflow(state_root, "terminal-plan")
+        assert_true(
+            reserved_workflow["active_delivery_reservation"]["send_authority"] == "converge.reserve-delivery"
+            and reserved_workflow["active_delivery_reservation"]["source_of_truth"] == "converge.workflow",
+            "terminal recovery reservation should persist Converge authority metadata",
+        )
+        reserved_event = [
+            event
+            for event in (json.loads(line) for line in (state_root / "workflows" / "terminal-plan" / "events.jsonl").read_text(encoding="utf-8").splitlines() if line.strip())
+            if event["event_type"] == "delivery_reserved"
+        ][-1]
+        assert_true(
+            reserved_event["payload"]["send_authority"] == "converge.reserve-delivery"
+            and reserved_event["payload"]["source_of_truth"] == "converge.workflow",
+            "terminal recovery delivery event should persist Converge authority metadata",
+        )
         reserved_scan = run("scan", state_root=state_root)
         reserved_record = next(item for item in reserved_scan["workflows"] if item["workflow_id"] == "terminal-plan")
         assert_true(

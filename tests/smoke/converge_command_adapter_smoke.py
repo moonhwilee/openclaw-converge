@@ -12,6 +12,8 @@ try:
 except ModuleNotFoundError:
     from tests.smoke.smoke_helpers import VISIBLE_DELIVERY, assert_true, run, run_fail
 
+from converge.command_adapter import validate_dry_run_packet
+
 
 def assert_dry_run_maps_command_without_state_creation(state_root: Path, raw_message: str, expected_mode: str) -> None:
     result = run(
@@ -108,6 +110,37 @@ def assert_c7_1_command_metadata_contract(state_root: Path) -> None:
     assert_true("round_index" in conv_metadata["required_fields"], "/conv should require round index")
 
 
+def assert_c7_1_contract_validation_rejects_drift(state_root: Path) -> None:
+    packet = run("command-dry-run", "--raw-message", "/goal Implement accepted plan", state_root=state_root)
+
+    missing_required = json.loads(json.dumps(packet))
+    del missing_required["route"]["state_root"]
+    try:
+        validate_dry_run_packet(missing_required)
+    except ValueError as exc:
+        assert_true("route.state_root" in str(exc), "validator should reject missing required packet fields")
+    else:
+        raise AssertionError("validator should reject missing route.state_root")
+
+    stale_flags = json.loads(json.dumps(packet))
+    stale_flags["adapter_contract"]["route_free_flags"]["live_route_changed"] = True
+    try:
+        validate_dry_run_packet(stale_flags)
+    except ValueError as exc:
+        assert_true("route-free flags" in str(exc), "validator should reject stale route-free contract flags")
+    else:
+        raise AssertionError("validator should reject route-free flag drift")
+
+    missing_rollback = json.loads(json.dumps(packet))
+    missing_rollback["inventory"][0]["rollback_switch"] = ""
+    try:
+        validate_dry_run_packet(missing_rollback)
+    except ValueError as exc:
+        assert_true("rollback_switch" in str(exc), "validator should reject missing rollback metadata")
+    else:
+        raise AssertionError("validator should reject missing rollback metadata")
+
+
 def assert_rejects_non_managed_or_empty_commands(state_root: Path) -> None:
     missing_text = run_fail("command-dry-run", "--raw-message", "/goal", state_root=state_root)
     assert_true("requires non-empty text" in missing_text["error"], "empty command should fail deterministically")
@@ -120,6 +153,7 @@ def main() -> None:
         state_root = Path(tmp) / "state"
         assert_inventory_covers_managed_commands(state_root)
         assert_c7_1_command_metadata_contract(state_root)
+        assert_c7_1_contract_validation_rejects_drift(state_root)
         assert_dry_run_maps_command_without_state_creation(state_root, "/goal Build accepted plan", "goal")
         assert_dry_run_maps_command_without_state_creation(state_root, "/verify Audit docs", "verify")
         assert_dry_run_maps_command_without_state_creation(state_root, "/conv Improve plan", "conv")

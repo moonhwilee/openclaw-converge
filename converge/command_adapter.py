@@ -253,6 +253,19 @@ def validate_dry_run_packet(packet: dict[str, Any]) -> None:
     contract = _expect_mapping(packet, "adapter_contract")
     metadata = _expect_mapping(contract, "command_metadata")
 
+    if contract.get("version") != C7_1_CONTRACT_VERSION:
+        raise ValueError(f"C7.1 contract version must be {C7_1_CONTRACT_VERSION!r}")
+    if contract.get("route_free_flags") != ROUTE_FREE_FLAGS:
+        raise ValueError("C7.1 contract route-free flags must match packet route-free flags")
+
+    required_packet_fields = contract.get("required_packet_fields")
+    if not isinstance(required_packet_fields, list) or not required_packet_fields:
+        raise ValueError("C7.1 contract required_packet_fields must be a non-empty list")
+    for field_path in required_packet_fields:
+        if not isinstance(field_path, str):
+            raise ValueError("C7.1 contract required_packet_fields entries must be strings")
+        _get_path(packet, field_path)
+
     current_command = route.get("current_command")
     if metadata.get("command") != current_command:
         raise ValueError("C7.1 command metadata must match route.current_command")
@@ -281,12 +294,28 @@ def validate_dry_run_packet(packet: dict[str, Any]) -> None:
     if not expected_key or expected_key not in metadata:
         raise ValueError(f"C7.1 command metadata missing {expected_key!r} for {current_command}")
 
+    inventory_items = packet.get("inventory")
+    if not isinstance(inventory_items, list) or not inventory_items:
+        raise ValueError("C7.1 inventory must be a non-empty list")
+    for item in inventory_items:
+        if not isinstance(item, dict) or not item.get("rollback_switch"):
+            raise ValueError("C7.1 inventory entries must include rollback_switch")
+
 
 def _expect_mapping(parent: dict[str, Any], key: str) -> dict[str, Any]:
     value = parent.get(key)
     if not isinstance(value, dict):
         raise ValueError(f"C7.1 packet field {key!r} must be an object")
     return value
+
+
+def _get_path(parent: dict[str, Any], dotted_path: str) -> Any:
+    current: Any = parent
+    for part in dotted_path.split("."):
+        if not isinstance(current, dict) or part not in current:
+            raise ValueError(f"C7.1 required packet field missing: {dotted_path}")
+        current = current[part]
+    return current
 
 
 def parse_raw_message(raw_message: str) -> tuple[str, str]:

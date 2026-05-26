@@ -5,13 +5,15 @@ This is the current execution checklist for the next `/goal` work.
 detail source. C7-specific planning is headed by
 `docs/converge/c7-canonical-command-replacement.md`.
 
-Current implementation baseline: C7.0 command inventory and synthetic dry-run
-adapter is complete on top of C6 Install Wiring. The local implementation now
+Current implementation baseline: C7.1 command adapter hardening is complete on
+top of C7.0 command inventory and synthetic dry-run adapter. The local
+implementation now
 preserves the C0-C2.5 shared mode and terminal finalization contracts, the C3
 iterative mode invariants, the C4 durable accepted-plan slice queue, the C4.5
 shared smoke helper boundary, the C5 recovery commands, the C6 local
 install/watchdog runner wiring, and the C7.0 route-free command dry-run
-adapter. The next open phase is C7.1 Converge command adapter hardening.
+adapter plus the C7.1 adapter packet contract. The next open phase is C7.2
+Converge recovery/report-proof takeover.
 
 Deferred non-blocking cleanup items are tracked in
 `docs/converge/p3-debt-register.md`. New P3 findings from future convergence

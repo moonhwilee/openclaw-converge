@@ -11,8 +11,8 @@ reconcile guards, C4 `goal` mode, C4.5 smoke helper/docs cleanup, C5 Recovery
 commands, C6 local install wiring for the standalone CLI and deterministic
 watchdog runner, C7.0 command inventory plus a synthetic dry-run adapter, C7.1
 command adapter contract hardening, and C7.2 recovery/report-proof ownership for
-Converge-owned workflows. The next planned boundary is C7.3 live route
-replacement planning.
+Converge-owned workflows. The next planned boundary is C7.3 legacy route
+retirement planning, not live route replacement.
 
 The package is intentionally not wired into existing slash commands yet.
 Development uses the local CLI. C7's target is to make Converge the canonical

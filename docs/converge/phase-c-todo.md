@@ -43,6 +43,26 @@ runs should be added there instead of being left only in chat or ledger logs.
   - [x] C7.1: Converge command adapter hardening.
   - [x] C7.2: Converge recovery/report-proof takeover.
   - [ ] C7.3: Legacy route retirement plan.
+  - [ ] C7.4: Cleanup and removal plan.
+
+## C7.3 Output Boundary
+
+C7.3 is a plan-only route retirement slice. It should produce route
+classification, rollback gates, readiness checks, and accepted/deferred risks
+for moving managed `/goal`, `/verify`, and `/conv` defaults toward Converge.
+It must not execute live slash-route replacement, Gateway restart, shadow
+routing, deploy/apply/install, legacy deletion, external action, push, PR, or
+release.
+
+Accepted C7.3 risks:
+
+- Active legacy GoalFlow, Work Ledger, or verification-convergence work may
+  finish under its original owner.
+- Historical legacy records remain readable and are not deleted or replayed.
+- Structured rollback metadata and smoke validation are part of the C7.3 plan,
+  not authorization to activate live rollback.
+- Actual route replacement and C7.4 cleanup/removal planning remain separate
+  owner-approved slices.
 
 ## Next Goal Command
 

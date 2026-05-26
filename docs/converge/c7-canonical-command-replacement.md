@@ -248,17 +248,35 @@ The cleanup/removal boundary must stay in the next slice:
    removal.
 
 5. **C7.4 cleanup and removal plan**
-   Mark replaced legacy scripts, docs, skills, and state paths as retired,
-   archived, or still active for non-Converge work. Do not delete historical
-   records without a separate approved cleanup.
+   Classify replaced legacy scripts, docs, skills, aliases, and state paths as
+   retired, archived, or still active for non-Converge work. C7.4 is
+   classification and planning only: it must not delete, move, archive,
+   disable, uninstall, reroute, or remove any legacy script, doc, skill, alias,
+   route, or state path.
+
+### C7.4 Readiness Boundary
+
+C7.4 may produce only:
+
+- an inventory of legacy scripts, docs, skills, aliases, and state paths
+- a classification for each surface: retired, archived, still active for
+  non-Converge work, or requires separate owner approval
+- a cleanup/removal plan and verification criteria for a later approved task
+
+C7.4 must not execute cleanup/removal. Approval inside a C7.4 goal cannot
+authorize execution. It must not restart Gateway, observe live traffic, enable
+shadow routing, replace or remove live routes, deploy, apply, install, delete
+or move legacy data/files, send external messages, push, open a PR, or release.
 
 ## Non-Goals
 
-- No Gateway restart, live traffic observation, shadow routing, or live route
-  replacement inside C7 by default; those require a later separately approved
-  operational task after C7 verification.
-- No external action, PR, push, release, or development-server apply unless a
-  separate explicit owner-approved operational task authorizes it.
+- No Gateway restart, live traffic observation, shadow routing, live route
+  replacement, or live route removal inside C7. Those belong outside C7.4 and
+  require a later separately approved operational task after C7 verification.
+- No external action, PR, push, release, deploy/apply/install, deletion, move,
+  archive, disable, uninstall, or development-server apply inside C7. Those
+  belong outside C7.4 and require a separate explicit owner-approved
+  operational task.
 - No deletion of GoalFlow, Ledger, or skill history in C7.
 - No `/c*` product command family.
 - No broad platform rewrite, database migration, or distributed job engine.
@@ -281,7 +299,8 @@ authorized until a separate owner-approved operational task:
   routes.
 - Converge mode smoke still passes after any adapter code is added.
 - Recovery smoke proves an interrupted Converge-owned command resumes from the
-  Converge workflow cursor, not from GoalFlow, Work Ledger, or chat memory.
+  Converge workflow cursor, not from GoalFlow, Work Ledger, chat memory, or
+  verification-convergence artifacts.
 - Terminal-unreported smoke proves visible-send authority comes from
   `reserve-delivery` and report proof is finalized through `complete-reported`.
 - Rollback switch is explicitly owner-approved, logged, time-bounded, scoped to
@@ -294,7 +313,7 @@ C7.0, C7.1, C7.2, and C7.3 are complete. The next implementation is C7.4
 cleanup and removal planning, not live slash-route replacement. C7.2 proved
 that Converge recovery and delivery proof can own interrupted and
 terminal-unreported Converge workflows without leaving GoalFlow, Work Ledger,
-or chat memory as the source of truth. C7.3 fixed the replacement plan,
+chat memory, or verification-convergence artifacts as the source of truth. C7.3 fixed the replacement plan,
 approval gate, rollback switch, and logging/proof requirements without changing
 live routes. Live replacement remains a separate owner-approved operational
 task.

@@ -25,7 +25,9 @@ keeps Converge-owned recovery/report proof inside Converge workflow state, and
 C7.3 fixes the route replacement plan, approval gate, rollback switch, and
 logging/proof requirements as dry-run-verifiable metadata.
 Gateway restart, live traffic observation, shadow routing, live slash-route
-replacement, push, PR, and release require separate owner approval.
+replacement/removal, deploy/apply/install, external action, deletion or movement
+of legacy files/data, push, PR, and release belong outside C7.4 and require a
+later separately approved operational task.
 
 ```bash
 python -m converge.cli start --kind goal --text "demo" --json

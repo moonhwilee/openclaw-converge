@@ -22,7 +22,7 @@ RISKY_CLASSES = {"external", "destructive", "gateway_runtime", "public"}
 CONVERGE_SOURCE_OF_TRUTH = {
     "owner": "converge",
     "state": "workflow_state",
-    "not_source_of_truth": ["GoalFlow", "Work Ledger", "chat memory"],
+    "not_source_of_truth": ["GoalFlow", "Work Ledger", "chat memory", "verification-convergence artifacts"],
 }
 
 

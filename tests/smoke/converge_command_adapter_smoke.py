@@ -180,8 +180,22 @@ def assert_c7_3_route_retirement_plan_contract(state_root: Path) -> None:
     cleanup_boundary = route_plan["cleanup_removal_boundary"]
     assert_true(cleanup_boundary["next_slice"] == "C7.4 cleanup and removal plan", "C7.3 should point cleanup to C7.4")
     assert_true(cleanup_boundary["plan_only"] is True, "C7.4 boundary should remain plan-only")
+    assert_true(cleanup_boundary["classification_only"] is True, "C7.4 boundary should remain classification-only")
+    assert_true(cleanup_boundary["execution_allowed"] is False, "C7.4 boundary should not allow execution")
     assert_true(cleanup_boundary["legacy_deletion_allowed"] is False, "C7.3 should not allow legacy deletion")
     assert_true(cleanup_boundary["live_route_removal_allowed"] is False, "C7.3 should not allow live route removal")
+    assert_true(
+        "legacy scripts/docs/skills/aliases/state paths inventory" in cleanup_boundary["allowed_outputs"],
+        "C7.4 boundary should define inventory as an allowed output",
+    )
+    assert_true(
+        "cleanup/removal execution" in cleanup_boundary["prohibited_actions"],
+        "C7.4 boundary should prohibit cleanup/removal execution",
+    )
+    assert_true(
+        "legacy file movement" in cleanup_boundary["prohibited_actions"],
+        "C7.4 boundary should prohibit legacy file movement",
+    )
     assert_true(
         cleanup_boundary["separate_owner_approval_required"] is True,
         "C7.4 cleanup/removal should require separate owner approval",
@@ -263,6 +277,24 @@ def assert_c7_1_contract_validation_rejects_drift(state_root: Path) -> None:
     else:
         raise AssertionError("validator should reject route classification drift")
 
+    owner_drift = json.loads(json.dumps(packet))
+    owner_drift["route_retirement_plan"]["route_classification"][0]["c7_owner"] = "GoalFlow"
+    try:
+        validate_dry_run_packet(owner_drift)
+    except ValueError as exc:
+        assert_true("c7_owner" in str(exc), "validator should reject route owner drift")
+    else:
+        raise AssertionError("validator should reject route owner drift")
+
+    blocked_boundary_drift = json.loads(json.dumps(packet))
+    blocked_boundary_drift["blocked_without_approval"].remove("live route replacement")
+    try:
+        validate_dry_run_packet(blocked_boundary_drift)
+    except ValueError as exc:
+        assert_true("blocked_without_approval" in str(exc), "validator should reject blocked action drift")
+    else:
+        raise AssertionError("validator should reject blocked action drift")
+
     missing_evidence = json.loads(json.dumps(packet))
     missing_evidence["route_retirement_plan"]["approval_gate"]["evidence_required"].remove("rollback switch plan")
     try:
@@ -302,6 +334,28 @@ def assert_c7_1_contract_validation_rejects_drift(state_root: Path) -> None:
         assert_true("cleanup boundary" in str(exc), "validator should reject cleanup boundary drift")
     else:
         raise AssertionError("validator should reject cleanup boundary drift")
+
+    cleanup_output_drift = json.loads(json.dumps(packet))
+    cleanup_output_drift["route_retirement_plan"]["cleanup_removal_boundary"]["allowed_outputs"].remove(
+        "legacy scripts/docs/skills/aliases/state paths inventory"
+    )
+    try:
+        validate_dry_run_packet(cleanup_output_drift)
+    except ValueError as exc:
+        assert_true("allowed outputs" in str(exc), "validator should reject cleanup allowed-output drift")
+    else:
+        raise AssertionError("validator should reject cleanup allowed-output drift")
+
+    cleanup_action_drift = json.loads(json.dumps(packet))
+    cleanup_action_drift["route_retirement_plan"]["cleanup_removal_boundary"]["prohibited_actions"].remove(
+        "cleanup/removal execution"
+    )
+    try:
+        validate_dry_run_packet(cleanup_action_drift)
+    except ValueError as exc:
+        assert_true("prohibited actions" in str(exc), "validator should reject cleanup prohibited-action drift")
+    else:
+        raise AssertionError("validator should reject cleanup prohibited-action drift")
 
 
 def assert_rejects_non_managed_or_empty_commands(state_root: Path) -> None:

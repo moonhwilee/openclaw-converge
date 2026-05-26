@@ -129,6 +129,40 @@ EXPECTED_LEGACY_NON_AUTHORITATIVE_SOURCES = [
     "verification-convergence artifacts",
 ]
 
+EXPECTED_BLOCKED_WITHOUT_APPROVAL = [
+    "Gateway restart",
+    "live traffic observation",
+    "shadow routing",
+    "live route replacement",
+    "deploy/apply/install",
+    "external action",
+    "legacy data deletion",
+    "push/PR/release",
+]
+
+EXPECTED_C7_4_ALLOWED_OUTPUTS = [
+    "legacy scripts/docs/skills/aliases/state paths inventory",
+    "retired/archived/still-active-for-non-Converge/requires-owner-approval classification",
+    "cleanup/removal plan for later approved task",
+    "verification criteria for later approved task",
+]
+
+EXPECTED_C7_4_PROHIBITED_ACTIONS = [
+    "cleanup/removal execution",
+    "Gateway restart",
+    "live traffic observation",
+    "shadow routing",
+    "live route replacement",
+    "live route removal",
+    "deploy/apply/install",
+    "external action",
+    "legacy data deletion",
+    "legacy file movement",
+    "legacy file archival",
+    "legacy skill disable/uninstall",
+    "push/PR/release",
+]
+
 ROUTE_FREE_FLAGS = {
     "dry_run": True,
     "live_route_changed": False,
@@ -188,16 +222,7 @@ def build_dry_run_packet(
             "display": " ".join(_shell_quote(part) for part in converge_argv),
         },
         "inventory": inventory(),
-        "blocked_without_approval": [
-            "Gateway restart",
-            "live traffic observation",
-            "shadow routing",
-            "live route replacement",
-            "deploy/apply/install",
-            "external action",
-            "legacy data deletion",
-            "push/PR/release",
-        ],
+        "blocked_without_approval": list(EXPECTED_BLOCKED_WITHOUT_APPROVAL),
     }
     validate_dry_run_packet(packet)
     return packet
@@ -285,6 +310,10 @@ def build_route_retirement_plan() -> dict[str, Any]:
         "cleanup_removal_boundary": {
             "next_slice": "C7.4 cleanup and removal plan",
             "plan_only": True,
+            "classification_only": True,
+            "execution_allowed": False,
+            "allowed_outputs": list(EXPECTED_C7_4_ALLOWED_OUTPUTS),
+            "prohibited_actions": list(EXPECTED_C7_4_PROHIBITED_ACTIONS),
             "legacy_deletion_allowed": False,
             "live_route_removal_allowed": False,
             "separate_owner_approval_required": True,
@@ -355,6 +384,8 @@ def validate_dry_run_packet(packet: dict[str, Any]) -> None:
     for field, expected in ROUTE_FREE_FLAGS.items():
         if packet.get(field) is not expected:
             raise ValueError(f"C7.1 dry-run packet must keep {field}={expected!r}")
+    if packet.get("blocked_without_approval") != EXPECTED_BLOCKED_WITHOUT_APPROVAL:
+        raise ValueError("C7.3 dry-run packet must keep exact blocked_without_approval actions")
 
     route = _expect_mapping(packet, "route")
     contract = _expect_mapping(packet, "adapter_contract")
@@ -436,9 +467,18 @@ def validate_route_retirement_plan(route_plan: dict[str, Any]) -> None:
     classification = route_plan.get("route_classification")
     if not isinstance(classification, list):
         raise ValueError("C7.3 route retirement plan must classify all managed commands and aliases")
-    observed_classifications = {
-        item.get("command"): item.get("classification") for item in classification if isinstance(item, dict)
-    }
+    observed_classifications: dict[str, str] = {}
+    expected_owners = {item.command: item for item in COMMAND_INVENTORY}
+    for item in classification:
+        if not isinstance(item, dict):
+            continue
+        command = item.get("command")
+        observed_classifications[command] = item.get("classification")
+        expected_owner = expected_owners.get(str(command))
+        if expected_owner is None:
+            continue
+        if item.get("current_owner") != expected_owner.current_owner or item.get("c7_owner") != expected_owner.c7_owner:
+            raise ValueError("C7.3 route retirement plan must keep exact current_owner and c7_owner metadata")
     if observed_classifications != EXPECTED_ROUTE_CLASSIFICATIONS:
         raise ValueError("C7.3 route retirement plan must classify all managed commands and aliases exactly")
 
@@ -488,9 +528,15 @@ def validate_route_retirement_plan(route_plan: dict[str, Any]) -> None:
     cleanup_boundary = _expect_mapping(route_plan, "cleanup_removal_boundary")
     if cleanup_boundary.get("next_slice") != "C7.4 cleanup and removal plan":
         raise ValueError("C7.3 cleanup boundary must point to C7.4")
-    for key in ("plan_only", "separate_owner_approval_required"):
+    for key in ("plan_only", "classification_only", "separate_owner_approval_required"):
         if cleanup_boundary.get(key) is not True:
             raise ValueError(f"C7.3 cleanup boundary must set {key}=true")
+    if cleanup_boundary.get("execution_allowed") is not False:
+        raise ValueError("C7.3 cleanup boundary must not allow execution")
+    if cleanup_boundary.get("allowed_outputs") != EXPECTED_C7_4_ALLOWED_OUTPUTS:
+        raise ValueError("C7.3 cleanup boundary must define exact C7.4 allowed outputs")
+    if cleanup_boundary.get("prohibited_actions") != EXPECTED_C7_4_PROHIBITED_ACTIONS:
+        raise ValueError("C7.3 cleanup boundary must define exact C7.4 prohibited actions")
     for key in ("legacy_deletion_allowed", "live_route_removal_allowed"):
         if cleanup_boundary.get(key) is not False:
             raise ValueError(f"C7.3 cleanup boundary must set {key}=false")

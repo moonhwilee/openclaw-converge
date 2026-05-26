@@ -55,10 +55,18 @@ def main() -> int:
         assert_true(stale_record["needs_recovery"] and stale_record["reason"] == "stale_active", "stale active workflow should need recovery")
         assert_true(stale_record["source_of_truth"]["owner"] == "converge", "recovery scan source of truth should be Converge")
         assert_true("Work Ledger" in stale_record["source_of_truth"]["not_source_of_truth"], "Work Ledger should not be recovery source of truth")
+        assert_true(
+            "verification-convergence artifacts" in stale_record["source_of_truth"]["not_source_of_truth"],
+            "verification-convergence artifacts should not be recovery source of truth",
+        )
         stale_watchdog = run("watchdog-check", state_root=state_root)
         assert_true(stale_watchdog["needs_wake"], "stale active workflow should wake")
         stale_packet = next(item for item in stale_watchdog["recoveries"] if item["workflow_id"] == "stale-conv")
         assert_true(stale_packet["source_of_truth"]["state"] == "workflow_state", "watchdog packet should point at Converge workflow state")
+        assert_true(
+            "verification-convergence artifacts" in stale_packet["source_of_truth"]["not_source_of_truth"],
+            "watchdog packet should keep verification-convergence artifacts non-authoritative",
+        )
         recovered = run("recover", "--workflow-id", "stale-conv", "--holder", "smoke", state_root=state_root)
         assert_true(recovered["recovered"], "recover should acquire a lease")
         leased = workflow(state_root, "stale-conv")["active_recovery_lease"]

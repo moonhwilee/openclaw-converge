@@ -205,6 +205,15 @@ The logging/proof requirement must preserve C7.2 source-of-truth ownership:
   not authoritative for Converge-owned workflow completion after the C7.2/C7.3
   gates
 
+The cleanup/removal boundary must stay in the next slice:
+
+- `route_retirement_plan.cleanup_removal_boundary.next_slice` is `C7.4 cleanup
+  and removal plan`
+- `plan_only` is true
+- `legacy_deletion_allowed` is false
+- `live_route_removal_allowed` is false
+- `separate_owner_approval_required` is true
+
 ## Implementation Slices
 
 1. **C7.0 command inventory and routing spec**

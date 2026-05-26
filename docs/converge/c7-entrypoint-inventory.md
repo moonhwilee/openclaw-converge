@@ -58,6 +58,9 @@ The command returns JSON with:
 - `route_retirement_plan.logging_proof`: required dry-run packet, route plan,
   approval, rollback, delivery reservation, report-proof, and
   complete-reported evidence
+- `route_retirement_plan.cleanup_removal_boundary`: C7.4 cleanup/removal remains
+  plan-only, forbids legacy deletion and live route removal, and requires a
+  separate owner approval
 
 ## Explicit Non-Goals
 

@@ -52,8 +52,8 @@ def assert_dry_run_maps_command_without_state_creation(state_root: Path, raw_mes
         "C7.1 contract should fix delivery field",
     )
     assert_true(
-        result["adapter_contract"]["shared_metadata"]["rollback_field"] == "inventory.rollback_switch",
-        "C7.1 contract should fix rollback field",
+        result["adapter_contract"]["shared_metadata"]["rollback_field"] == "route_retirement_plan.rollback_switch",
+        "C7.3 contract should fix structured rollback field",
     )
     assert_true(result["converge_invocation"]["argv"][0] == "converge", "dry-run should produce converge invocation")
     assert_true("--state-root" in result["converge_invocation"]["argv"], "invocation should include state root")
@@ -116,6 +116,17 @@ def assert_c7_3_route_retirement_plan_contract(state_root: Path) -> None:
     result = run("command-dry-run", "--raw-message", "/goal Implement route retirement plan", state_root=state_root)
     route_plan = result["route_retirement_plan"]
     assert_true(route_plan["version"] == "c7.3", "route retirement plan should expose C7.3 version")
+    required_packet_fields = result["adapter_contract"]["required_packet_fields"]
+    assert_true("route_retirement_plan.version" in required_packet_fields, "C7.3 version should be a required field")
+    assert_true("route_retirement_plan.scope" in required_packet_fields, "C7.3 scope should be a required field")
+    assert_true(
+        "route_retirement_plan.route_classification" in required_packet_fields,
+        "C7.3 route classification should be a required field",
+    )
+    assert_true(
+        "route_retirement_plan.cleanup_removal_boundary" in required_packet_fields,
+        "C7.4 cleanup boundary should be a required field",
+    )
     assert_true(route_plan["scope"]["managed_commands"] == ["/goal", "/verify", "/conv"], "C7.3 should scope managed commands")
     assert_true(route_plan["scope"]["legacy_aliases"] == ["/converge"], "C7.3 should classify /converge as legacy alias")
     assert_true(
@@ -142,7 +153,12 @@ def assert_c7_3_route_retirement_plan_contract(state_root: Path) -> None:
     assert_true(approval_gate["approval_ref_required"] is True, "C7.3 should require approval reference")
     assert_true(approval_gate["exact_route_scope_required"] is True, "C7.3 should require exact route scope")
     assert_true("command adapter smoke" in approval_gate["evidence_required"], "C7.3 should require smoke evidence")
+    assert_true("rollback switch plan" in approval_gate["evidence_required"], "C7.3 should require rollback plan evidence")
     assert_true("live route change requested inside C7.3" in approval_gate["stop_conditions"], "C7.3 should stop on live route change")
+    assert_true(
+        "missing rollback expiry or log path" in approval_gate["stop_conditions"],
+        "C7.3 should stop on incomplete rollback metadata",
+    )
 
     rollback = route_plan["rollback_switch"]
     assert_true(rollback["explicit_owner_approval_required"] is True, "rollback should require explicit owner approval")
@@ -154,9 +170,21 @@ def assert_c7_3_route_retirement_plan_contract(state_root: Path) -> None:
     logging_proof = route_plan["logging_proof"]
     assert_true(logging_proof["dry_run_packet_required"] is True, "C7.3 should require dry-run packet proof")
     assert_true("report-proof" in logging_proof["converge_source_of_truth"], "C7.3 should preserve report-proof authority")
+    legacy_non_authoritative = logging_proof["legacy_sources_not_authoritative_for_converge_work"]
+    for legacy_source in ("GoalFlow", "Work Ledger", "chat memory", "verification-convergence artifacts"):
+        assert_true(
+            legacy_source in legacy_non_authoritative,
+            f"{legacy_source} should not remain authoritative for Converge-owned work",
+        )
+
+    cleanup_boundary = route_plan["cleanup_removal_boundary"]
+    assert_true(cleanup_boundary["next_slice"] == "C7.4 cleanup and removal plan", "C7.3 should point cleanup to C7.4")
+    assert_true(cleanup_boundary["plan_only"] is True, "C7.4 boundary should remain plan-only")
+    assert_true(cleanup_boundary["legacy_deletion_allowed"] is False, "C7.3 should not allow legacy deletion")
+    assert_true(cleanup_boundary["live_route_removal_allowed"] is False, "C7.3 should not allow live route removal")
     assert_true(
-        "GoalFlow" in logging_proof["legacy_sources_not_authoritative_for_converge_work"],
-        "GoalFlow should not remain authoritative for Converge-owned work",
+        cleanup_boundary["separate_owner_approval_required"] is True,
+        "C7.4 cleanup/removal should require separate owner approval",
     )
 
 
@@ -226,12 +254,65 @@ def assert_c7_1_contract_validation_rejects_drift(state_root: Path) -> None:
     else:
         raise AssertionError("validator should reject automatic rollback fallback")
 
+    classification_drift = json.loads(json.dumps(packet))
+    classification_drift["route_retirement_plan"]["route_classification"][0]["classification"] = "legacy_primary"
+    try:
+        validate_dry_run_packet(classification_drift)
+    except ValueError as exc:
+        assert_true("classify" in str(exc), "validator should reject route classification drift")
+    else:
+        raise AssertionError("validator should reject route classification drift")
+
+    missing_evidence = json.loads(json.dumps(packet))
+    missing_evidence["route_retirement_plan"]["approval_gate"]["evidence_required"].remove("rollback switch plan")
+    try:
+        validate_dry_run_packet(missing_evidence)
+    except ValueError as exc:
+        assert_true("evidence" in str(exc), "validator should reject missing approval evidence")
+    else:
+        raise AssertionError("validator should reject missing approval evidence")
+
+    missing_stop_condition = json.loads(json.dumps(packet))
+    missing_stop_condition["route_retirement_plan"]["approval_gate"]["stop_conditions"].remove(
+        "missing rollback expiry or log path"
+    )
+    try:
+        validate_dry_run_packet(missing_stop_condition)
+    except ValueError as exc:
+        assert_true("stop" in str(exc), "validator should reject missing approval stop condition")
+    else:
+        raise AssertionError("validator should reject missing approval stop condition")
+
+    missing_legacy_source = json.loads(json.dumps(packet))
+    missing_legacy_source["route_retirement_plan"]["logging_proof"][
+        "legacy_sources_not_authoritative_for_converge_work"
+    ].remove("Work Ledger")
+    try:
+        validate_dry_run_packet(missing_legacy_source)
+    except ValueError as exc:
+        assert_true("legacy sources" in str(exc), "validator should reject missing non-authoritative legacy source")
+    else:
+        raise AssertionError("validator should reject missing non-authoritative legacy source")
+
+    cleanup_drift = json.loads(json.dumps(packet))
+    cleanup_drift["route_retirement_plan"]["cleanup_removal_boundary"]["live_route_removal_allowed"] = True
+    try:
+        validate_dry_run_packet(cleanup_drift)
+    except ValueError as exc:
+        assert_true("cleanup boundary" in str(exc), "validator should reject cleanup boundary drift")
+    else:
+        raise AssertionError("validator should reject cleanup boundary drift")
+
 
 def assert_rejects_non_managed_or_empty_commands(state_root: Path) -> None:
     missing_text = run_fail("command-dry-run", "--raw-message", "/goal", state_root=state_root)
     assert_true("requires non-empty text" in missing_text["error"], "empty command should fail deterministically")
     unmanaged = run_fail("command-dry-run", "--raw-message", "/plan demo", state_root=state_root)
     assert_true("must start with" in unmanaged["error"], "unmanaged slash command should fail deterministically")
+    leading_space = run_fail("command-dry-run", "--raw-message", " /goal demo", state_root=state_root)
+    assert_true("must start with" in leading_space["error"], "leading whitespace should not match exact slash scope")
+    leading_tab = run_fail("command-dry-run", "--raw-message", "\t/conv demo", state_root=state_root)
+    assert_true("must start with" in leading_tab["error"], "leading tab should not match exact slash scope")
 
 
 def main() -> None:

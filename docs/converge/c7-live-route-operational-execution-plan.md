@@ -230,3 +230,170 @@ stop before live replacement:
 ```text
 /goal Converge /goal /verify /conv live route replacement final execution gate package를 작성해줘. 이 문서의 approval record, exact live route inventory, rollback record, retention decision, pre-change smoke evidence, Gateway restart/reload preflight decision, post-change smoke checklist, and abort conditions를 실제 값으로 채우고, live route replacement 직전 다시 보고해줘. Gateway restart/reload와 live route replacement는 내 별도 최종 승인 전까지 실행하지 마라.
 ```
+
+## Final Execution Gate Package - 2026-05-27
+
+This package fills the pre-execution gate with the installed environment
+evidence available on 2026-05-27. It still does not execute live route
+replacement, Gateway restart/reload, cleanup/removal, deploy/apply/install,
+external action, push, PR, or release.
+
+### Installed Route Inventory
+
+Installed OpenClaw/Gateway inspection found that these commands are not
+registered as Gateway/plugin slash routes today. They are currently text-level
+orchestrator triggers in the main Codex/OpenClaw agent context.
+
+| Command | Installed route path/key | Current handler ID | Current owner | Replacement target |
+| --- | --- | --- | --- | --- |
+| `/goal` | no installed Gateway/plugin route; exact text trigger `^/goal(?:\s+|$)` in `/Users/moon/.openclaw/workspace/AGENTS.md` | `workspace-contract.exact-goal-trigger` -> `/Users/moon/.openclaw/workspace/scripts/goalflow_start_goal.py` draft intake, then GoalFlow tools when owner-bound context exists | Workspace AGENTS policy plus GoalFlow tool surface | `converge goal --text <request> --owner-session-key <session> --visible-delivery <json>` |
+| `/verify` | no installed Gateway/plugin route; skill trigger in `/Users/moon/.openclaw/workspace/skills/verification-convergence/SKILL.md` | `verification-convergence.verify` | `verification-convergence` skill audit path | `converge verify --target <target> --owner-session-key <session> --visible-delivery <json>` |
+| `/conv` | no installed Gateway/plugin route; skill trigger in `/Users/moon/.openclaw/workspace/skills/verification-convergence/SKILL.md` | `verification-convergence.conv` | `verification-convergence` skill repair/improve path | `converge conv --target <target> --owner-session-key <session> --visible-delivery <json>` |
+| `/converge` | no installed Gateway/plugin route; legacy alias in `/Users/moon/.openclaw/workspace/skills/verification-convergence/SKILL.md` | `verification-convergence.converge_alias` | legacy alias for `/conv` | excluded from this replacement; do not promote |
+
+Supporting installed plugin/config facts:
+
+- `/Users/moon/.openclaw/openclaw.json` has `commands.native=auto` and the
+  `goalflow` plugin enabled.
+- `openclaw plugins inspect goalflow --json` reports `commands=[]`,
+  `httpRouteCount=0`, and GoalFlow contracts/tools
+  `goal_create`, `goal_status`, `goal_hook_review`, `goal_run`,
+  `goal_advance`, and `goal_cancel`.
+- `/Users/moon/.openclaw/extensions/goalflow/openclaw.plugin.json` exposes
+  GoalFlow tools only; it does not register `/goal`.
+- `/Users/moon/.openclaw/plugin-sources/openclaw-converge.clone/openclaw.plugin.json`
+  has `enabled=false`; `openclaw plugins inspect openclaw-converge --json`
+  reports the plugin is not installed as an active OpenClaw plugin.
+- The installed Converge CLI exists at `/Users/moon/.openclaw/bin/converge`,
+  backed by `/Users/moon/.openclaw/converge/bin/converge`.
+
+Operational implication: the live replacement is a workspace agent routing and
+trigger ownership change, not a simple Gateway route-table edit. If a later
+implementation introduces real Gateway/plugin slash routes for these commands,
+that implementation must first update this inventory with the new route
+path/key/handler IDs and re-run this gate.
+
+### Approval Record
+
+Required approval kind:
+
+```text
+operational_live_route_replacement
+```
+
+Required approval text for the actual execution, not for this package:
+
+```text
+I explicitly approve the operational live route replacement for exact commands /goal, /verify, and /conv to the Converge canonical backend. I do not approve /converge promotion, cleanup/removal execution, legacy deletion/movement/archive, deploy/apply/install, external action, push/PR/release, or Gateway restart unless separately stated with preflight evidence.
+```
+
+This package has owner approval only for read-only inventory, preflight, smoke,
+and artifact writing. It does not contain the final execution approval above.
+
+### Rollback Record
+
+Rollback mode: explicit owner-approved safety switch only. Automatic fallback is
+not allowed.
+
+Rollback record for execution must use:
+
+```text
+/Users/moon/.openclaw/state/converge/route-replacement/rollback-{approval_ref}-{yyyyMMddTHHmmssZ}.jsonl
+```
+
+Required execution values:
+
+| Field | Value for the later operation |
+| --- | --- |
+| `legacy_route_scope` | `/goal` workspace AGENTS exact trigger + GoalFlow draft intake; `/verify` verification-convergence audit trigger; `/conv` verification-convergence repair/improve trigger |
+| `excluded_route_scope` | `/converge` alias, `/plan`, `/cgoal`, `/cverify`, `/cconv`, all unlisted slash commands |
+| `expires_at` | required, max 24h after route replacement activation |
+| `activation_entry` | timestamp, command, previous trigger/handler, Converge trigger/handler, operator session, approval ref |
+| `deactivation_entry` | timestamp, command, restored trigger/handler, operator session, rollback reason |
+| `post_rollback_smoke` | `/goal`, `/verify`, and `/conv` route packets return to legacy handlers without duplicate visible reports |
+
+### Retention Decision
+
+For the live route replacement operation, retain all legacy state and artifacts
+in place. Do not delete, move, archive, disable, or uninstall anything.
+
+| Source | Decision | Reason |
+| --- | --- | --- |
+| GoalFlow state | retain in place | historical records; not authoritative for new Converge-owned work after replacement |
+| Work Ledger state | retain in place | outer session recovery and non-Converge coordination remain valid |
+| verification-convergence skill/artifacts | retain in place | still useful for non-managed audits until a separate cleanup/removal approval |
+| chat-derived records | retain in place | context only; never authoritative completion proof |
+| `/converge` alias history | retain in place | alias promotion/removal is explicitly out of scope |
+
+Cleanup/removal remains a separate later operation after successful live
+replacement, post-change smoke, and owner-approved retention policy.
+
+### Pre-Change Smoke Evidence
+
+Recorded 2026-05-27 before any live route change:
+
+| Check | Result |
+| --- | --- |
+| `npm run smoke:command-adapter` | pass |
+| `npm run smoke` | pass |
+| `/goal` command dry-run through `python3 -m converge.cli ... command-dry-run` | pass; packet preserves owner session, visible delivery, state root, route retirement plan, approval gate, rollback switch, cleanup/removal boundary |
+| `python3 /Users/moon/.openclaw/workspace/scripts/gateway_restart_preflight.py` | pass; `Gateway restart preflight: OK`; no running cron tasks and no enabled cron jobs due within 3m |
+| `openclaw plugins inspect goalflow --json` | pass; GoalFlow active, exposes tools, no commands or HTTP routes |
+| `openclaw plugins inspect openclaw-converge --json` | expected not installed; Converge is currently a local CLI/install tree, not active plugin route |
+
+### Gateway Restart Or Reload Decision
+
+Current package decision: no Gateway restart or reload is performed.
+
+Preflight result is available and passing, but the final execution must still
+ask for separate explicit restart/reload approval if the implementation step
+requires Gateway reload or service restart. If the later implementation only
+changes workspace AGENTS/skill trigger ownership and is picked up by new agent
+sessions, restart may be `not_required`, but session restart/new session testing
+must still be included in post-change smoke.
+
+### Post-Change Smoke Checklist
+
+After the later owner-approved replacement, completion is blocked until all pass:
+
+- `/goal` in a fresh session routes to Converge goal intake and no GoalFlow
+  draft-intake handler emits a duplicate report.
+- `/verify` in a fresh session routes to Converge verify mode and no
+  verification-convergence audit handler emits a duplicate report.
+- `/conv` in a fresh session routes to Converge conv mode and no
+  verification-convergence repair handler emits a duplicate report.
+- `/converge` is not promoted; it remains excluded or produces an explicit
+  legacy/deprecated alias boundary.
+- Owner session key, visible delivery, and state root propagate into the
+  Converge packet.
+- Converge delivery reservation, report proof, and complete-reported evidence
+  are present before any completed workflow is reported.
+- Rollback activation remains available until `expires_at`.
+
+### Abort Conditions
+
+Abort before execution if any of these are true:
+
+- final owner approval text is missing or differs from the pinned text
+- replacement scope includes anything beyond `/goal`, `/verify`, and `/conv`
+- `/converge` is promoted or silently changed
+- a real Gateway/plugin route appears during implementation but is not added to
+  this inventory with exact path/key/handler ID
+- rollback expiry or log path is missing
+- automatic fallback is requested
+- retention decision changes from retain-in-place to delete/move/archive/disable
+- pre-change smoke fails or becomes stale after implementation changes
+- Gateway restart/reload is required but explicit restart/reload approval is not
+  obtained after passing preflight
+- post-change smoke fails
+- cleanup/removal, deploy/apply/install, external action, push, PR, or release
+  is requested in the same operation
+
+### Current Go/No-Go
+
+`No-Go for execution`: the final execution approval has not been given.
+
+`Go for next step`: prepare the concrete route ownership patch that changes only
+the exact `/goal`, `/verify`, and `/conv` workspace trigger ownership to
+Converge, with `/converge` excluded, then stop again before applying any Gateway
+restart/reload or live operational replacement.

@@ -22,6 +22,9 @@ class CommandSurface:
     command: str
     current_owner: str
     c7_owner: str
+    state_root: str
+    delivery_behavior: str
+    rollback_switch: str
     transitional_behavior: str
     final_behavior: str
 
@@ -30,6 +33,9 @@ class CommandSurface:
             "command": self.command,
             "current_owner": self.current_owner,
             "c7_owner": self.c7_owner,
+            "state_root": self.state_root,
+            "delivery_behavior": self.delivery_behavior,
+            "rollback_switch": self.rollback_switch,
             "transitional_behavior": self.transitional_behavior,
             "final_behavior": self.final_behavior,
         }
@@ -40,6 +46,9 @@ COMMAND_INVENTORY: tuple[CommandSurface, ...] = (
         command="/goal",
         current_owner="GoalFlow exact trigger plus scripts/goalflow_start_goal.py draft intake.",
         c7_owner="converge goal",
+        state_root="Legacy GoalFlow state during C7.0; future Converge workflow state after approved live routing.",
+        delivery_behavior="Draft and confirmation first; visible completion remains bound to the original Telegram delivery route.",
+        rollback_switch="Keep existing /goal route until owner-approved replacement; disable C7 adapter route to fall back.",
         transitional_behavior="Synthetic dry-run only; preserves draft/confirmation gates without live route changes.",
         final_behavior="New managed /goal work creates Converge goal workflows after separate live-routing approval.",
     ),
@@ -47,6 +56,9 @@ COMMAND_INVENTORY: tuple[CommandSurface, ...] = (
         command="/verify",
         current_owner="verification-convergence skill audit path.",
         c7_owner="converge verify",
+        state_root="Legacy verification-convergence artifacts during C7.0; future Converge workflow state after approved live routing.",
+        delivery_behavior="One visible audit report through the original delivery route after evidence/report material is reserved.",
+        rollback_switch="Keep existing /verify handler until owner-approved replacement; disable C7 adapter route to fall back.",
         transitional_behavior="Synthetic dry-run only; no live observation, duplicate report, or shadow routing.",
         final_behavior="New managed /verify work records evidence, residuals, report material, and proof in Converge.",
     ),
@@ -54,6 +66,9 @@ COMMAND_INVENTORY: tuple[CommandSurface, ...] = (
         command="/conv",
         current_owner="verification-convergence skill repair/improvement path.",
         c7_owner="converge conv",
+        state_root="Legacy verification-convergence artifacts during C7.0; future Converge workflow state after approved live routing.",
+        delivery_behavior="Round summaries and final report through the original delivery route; material changes need follow-up proof.",
+        rollback_switch="Keep existing /conv handler until owner-approved replacement; disable C7 adapter route to fall back.",
         transitional_behavior="Synthetic dry-run only; verifies round metadata route shape without live replacement.",
         final_behavior="New managed /conv work records convergence rounds and recovery cursor state in Converge.",
     ),
@@ -61,6 +76,9 @@ COMMAND_INVENTORY: tuple[CommandSurface, ...] = (
         command="/converge",
         current_owner="legacy alias for /conv.",
         c7_owner="temporary alias to converge conv, or retirement message",
+        state_root="No independent state root; alias must reuse /conv state or retire.",
+        delivery_behavior="No independent delivery contract; alias maps to /conv dry-run and is marked deprecated.",
+        rollback_switch="Retire alias or keep explicit message only; never make it the primary route.",
         transitional_behavior="Synthetic dry-run marks the alias deprecated and maps it to conv without promoting it.",
         final_behavior="Retired, or replaced with a clear /conv/Converge message.",
     ),

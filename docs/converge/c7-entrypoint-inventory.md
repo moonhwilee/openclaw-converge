@@ -6,12 +6,12 @@ approved routing layer may use. It does not change live routes.
 
 ## Inventory
 
-| Command | Current owner | C7 owner | C7.0 behavior |
-| --- | --- | --- | --- |
-| `/goal` | GoalFlow exact trigger plus `scripts/goalflow_start_goal.py` draft intake. | `converge goal` | Produce a dry-run invocation with owner session and visible-delivery metadata. No GoalFlow record import, Gateway route change, or live handling. |
-| `/verify` | `verification-convergence` skill audit path. | `converge verify` | Produce a dry-run invocation. No specialist execution, live observation, shadow routing, or duplicate report. |
-| `/conv` | `verification-convergence` skill repair/improvement path. | `converge conv` | Produce a dry-run invocation. No round execution beyond the existing local Converge mode command. |
-| `/converge` | Legacy alias for `/conv`. | Temporary alias to `converge conv`, or retirement message. | Dry-run maps it to `conv` and marks it as `deprecated_alias`; it is not promoted as a primary product route. |
+| Command | Current owner | C7 owner | State root | Delivery behavior | Rollback switch | C7.0 behavior |
+| --- | --- | --- | --- | --- | --- | --- |
+| `/goal` | GoalFlow exact trigger plus `scripts/goalflow_start_goal.py` draft intake. | `converge goal` | Legacy GoalFlow state during C7.0; future Converge workflow state only after approved live routing. | Draft and confirmation first; visible completion remains bound to the original Telegram delivery route. | Keep existing `/goal` route until owner-approved replacement; disable the C7 adapter route to fall back. | Produce a dry-run invocation with owner session and visible-delivery metadata. No GoalFlow record import, Gateway route change, or live handling. |
+| `/verify` | `verification-convergence` skill audit path. | `converge verify` | Legacy verification-convergence artifacts during C7.0; future Converge workflow state only after approved live routing. | One visible audit report through the original delivery route after evidence/report material is reserved. | Keep existing `/verify` handler until owner-approved replacement; disable the C7 adapter route to fall back. | Produce a dry-run invocation. No specialist execution, live observation, shadow routing, or duplicate report. |
+| `/conv` | `verification-convergence` skill repair/improvement path. | `converge conv` | Legacy verification-convergence artifacts during C7.0; future Converge workflow state only after approved live routing. | Round summaries and final report through the original delivery route; material changes need follow-up proof. | Keep existing `/conv` handler until owner-approved replacement; disable the C7 adapter route to fall back. | Produce a dry-run invocation. No round execution beyond the existing local Converge mode command. |
+| `/converge` | Legacy alias for `/conv`. | Temporary alias to `converge conv`, or retirement message. | No independent state root; alias must reuse `/conv` state or retire. | No independent delivery contract; alias maps to `/conv` dry-run and is marked deprecated. | Retire alias or keep explicit message only; never make it the primary route. | Dry-run maps it to `conv` and marks it as `deprecated_alias`; it is not promoted as a primary product route. |
 
 ## Adapter Contract
 
@@ -35,7 +35,9 @@ The command returns JSON with:
 - `legacy_data_deleted: false`
 - `converge_invocation.argv`: the intended local `converge goal|verify|conv`
   invocation for a later approved routing layer
-- `inventory`: the command ownership matrix above
+- `inventory`: the command ownership matrix above, including current owner, C7
+  owner, state root, delivery behavior, rollback switch, transitional behavior,
+  and final behavior
 
 ## Explicit Non-Goals
 

@@ -52,6 +52,15 @@ def assert_inventory_covers_managed_commands(state_root: Path) -> None:
     assert_true(owners["/verify"] == "converge verify", "inventory should assign /verify to converge verify")
     assert_true(owners["/conv"] == "converge conv", "inventory should assign /conv to converge conv")
     assert_true("temporary alias" in owners["/converge"], "inventory should not promote /converge as primary")
+    required_fields = {"state_root", "delivery_behavior", "rollback_switch"}
+    for item in result["inventory"]:
+        assert_true(
+            required_fields.issubset(item),
+            f"{item['command']} inventory should expose routing ownership fields",
+        )
+        assert_true(item["state_root"], f"{item['command']} should document state root")
+        assert_true(item["delivery_behavior"], f"{item['command']} should document delivery behavior")
+        assert_true(item["rollback_switch"], f"{item['command']} should document rollback switch")
 
 
 def assert_rejects_non_managed_or_empty_commands(state_root: Path) -> None:

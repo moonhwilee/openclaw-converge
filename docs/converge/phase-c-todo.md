@@ -41,7 +41,7 @@ runs should be added there instead of being left only in chat or ledger logs.
 ## Next Goal Command
 
 ```text
-/goal Converge Phase C7.0: Canonical Command Replacement inventory and synthetic dry-run adapter 설계/구현/검증을 진행해줘. C7의 목표는 기존 /goal, /verify, /conv의 canonical backend를 Converge로 교체하고 GoalFlow/Ledger/legacy verify-conv 경로를 retirement 대상으로 전환하는 것이야. 이번 C7.0은 현재 설치/문서/라우팅 entrypoint 인벤토리와 live-route 변경 없는 synthetic dry-run adapter까지만 처리해줘. source checkout과 installed copy에 남은 구 Slash/Ledger wording은 먼저 stale source로 분류하고 workspace C7 docs를 기준으로 삼아줘. Gateway restart, live traffic observation, shadow routing, live slash routing replacement, legacy data deletion, external action, push/PR/release는 제외해줘.
+/goal Converge Phase C7.1: command adapter hardening을 진행해줘. C7의 목표는 기존 /goal, /verify, /conv의 canonical backend를 Converge로 교체하고 GoalFlow/Ledger/legacy verify-conv 경로를 retirement 대상으로 전환하는 것이야. 이번 C7.1은 live-route 변경 없이 C7.0 synthetic dry-run packet을 route-plan artifact 수준으로 강화하고, /goal draft/confirmation metadata, /verify audit intent, /conv round metadata, state-root/delivery/rollback fields를 검증 가능한 adapter contract로 고정하는 데 한정해줘. Gateway restart, live traffic observation, shadow routing, live slash routing replacement, deploy/apply/install, legacy data deletion, external action, push/PR/release는 제외해줘.
 ```
 
 ## C0 Completed Scope

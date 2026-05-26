@@ -19,6 +19,11 @@ ACTIVE_STATUSES = {"draft", "running", "waiting_subagent", "verifying", "blocked
 TERMINAL_UNREPORTED_STATUSES = {"completed_unreported", "failed_unreported"}
 RECOVERY_CANDIDATE_STATUSES = ACTIVE_STATUSES | TERMINAL_UNREPORTED_STATUSES | {"waiting_user"}
 RISKY_CLASSES = {"external", "destructive", "gateway_runtime", "public"}
+CONVERGE_SOURCE_OF_TRUTH = {
+    "owner": "converge",
+    "state": "workflow_state",
+    "not_source_of_truth": ["GoalFlow", "Work Ledger", "chat memory"],
+}
 
 
 def inspect_workflow(root: Path, workflow_id: str) -> dict[str, Any]:
@@ -317,6 +322,7 @@ def _classify_workflow(store: WorkflowStore, workflow: dict[str, Any], *, now: d
         "next_safe_action": action,
         "context_manifest_stale_refs": context_stale,
         "active_recovery_lease": workflow.get("active_recovery_lease"),
+        "source_of_truth": dict(CONVERGE_SOURCE_OF_TRUTH),
     }
 
 
@@ -329,6 +335,7 @@ def _recovery_packet(record: dict[str, Any]) -> dict[str, Any]:
         "cursor": record["cursor"],
         "checkpoint_id": record["checkpoint_id"],
         "next_safe_action": record["next_safe_action"],
+        "source_of_truth": record["source_of_truth"],
     }
 
 

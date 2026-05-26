@@ -174,10 +174,12 @@ visible reports or replay side effects.
    Gateway traffic path.
 
 3. **C7.2 Converge recovery/report-proof takeover**
-   Route Converge-owned workflows through `scan`, `watchdog-check`, `recover`,
-   `reserve-delivery`, `report-proof`, and `complete-reported`. Work Ledger may
-   observe transition evidence during migration, but it must not be the source
-   of truth for Converge-owned workflow completion.
+   Completed. Converge-owned workflows now expose explicit Converge
+   source-of-truth metadata in `scan` and `watchdog-check` recovery packets,
+   and explicit Converge authority metadata in `reserve-delivery`,
+   `report-proof`, and `complete-reported` outputs/state. Work Ledger may
+   observe transition evidence during migration, but it is not the source of
+   truth for Converge-owned workflow completion.
 
 4. **C7.3 legacy route retirement plan**
    Specify how default routing to GoalFlow and the verification-convergence
@@ -225,10 +227,9 @@ not ready until these gates are documented or tested:
 
 ## Readiness Verdict
 
-C7.0 and C7.1 are complete. The next implementation is C7.2
-recovery/report-proof takeover for Converge-owned workflows, not live
-slash-route replacement. C7.2 should prove that Converge recovery and delivery
-proof can own interrupted and terminal-unreported Converge workflows without
-leaving GoalFlow, Work Ledger, or chat memory as the source of truth. Live
-replacement can be planned by C7, but execution remains a separate
-owner-approved operational task.
+C7.0, C7.1, and C7.2 are complete. The next implementation is C7.3 legacy
+route retirement planning, not live slash-route replacement. C7.2 proved that
+Converge recovery and delivery proof can own interrupted and
+terminal-unreported Converge workflows without leaving GoalFlow, Work Ledger,
+or chat memory as the source of truth. Live replacement can be planned by C7,
+but execution remains a separate owner-approved operational task.

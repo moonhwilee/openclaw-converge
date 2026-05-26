@@ -53,8 +53,12 @@ def main() -> int:
         stale_scan = run("scan", state_root=state_root)
         stale_record = next(item for item in stale_scan["workflows"] if item["workflow_id"] == "stale-conv")
         assert_true(stale_record["needs_recovery"] and stale_record["reason"] == "stale_active", "stale active workflow should need recovery")
+        assert_true(stale_record["source_of_truth"]["owner"] == "converge", "recovery scan source of truth should be Converge")
+        assert_true("Work Ledger" in stale_record["source_of_truth"]["not_source_of_truth"], "Work Ledger should not be recovery source of truth")
         stale_watchdog = run("watchdog-check", state_root=state_root)
         assert_true(stale_watchdog["needs_wake"], "stale active workflow should wake")
+        stale_packet = next(item for item in stale_watchdog["recoveries"] if item["workflow_id"] == "stale-conv")
+        assert_true(stale_packet["source_of_truth"]["state"] == "workflow_state", "watchdog packet should point at Converge workflow state")
         recovered = run("recover", "--workflow-id", "stale-conv", "--holder", "smoke", state_root=state_root)
         assert_true(recovered["recovered"], "recover should acquire a lease")
         leased = workflow(state_root, "stale-conv")["active_recovery_lease"]
@@ -145,13 +149,15 @@ def main() -> int:
             json.dumps(terminal_workflow["final_status"]),
             state_root=state_root,
         )
+        assert_true(reservation["send_authority"] == "converge.reserve-delivery", "reserve-delivery should own send authority")
+        assert_true(reservation["source_of_truth"] == "converge.workflow", "reserve-delivery should source from Converge workflow state")
         reserved_scan = run("scan", state_root=state_root)
         reserved_record = next(item for item in reserved_scan["workflows"] if item["workflow_id"] == "terminal-plan")
         assert_true(
             reserved_record["reason"] == "terminal_unreported",
             "delivery reservation event should not hide terminal recovery",
         )
-        run(
+        proof = run(
             "report-proof",
             "--workflow-id",
             "terminal-plan",
@@ -163,13 +169,15 @@ def main() -> int:
             TEST_VISIBLE_DELIVERY,
             state_root=state_root,
         )
+        assert_true(proof["proof"]["proof_authority"] == "converge.report-proof", "report-proof should own proof authority")
+        assert_true(proof["proof"]["source_of_truth"] == "converge.workflow", "report-proof should source from Converge workflow state")
         proof_scan = run("scan", state_root=state_root)
         proof_record = next(item for item in proof_scan["workflows"] if item["workflow_id"] == "terminal-plan")
         assert_true(
             proof_record["reason"] == "terminal_unreported",
             "report-proof event should not hide terminal recovery before reported completion",
         )
-        run(
+        reported = run(
             "complete-reported",
             "--workflow-id",
             "terminal-plan",
@@ -181,6 +189,10 @@ def main() -> int:
             TEST_VISIBLE_DELIVERY,
             state_root=state_root,
         )
+        reported_state = workflow(state_root, "terminal-plan")["visible_delivery_state"]["reported"]
+        assert_true(reported["status"] == "reported", "complete-reported should report the workflow")
+        assert_true(reported_state["report_authority"] == "converge.complete-reported", "complete-reported should own reported transition")
+        assert_true(reported_state["source_of_truth"] == "converge.workflow", "complete-reported should source from Converge workflow state")
         reported_scan = run("scan", state_root=state_root)
         reported_record = next(item for item in reported_scan["workflows"] if item["workflow_id"] == "terminal-plan")
         assert_true(

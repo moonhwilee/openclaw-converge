@@ -426,6 +426,8 @@ def main() -> int:
             "reason",
             "checkpoint",
             "event_id",
+            "send_authority",
+            "source_of_truth",
         }
         authorized_without_checkpoint_keys = authorized_with_checkpoint_keys - {"checkpoint"}
         reconcile_keys = {
@@ -439,8 +441,12 @@ def main() -> int:
             "checkpoint_id",
             "lease_expires_at",
             "reason",
+            "send_authority",
+            "source_of_truth",
         }
         assert_keys(terminal, authorized_without_checkpoint_keys, "terminal reserve payload keys should stay stable")
+        assert_true(terminal["send_authority"] == "converge.reserve-delivery", "reserve payload should expose Converge send authority")
+        assert_true(terminal["source_of_truth"] == "converge.workflow", "reserve payload should expose Converge workflow source")
         assert_true(isinstance(terminal["checkpoint_id"], str) and terminal["checkpoint_id"], "terminal reserve should bind a terminal checkpoint")
         terminal_checkpoint_id = terminal["checkpoint_id"]
         after_reserve = workflow(state_root, "goal-runtime")
@@ -517,6 +523,11 @@ def main() -> int:
             "duplicate reserve should not authorize a second send",
         )
         assert_keys(duplicate_reserve, reconcile_keys, "active reservation reconcile payload keys should stay stable")
+        assert_true(
+            duplicate_reserve["send_authority"] == "converge.reserve-delivery"
+            and duplicate_reserve["source_of_truth"] == "converge.workflow",
+            "duplicate reserve no-send payload should keep Converge authority metadata",
+        )
         empty_route_goal = run("start", "--kind", "goal", "--text", "Empty route guard", "--workflow-id", "empty-route-runtime", state_root=state_root)
         assert_true(empty_route_goal["workflow"]["kind"] == "goal", "empty route fixture should create goal workflow")
         empty_route_reserve = run_fail(
@@ -602,6 +613,11 @@ def main() -> int:
         )
         assert_true(gap_recovered["send_authorized"] is True, "checkpoint-only terminal gap should create first delivery reservation")
         assert_keys(gap_recovered, authorized_without_checkpoint_keys, "terminal recovery reserve payload keys should stay stable")
+        assert_true(
+            gap_recovered["send_authority"] == "converge.reserve-delivery"
+            and gap_recovered["source_of_truth"] == "converge.workflow",
+            "terminal gap recovery reserve should keep Converge authority metadata",
+        )
         assert_true(
             gap_recovered["checkpoint_id"] == gap_checkpoint["checkpoint_id"],
             "gap recovery should reuse the existing terminal checkpoint",
@@ -811,6 +827,8 @@ def main() -> int:
             state_root=state_root,
         )["proof"]
         assert_true(proof["delivery_message_id"] == "20200", "report proof should persist delivery message id")
+        assert_true(proof["proof_authority"] == "converge.report-proof", "report proof should expose Converge proof authority")
+        assert_true(proof["source_of_truth"] == "converge.workflow", "report proof should expose Converge workflow source")
         assert_true(workflow(state_root, "goal-runtime")["status"] == "completed_unreported", "report proof should not mark reported")
         duplicate_proof = run(
             "report-proof",
@@ -958,6 +976,11 @@ def main() -> int:
         final_workflow = workflow(state_root, "goal-runtime")
         assert_true(final_workflow["active_delivery_reservation"] is None, "complete-reported should clear reservation")
         assert_true(final_workflow["visible_delivery_state"]["reported"]["delivery_message_id"] == "20200", "reported proof missing")
+        assert_true(
+            final_workflow["visible_delivery_state"]["reported"]["report_authority"] == "converge.complete-reported"
+            and final_workflow["visible_delivery_state"]["reported"]["source_of_truth"] == "converge.workflow",
+            "complete-reported should expose Converge report authority",
+        )
         fresh_reported_state = final_workflow["visible_delivery_state"]["reported"]
         run("validate", "--workflow-id", "goal-runtime", state_root=state_root)
         final_events = events(state_root, "goal-runtime")

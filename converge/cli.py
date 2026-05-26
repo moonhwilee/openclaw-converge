@@ -493,6 +493,8 @@ def _active_delivery_reconcile_payload(args: argparse.Namespace, active_reservat
         "checkpoint_id": active_reservation["checkpoint_id"],
         "lease_expires_at": active_reservation["lease_expires_at"],
         "reason": reason,
+        "send_authority": "converge.reserve-delivery",
+        "source_of_truth": "converge.workflow",
     }
 
 
@@ -514,6 +516,8 @@ def _historical_delivery_reconcile_payload(
         "checkpoint_id": checkpoint_id,
         "lease_expires_at": None,
         "reason": "expired_reservation_requires_reconcile",
+        "send_authority": "converge.reserve-delivery",
+        "source_of_truth": "converge.workflow",
     }
 
 
@@ -586,6 +590,8 @@ def _delivery_authorized_payload(
         "lease_expires_at": lease_expires_at,
         "reason": None,
         "event_id": event_id,
+        "send_authority": "converge.reserve-delivery",
+        "source_of_truth": "converge.workflow",
     }
     if checkpoint is not None:
         payload["checkpoint"] = checkpoint
@@ -639,6 +645,8 @@ def _delivery_no_send_payload(args: argparse.Namespace, *, reason: str, terminal
         "checkpoint_id": None,
         "lease_expires_at": None,
         "reason": reason,
+        "send_authority": "converge.reserve-delivery",
+        "source_of_truth": "converge.workflow",
     }
     if error:
         payload["error"] = error
@@ -739,6 +747,8 @@ def cmd_complete_reported(args: argparse.Namespace) -> int:
             "delivery_message_id": args.delivery_message_id,
             "visible_delivery": args.visible_delivery,
             "reported_at": now_iso(),
+            "report_authority": "converge.complete-reported",
+            "source_of_truth": "converge.workflow",
         }
         _validate_report_payload(reported_payload, timestamp_key="reported_at", label="report_sent")
         _apply_reported_transition(workflow, reported_payload)
@@ -1138,6 +1148,8 @@ def _record_report_proof(
             "delivery_message_id": delivery_message_id,
             "visible_delivery": visible_delivery,
             "recorded_at": recorded_at,
+            "proof_authority": "converge.report-proof",
+            "source_of_truth": "converge.workflow",
         }
         if manual_reconcile:
             proof["manual_reconcile"] = manual_reconcile

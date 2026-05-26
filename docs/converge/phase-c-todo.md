@@ -5,15 +5,17 @@ This is the current execution checklist for the next `/goal` work.
 detail source. C7-specific planning is headed by
 `docs/converge/c7-canonical-command-replacement.md`.
 
-Current implementation baseline: C7.1 command adapter hardening is complete on
+Current implementation baseline: C7.2 recovery/report-proof takeover is complete on
 top of C7.0 command inventory and synthetic dry-run adapter. The local
 implementation now
 preserves the C0-C2.5 shared mode and terminal finalization contracts, the C3
 iterative mode invariants, the C4 durable accepted-plan slice queue, the C4.5
 shared smoke helper boundary, the C5 recovery commands, the C6 local
 install/watchdog runner wiring, and the C7.0 route-free command dry-run
-adapter plus the C7.1 adapter packet contract. The next open phase is C7.2
-Converge recovery/report-proof takeover.
+adapter plus the C7.1 adapter packet contract. C7.2 adds explicit Converge
+source-of-truth and authority metadata for recovery, delivery reservation,
+report proof, and reported completion. The next open phase is C7.3 legacy route
+retirement planning.
 
 Deferred non-blocking cleanup items are tracked in
 `docs/converge/p3-debt-register.md`. New P3 findings from future convergence
@@ -39,12 +41,13 @@ runs should be added there instead of being left only in chat or ledger logs.
 - [ ] C7 / Slice 11: Canonical Command Replacement + Legacy Retirement.
   - [x] C7.0: Entrypoint inventory + synthetic dry-run adapter.
   - [x] C7.1: Converge command adapter hardening.
-  - [ ] C7.2: Converge recovery/report-proof takeover.
+  - [x] C7.2: Converge recovery/report-proof takeover.
+  - [ ] C7.3: Legacy route retirement plan.
 
 ## Next Goal Command
 
 ```text
-/goal Converge Phase C7.2: recovery/report-proof takeover를 진행해줘. 목표는 Converge-owned workflow의 복구와 완료 보고 증명을 Converge의 `scan`, `watchdog-check`, `recover`, `reserve-delivery`, `report-proof`, `complete-reported` 기준으로 처리하게 만드는 것이야. Work Ledger/GoalFlow/chat memory가 Converge workflow의 source of truth로 남지 않게 하고, duplicate visible report를 막아줘. 기존 GoalFlow/Work Ledger/legacy verify-conv 상태는 import/수정/삭제/재실행하지 말고, synthetic/local Converge-owned workflow fixture로만 takeover 경계를 증명해줘. Gateway restart, live traffic observation, shadow routing, live slash routing replacement, deploy/apply/install, legacy data deletion, external action, push/PR/release는 제외해줘.
+/goal Converge Phase C7.3: legacy route retirement plan을 작성해줘. 목표는 새 managed `/goal`, `/verify`, `/conv` 요청의 기본 backend를 Converge로 전환하기 위한 route retirement plan과 rollback gate를 문서/테스트 관점에서 확정하는 것이야. C7.3은 계획 단계로만 두고 live slash routing replacement, Gateway restart, shadow routing, deploy/apply/install, legacy deletion, external action, push/PR/release는 제외해줘. 기존 GoalFlow/Work Ledger/verification-convergence 상태는 삭제하거나 재실행하지 말고, 어떤 경로가 유지/은퇴/보류되는지만 명확히 분류해줘.
 ```
 
 ## C0 Completed Scope

@@ -193,8 +193,8 @@ visible reports or replay side effects.
 - No Gateway restart, live traffic observation, shadow routing, or live route
   replacement inside C7 by default; those require a later separately approved
   operational task after C7 verification.
-- No external action, PR, push, release, or development-server apply unless
-  separately requested.
+- No external action, PR, push, release, or development-server apply unless a
+  separate explicit owner-approved operational task authorizes it.
 - No deletion of GoalFlow, Ledger, or skill history in C7.
 - No `/c*` product command family.
 - No broad platform rewrite, database migration, or distributed job engine.

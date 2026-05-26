@@ -22,6 +22,7 @@ class CommandSurface:
     command: str
     current_owner: str
     c7_owner: str
+    retirement_classification: str
     state_root: str
     delivery_behavior: str
     rollback_switch: str
@@ -33,6 +34,7 @@ class CommandSurface:
             "command": self.command,
             "current_owner": self.current_owner,
             "c7_owner": self.c7_owner,
+            "retirement_classification": self.retirement_classification,
             "state_root": self.state_root,
             "delivery_behavior": self.delivery_behavior,
             "rollback_switch": self.rollback_switch,
@@ -46,6 +48,7 @@ COMMAND_INVENTORY: tuple[CommandSurface, ...] = (
         command="/goal",
         current_owner="GoalFlow exact trigger plus scripts/goalflow_start_goal.py draft intake.",
         c7_owner="converge goal",
+        retirement_classification="replace_default_after_owner_approved_live_routing",
         state_root="Legacy GoalFlow state during C7.0; future Converge workflow state after approved live routing.",
         delivery_behavior="Draft and confirmation first; visible completion remains bound to the original Telegram delivery route.",
         rollback_switch="Keep existing /goal route until owner-approved replacement; disable C7 adapter route to fall back.",
@@ -56,6 +59,7 @@ COMMAND_INVENTORY: tuple[CommandSurface, ...] = (
         command="/verify",
         current_owner="verification-convergence skill audit path.",
         c7_owner="converge verify",
+        retirement_classification="replace_default_after_owner_approved_live_routing",
         state_root="Legacy verification-convergence artifacts during C7.0; future Converge workflow state after approved live routing.",
         delivery_behavior="One visible audit report through the original delivery route after evidence/report material is reserved.",
         rollback_switch="Keep existing /verify handler until owner-approved replacement; disable C7 adapter route to fall back.",
@@ -66,6 +70,7 @@ COMMAND_INVENTORY: tuple[CommandSurface, ...] = (
         command="/conv",
         current_owner="verification-convergence skill repair/improvement path.",
         c7_owner="converge conv",
+        retirement_classification="replace_default_after_owner_approved_live_routing",
         state_root="Legacy verification-convergence artifacts during C7.0; future Converge workflow state after approved live routing.",
         delivery_behavior="Round summaries and final report through the original delivery route; material changes need follow-up proof.",
         rollback_switch="Keep existing /conv handler until owner-approved replacement; disable C7 adapter route to fall back.",
@@ -76,6 +81,7 @@ COMMAND_INVENTORY: tuple[CommandSurface, ...] = (
         command="/converge",
         current_owner="legacy alias for /conv.",
         c7_owner="temporary alias to converge conv, or retirement message",
+        retirement_classification="retire_or_keep_explicit_alias_message_only",
         state_root="No independent state root; alias must reuse /conv state or retire.",
         delivery_behavior="No independent delivery contract; alias maps to /conv dry-run and is marked deprecated.",
         rollback_switch="Retire alias or keep explicit message only; never make it the primary route.",
@@ -85,6 +91,7 @@ COMMAND_INVENTORY: tuple[CommandSurface, ...] = (
 )
 
 C7_1_CONTRACT_VERSION = "c7.1"
+C7_3_PLAN_VERSION = "c7.3"
 
 ROUTE_FREE_FLAGS = {
     "dry_run": True,
@@ -139,6 +146,7 @@ def build_dry_run_packet(
             "state_root": str(state_root) if state_root else None,
         },
         "adapter_contract": build_adapter_contract(command=f"/{command}", mode=mode),
+        "route_retirement_plan": build_route_retirement_plan(),
         "converge_invocation": {
             "argv": converge_argv,
             "display": " ".join(_shell_quote(part) for part in converge_argv),
@@ -174,6 +182,9 @@ def build_adapter_contract(*, command: str, mode: str) -> dict[str, Any]:
             "route.visible_delivery",
             "route.state_root",
             "adapter_contract.command_metadata",
+            "route_retirement_plan.approval_gate",
+            "route_retirement_plan.rollback_switch",
+            "route_retirement_plan.logging_proof",
             "converge_invocation.argv",
             "blocked_without_approval",
         ],
@@ -183,6 +194,75 @@ def build_adapter_contract(*, command: str, mode: str) -> dict[str, Any]:
             "rollback_field": "inventory.rollback_switch",
         },
         "command_metadata": build_command_metadata(command=command, mode=mode),
+    }
+
+
+def build_route_retirement_plan() -> dict[str, Any]:
+    return {
+        "version": C7_3_PLAN_VERSION,
+        "scope": {
+            "managed_commands": ["/goal", "/verify", "/conv"],
+            "legacy_aliases": ["/converge"],
+            "source_of_truth_after_gate": "converge.workflow",
+            "execution_boundary": "plan_and_dry_run_only",
+        },
+        "route_classification": [
+            {
+                "command": item.command,
+                "classification": item.retirement_classification,
+                "current_owner": item.current_owner,
+                "c7_owner": item.c7_owner,
+            }
+            for item in COMMAND_INVENTORY
+        ],
+        "approval_gate": {
+            "required": True,
+            "owner_approval_required": True,
+            "approval_ref_required": True,
+            "exact_route_scope_required": True,
+            "evidence_required": [
+                "C7.3 dry-run packet",
+                "command adapter smoke",
+                "recovery/report-proof smoke",
+                "rollback switch plan",
+            ],
+            "stop_conditions": [
+                "missing exact owner approval",
+                "missing rollback expiry or log path",
+                "live route change requested inside C7.3",
+                "legacy state deletion requested inside C7.3",
+            ],
+        },
+        "rollback_switch": {
+            "required": True,
+            "explicit_owner_approval_required": True,
+            "logged": True,
+            "log_path_required": True,
+            "time_bounded": True,
+            "expires_at_required": True,
+            "legacy_route_scope_required": True,
+            "automatic_fallback_allowed": False,
+            "valid_only_for": "separately approved live-routing operational task",
+        },
+        "logging_proof": {
+            "dry_run_packet_required": True,
+            "route_plan_record_required": True,
+            "approval_record_required_before_live_change": True,
+            "rollback_record_required_before_live_change": True,
+            "converge_source_of_truth": [
+                "workflow state",
+                "checkpoint cursor",
+                "delivery reservation",
+                "report-proof",
+                "complete-reported",
+            ],
+            "legacy_sources_not_authoritative_for_converge_work": [
+                "GoalFlow",
+                "Work Ledger",
+                "chat memory",
+                "verification-convergence artifacts",
+            ],
+        },
     }
 
 
@@ -253,6 +333,7 @@ def validate_dry_run_packet(packet: dict[str, Any]) -> None:
     route = _expect_mapping(packet, "route")
     contract = _expect_mapping(packet, "adapter_contract")
     metadata = _expect_mapping(contract, "command_metadata")
+    route_plan = _expect_mapping(packet, "route_retirement_plan")
 
     if contract.get("version") != C7_1_CONTRACT_VERSION:
         raise ValueError(f"C7.1 contract version must be {C7_1_CONTRACT_VERSION!r}")
@@ -307,6 +388,72 @@ def validate_dry_run_packet(packet: dict[str, Any]) -> None:
     for item in inventory_items:
         if not isinstance(item, dict) or not item.get("rollback_switch"):
             raise ValueError("C7.1 inventory entries must include rollback_switch")
+        if not item.get("retirement_classification"):
+            raise ValueError("C7.3 inventory entries must include retirement_classification")
+
+    validate_route_retirement_plan(route_plan)
+
+
+def validate_route_retirement_plan(route_plan: dict[str, Any]) -> None:
+    if route_plan.get("version") != C7_3_PLAN_VERSION:
+        raise ValueError(f"C7.3 route retirement plan version must be {C7_3_PLAN_VERSION!r}")
+    scope = _expect_mapping(route_plan, "scope")
+    if scope.get("managed_commands") != ["/goal", "/verify", "/conv"]:
+        raise ValueError("C7.3 route retirement plan must scope managed /goal, /verify, and /conv")
+    if scope.get("legacy_aliases") != ["/converge"]:
+        raise ValueError("C7.3 route retirement plan must classify /converge as legacy alias")
+    if scope.get("source_of_truth_after_gate") != "converge.workflow":
+        raise ValueError("C7.3 route retirement plan must keep Converge workflow as source of truth")
+    if scope.get("execution_boundary") != "plan_and_dry_run_only":
+        raise ValueError("C7.3 route retirement plan must stay plan_and_dry_run_only")
+
+    classification = route_plan.get("route_classification")
+    if not isinstance(classification, list) or {item.get("command") for item in classification if isinstance(item, dict)} != {
+        "/goal",
+        "/verify",
+        "/conv",
+        "/converge",
+    }:
+        raise ValueError("C7.3 route retirement plan must classify all managed commands and aliases")
+
+    approval_gate = _expect_mapping(route_plan, "approval_gate")
+    if approval_gate.get("required") is not True or approval_gate.get("owner_approval_required") is not True:
+        raise ValueError("C7.3 approval gate must require explicit owner approval")
+    if approval_gate.get("approval_ref_required") is not True:
+        raise ValueError("C7.3 approval gate must require approval reference")
+    if approval_gate.get("exact_route_scope_required") is not True:
+        raise ValueError("C7.3 approval gate must require exact route scope")
+    if not approval_gate.get("evidence_required") or not approval_gate.get("stop_conditions"):
+        raise ValueError("C7.3 approval gate must define evidence and stop conditions")
+
+    rollback = _expect_mapping(route_plan, "rollback_switch")
+    for key in (
+        "required",
+        "explicit_owner_approval_required",
+        "logged",
+        "log_path_required",
+        "time_bounded",
+        "expires_at_required",
+        "legacy_route_scope_required",
+    ):
+        if rollback.get(key) is not True:
+            raise ValueError(f"C7.3 rollback switch must set {key}=true")
+    if rollback.get("automatic_fallback_allowed") is not False:
+        raise ValueError("C7.3 rollback switch must never allow automatic fallback")
+
+    logging_proof = _expect_mapping(route_plan, "logging_proof")
+    for key in (
+        "dry_run_packet_required",
+        "route_plan_record_required",
+        "approval_record_required_before_live_change",
+        "rollback_record_required_before_live_change",
+    ):
+        if logging_proof.get(key) is not True:
+            raise ValueError(f"C7.3 logging/proof must set {key}=true")
+    if "workflow state" not in logging_proof.get("converge_source_of_truth", []):
+        raise ValueError("C7.3 logging/proof must preserve Converge workflow source of truth")
+    if "GoalFlow" not in logging_proof.get("legacy_sources_not_authoritative_for_converge_work", []):
+        raise ValueError("C7.3 logging/proof must keep GoalFlow non-authoritative for Converge work")
 
 
 def _expect_mapping(parent: dict[str, Any], key: str) -> dict[str, Any]:

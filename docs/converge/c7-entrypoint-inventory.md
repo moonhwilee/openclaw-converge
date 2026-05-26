@@ -47,10 +47,21 @@ The command returns JSON with:
   - `/conv`: repair/improve intent plus round, original-target, and delta
     metadata requirements
   - `/converge`: deprecated alias metadata mapped to `conv`
+- `route_retirement_plan.version: c7.3`
+- `route_retirement_plan.scope`: managed `/goal`, `/verify`, and `/conv`
+  default-route replacement scope, plus `/converge` as a legacy alias
+- `route_retirement_plan.approval_gate`: exact owner approval, approval
+  reference, route scope, evidence, and stop conditions required before any
+  live route change
+- `route_retirement_plan.rollback_switch`: explicit, logged, time-bounded,
+  exact-scope rollback metadata; automatic fallback is forbidden
+- `route_retirement_plan.logging_proof`: required dry-run packet, route plan,
+  approval, rollback, delivery reservation, report-proof, and
+  complete-reported evidence
 
 ## Explicit Non-Goals
 
-C7.0/C7.1 do not restart Gateway, observe traffic, enable shadow routing,
+C7.0-C7.3 do not restart Gateway, observe traffic, enable shadow routing,
 replace slash routes, deploy, apply, install, push, open a PR, release, delete
 legacy data, or send external messages.
 

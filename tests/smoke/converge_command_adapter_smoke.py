@@ -76,6 +76,7 @@ def assert_inventory_covers_managed_commands(state_root: Path) -> None:
             required_fields.issubset(item),
             f"{item['command']} inventory should expose routing ownership fields",
         )
+        assert_true(item["retirement_classification"], f"{item['command']} should document retirement classification")
         assert_true(item["state_root"], f"{item['command']} should document state root")
         assert_true(item["delivery_behavior"], f"{item['command']} should document delivery behavior")
         assert_true(item["rollback_switch"], f"{item['command']} should document rollback switch")
@@ -109,6 +110,54 @@ def assert_c7_1_command_metadata_contract(state_root: Path) -> None:
     assert_true(conv_metadata["rounds"]["original_target_gate_required"] is True, "/conv should require original-target gate")
     assert_true(conv_metadata["rounds"]["delta_gate_required"] is True, "/conv should require delta gate")
     assert_true("round_index" in conv_metadata["required_fields"], "/conv should require round index")
+
+
+def assert_c7_3_route_retirement_plan_contract(state_root: Path) -> None:
+    result = run("command-dry-run", "--raw-message", "/goal Implement route retirement plan", state_root=state_root)
+    route_plan = result["route_retirement_plan"]
+    assert_true(route_plan["version"] == "c7.3", "route retirement plan should expose C7.3 version")
+    assert_true(route_plan["scope"]["managed_commands"] == ["/goal", "/verify", "/conv"], "C7.3 should scope managed commands")
+    assert_true(route_plan["scope"]["legacy_aliases"] == ["/converge"], "C7.3 should classify /converge as legacy alias")
+    assert_true(
+        route_plan["scope"]["source_of_truth_after_gate"] == "converge.workflow",
+        "C7.3 should preserve Converge workflow as source of truth",
+    )
+    assert_true(
+        route_plan["scope"]["execution_boundary"] == "plan_and_dry_run_only",
+        "C7.3 should stay plan/dry-run only",
+    )
+
+    classification = {item["command"]: item["classification"] for item in route_plan["route_classification"]}
+    assert_true(
+        classification["/goal"] == "replace_default_after_owner_approved_live_routing",
+        "/goal should be planned for owner-approved default replacement",
+    )
+    assert_true(
+        classification["/converge"] == "retire_or_keep_explicit_alias_message_only",
+        "/converge should not become a primary product route",
+    )
+
+    approval_gate = route_plan["approval_gate"]
+    assert_true(approval_gate["owner_approval_required"] is True, "C7.3 should require owner approval")
+    assert_true(approval_gate["approval_ref_required"] is True, "C7.3 should require approval reference")
+    assert_true(approval_gate["exact_route_scope_required"] is True, "C7.3 should require exact route scope")
+    assert_true("command adapter smoke" in approval_gate["evidence_required"], "C7.3 should require smoke evidence")
+    assert_true("live route change requested inside C7.3" in approval_gate["stop_conditions"], "C7.3 should stop on live route change")
+
+    rollback = route_plan["rollback_switch"]
+    assert_true(rollback["explicit_owner_approval_required"] is True, "rollback should require explicit owner approval")
+    assert_true(rollback["logged"] is True, "rollback should be logged")
+    assert_true(rollback["time_bounded"] is True, "rollback should be time bounded")
+    assert_true(rollback["expires_at_required"] is True, "rollback should require expiry")
+    assert_true(rollback["automatic_fallback_allowed"] is False, "rollback should never be automatic fallback")
+
+    logging_proof = route_plan["logging_proof"]
+    assert_true(logging_proof["dry_run_packet_required"] is True, "C7.3 should require dry-run packet proof")
+    assert_true("report-proof" in logging_proof["converge_source_of_truth"], "C7.3 should preserve report-proof authority")
+    assert_true(
+        "GoalFlow" in logging_proof["legacy_sources_not_authoritative_for_converge_work"],
+        "GoalFlow should not remain authoritative for Converge-owned work",
+    )
 
 
 def assert_c7_1_contract_validation_rejects_drift(state_root: Path) -> None:
@@ -159,6 +208,24 @@ def assert_c7_1_contract_validation_rejects_drift(state_root: Path) -> None:
     else:
         raise AssertionError("validator should reject missing rollback metadata")
 
+    missing_route_plan = json.loads(json.dumps(packet))
+    missing_route_plan["route_retirement_plan"]["rollback_switch"]["expires_at_required"] = False
+    try:
+        validate_dry_run_packet(missing_route_plan)
+    except ValueError as exc:
+        assert_true("rollback" in str(exc), "validator should reject rollback metadata without expiry")
+    else:
+        raise AssertionError("validator should reject rollback metadata without expiry")
+
+    automatic_fallback = json.loads(json.dumps(packet))
+    automatic_fallback["route_retirement_plan"]["rollback_switch"]["automatic_fallback_allowed"] = True
+    try:
+        validate_dry_run_packet(automatic_fallback)
+    except ValueError as exc:
+        assert_true("automatic fallback" in str(exc), "validator should reject automatic rollback fallback")
+    else:
+        raise AssertionError("validator should reject automatic rollback fallback")
+
 
 def assert_rejects_non_managed_or_empty_commands(state_root: Path) -> None:
     missing_text = run_fail("command-dry-run", "--raw-message", "/goal", state_root=state_root)
@@ -172,6 +239,7 @@ def main() -> None:
         state_root = Path(tmp) / "state"
         assert_inventory_covers_managed_commands(state_root)
         assert_c7_1_command_metadata_contract(state_root)
+        assert_c7_3_route_retirement_plan_contract(state_root)
         assert_c7_1_contract_validation_rejects_drift(state_root)
         assert_dry_run_maps_command_without_state_creation(state_root, "/goal Build accepted plan", "goal")
         assert_dry_run_maps_command_without_state_creation(state_root, "/verify Audit docs", "verify")

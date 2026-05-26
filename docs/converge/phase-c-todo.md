@@ -5,7 +5,8 @@ This is the current execution checklist for the next `/goal` work.
 detail source. C7-specific planning is headed by
 `docs/converge/c7-canonical-command-replacement.md`.
 
-Current implementation baseline: C7.2 recovery/report-proof takeover is complete on
+Current implementation baseline: C7.3 canonical route replacement / legacy route
+retirement planning is complete on
 top of C7.0 command inventory and synthetic dry-run adapter. The local
 implementation now
 preserves the C0-C2.5 shared mode and terminal finalization contracts, the C3
@@ -14,8 +15,10 @@ shared smoke helper boundary, the C5 recovery commands, the C6 local
 install/watchdog runner wiring, and the C7.0 route-free command dry-run
 adapter plus the C7.1 adapter packet contract. C7.2 adds explicit Converge
 source-of-truth and authority metadata for recovery, delivery reservation,
-report proof, and reported completion. The next open phase is C7.3 legacy route
-retirement planning.
+report proof, and reported completion. C7.3 adds a dry-run-verifiable route
+retirement/replacement plan, owner approval gate, rollback switch, and
+logging/proof requirements. The next open phase is C7.4 cleanup and removal
+planning.
 
 Deferred non-blocking cleanup items are tracked in
 `docs/converge/p3-debt-register.md`. New P3 findings from future convergence
@@ -42,7 +45,7 @@ runs should be added there instead of being left only in chat or ledger logs.
   - [x] C7.0: Entrypoint inventory + synthetic dry-run adapter.
   - [x] C7.1: Converge command adapter hardening.
   - [x] C7.2: Converge recovery/report-proof takeover.
-  - [ ] C7.3: Legacy route retirement plan.
+  - [x] C7.3: Canonical route replacement / legacy route retirement plan.
   - [ ] C7.4: Cleanup and removal plan.
 
 ## C7.3 Output Boundary
@@ -53,6 +56,17 @@ for moving managed `/goal`, `/verify`, and `/conv` defaults toward Converge.
 It must not execute live slash-route replacement, Gateway restart, shadow
 routing, deploy/apply/install, legacy deletion, external action, push, PR, or
 release.
+
+C7.3 is now represented in `command-dry-run` output as
+`route_retirement_plan`. That packet fixes:
+
+- managed command scope: `/goal`, `/verify`, `/conv`
+- legacy alias scope: `/converge`
+- Converge workflow state as the source of truth after the approval gate
+- exact owner approval, approval reference, evidence, and stop conditions
+- rollback as explicit, logged, time-bounded, scoped, and never automatic
+- logging/proof requirements for dry-run packet, route plan, approval, rollback,
+  delivery reservation, report-proof, and complete-reported evidence
 
 Accepted C7.3 risks:
 
@@ -67,7 +81,7 @@ Accepted C7.3 risks:
 ## Next Goal Command
 
 ```text
-/goal Converge Phase C7.3: legacy route retirement plan을 작성해줘. 목표는 새 managed `/goal`, `/verify`, `/conv` 요청의 기본 backend를 Converge로 전환하기 위한 route retirement plan과 rollback gate를 문서/테스트 관점에서 확정하는 것이야. C7.3은 계획 단계로만 두고 live slash routing replacement, Gateway restart, shadow routing, deploy/apply/install, legacy deletion, external action, push/PR/release는 제외해줘. 기존 GoalFlow/Work Ledger/verification-convergence 상태는 삭제하거나 재실행하지 말고, 어떤 경로가 유지/은퇴/보류되는지만 명확히 분류해줘.
+/goal Converge Phase C7.4: cleanup and removal plan을 작성해줘. 목표는 C7.3 route retirement/replacement plan 이후에도 남는 legacy scripts, docs, skills, aliases, and state paths를 retired / archived / still-active-for-non-Converge로 분류하고, 실제 삭제나 live route removal 없이 cleanup/removal 계획과 검증 기준만 확정하는 것이야. Gateway restart, live/shadow routing, deploy/apply/install, legacy deletion, external action, push/PR/release는 제외해줘.
 ```
 
 ## C0 Completed Scope

@@ -156,6 +156,55 @@ visible reports or replay side effects.
    replaced command. Executing route removal is a later explicit
    owner-approved operational task. Historical records remain readable.
 
+## C7.3 Route Replacement Plan Contract
+
+C7.3 fixes the route replacement plan as verifiable dry-run metadata, not as a
+live route change. `converge command-dry-run` now emits
+`route_retirement_plan.version: c7.3` with the following contract:
+
+- **Route scope:** managed `/goal`, `/verify`, and `/conv` are the replacement
+  candidates. `/converge` is a legacy alias and must either retire or remain an
+  explicit alias message only.
+- **Route classification:** each command records whether the default should be
+  replaced after a separately owner-approved live-routing operation, or retired
+  as an alias.
+- **Source of truth after the gate:** Converge workflow state remains the
+  source of truth for Converge-owned workflow recovery, delivery reservation,
+  `report-proof`, and `complete-reported`.
+- **Execution boundary:** C7.3 is `plan_and_dry_run_only`; it must not observe,
+  intercept, route, or replace live Gateway traffic.
+
+The approval gate must be exact and evidence-backed:
+
+- owner approval is required
+- an approval reference is required
+- exact route scope is required
+- evidence must include the C7.3 dry-run packet, command adapter smoke,
+  recovery/report-proof smoke, and rollback switch plan
+- stop conditions include missing exact approval, missing rollback expiry or log
+  path, any live route change request inside C7.3, and any legacy deletion
+  request inside C7.3
+
+The rollback switch must be a bounded operational safety switch, not a normal
+fallback:
+
+- explicit owner approval required
+- logged with a required log path
+- time-bounded with a required expiry
+- scoped to the exact legacy route
+- valid only for a later separately approved live-routing operational task
+- automatic fallback is forbidden
+
+The logging/proof requirement must preserve C7.2 source-of-truth ownership:
+
+- route plan, dry-run packet, approval record, and rollback record are required
+  before any later live route change
+- delivery reservation, `report-proof`, and `complete-reported` remain Converge
+  proof authorities for Converge-owned workflows
+- GoalFlow, Work Ledger, chat memory, and verification-convergence artifacts are
+  not authoritative for Converge-owned workflow completion after the C7.2/C7.3
+  gates
+
 ## Implementation Slices
 
 1. **C7.0 command inventory and routing spec**
@@ -181,11 +230,13 @@ visible reports or replay side effects.
    observe transition evidence during migration, but it is not the source of
    truth for Converge-owned workflow completion.
 
-4. **C7.3 legacy route retirement plan**
-   Specify how default routing to GoalFlow and the verification-convergence
-   skill will stop for new managed `/goal`, `/verify`, and `/conv` requests.
-   Do not execute live route replacement or route removal inside C7 without a
-   separate explicit owner-approved operational task.
+4. **C7.3 canonical route replacement / legacy route retirement plan**
+   Completed. The existing dry-run adapter now emits a C7.3
+   `route_retirement_plan` that fixes the managed command scope, legacy alias
+   scope, route classifications, exact approval gate, explicit/logged/
+   time-bounded rollback switch, and logging/proof requirements. This is
+   dry-run-verifiable only; it does not execute live route replacement or route
+   removal.
 
 5. **C7.4 cleanup and removal plan**
    Mark replaced legacy scripts, docs, skills, and state paths as retired,
@@ -206,11 +257,13 @@ visible reports or replay side effects.
 
 ## Verification Gates
 
-C7.0 inventory, C7.1 dry-run adapter contract, and C7.2
-recovery/report-proof ownership work are complete. C7.2 proves Converge-owned
-workflows recover and finalize visible report proof from Converge workflow state
-without changing live routes. Live route replacement and route retirement are
-not ready until the remaining C7.3/C7.4 gates are documented or tested:
+C7.0 inventory, C7.1 dry-run adapter contract, C7.2 recovery/report-proof
+ownership, and C7.3 route retirement/replacement planning work are complete.
+C7.2 proves Converge-owned workflows recover and finalize visible report proof
+from Converge workflow state without changing live routes. C7.3 proves the
+route replacement plan, approval gate, rollback switch, and logging/proof
+requirements as dry-run metadata. Live route replacement is still not
+authorized until a separate owner-approved operational task:
 
 - Command inventory proves every current `/goal`, `/verify`, `/conv`, and
   `/converge` entrypoint has one intended C7 owner.
@@ -222,15 +275,17 @@ not ready until the remaining C7.3/C7.4 gates are documented or tested:
   Converge workflow cursor, not from GoalFlow, Work Ledger, or chat memory.
 - Terminal-unreported smoke proves visible-send authority comes from
   `reserve-delivery` and report proof is finalized through `complete-reported`.
-- Rollback switch, if present, is explicitly owner-approved, logged,
-  time-bounded, and never an automatic fallback.
+- Rollback switch is explicitly owner-approved, logged, time-bounded, scoped to
+  an exact legacy route, and never an automatic fallback.
 - Documentation no longer describes adapter coexistence as the C7 product goal.
 
 ## Readiness Verdict
 
-C7.0, C7.1, and C7.2 are complete. The next implementation is C7.3 legacy
-route retirement planning, not live slash-route replacement. C7.2 proved that
-Converge recovery and delivery proof can own interrupted and
+C7.0, C7.1, C7.2, and C7.3 are complete. The next implementation is C7.4
+cleanup and removal planning, not live slash-route replacement. C7.2 proved
+that Converge recovery and delivery proof can own interrupted and
 terminal-unreported Converge workflows without leaving GoalFlow, Work Ledger,
-or chat memory as the source of truth. Live replacement can be planned by C7,
-but execution remains a separate owner-approved operational task.
+or chat memory as the source of truth. C7.3 fixed the replacement plan,
+approval gate, rollback switch, and logging/proof requirements without changing
+live routes. Live replacement remains a separate owner-approved operational
+task.

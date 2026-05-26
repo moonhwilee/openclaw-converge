@@ -46,8 +46,9 @@ runs should be added there instead of being left only in chat or ledger logs.
 - [x] C5 / Slice 9: Recovery.
 - [x] C6 / Slice 10: Install Wiring.
 - [ ] C7 / Slice 11: Canonical Command Replacement + Legacy Retirement
-  (C7.0-C7.4 planning and live route operational execution planning complete;
-  live route execution pending separate approval).
+  (C7.0-C7.5 planning complete; owner-approved workspace trigger ownership
+  patch started; installed-copy sync and post-change smoke still gate
+  completion).
   - [x] C7.0: Entrypoint inventory + synthetic dry-run adapter.
   - [x] C7.1: Converge command adapter hardening.
   - [x] C7.2: Converge recovery/report-proof takeover.
@@ -193,10 +194,10 @@ The plan intentionally leaves the installed live route config path/key/handler
 ID as a required pre-execution discovery gate. The operation must abort if those
 values cannot be proven from the installed environment before any route change.
 
-## Next Goal Command
+## Next Operational Command
 
 ```text
-/goal Converge C7 live route replacement readiness plan을 작성해줘. 목표는 C7.0-C7.4의 command dry-run, recovery/report-proof ownership, route retirement plan, cleanup/removal plan을 바탕으로 /goal, /verify, /conv live route replacement를 실행하기 전 필요한 owner approval record, exact route scope, implementation route inventory, rollback expiry/log path, retention decision, pre-change readiness smoke, post-change smoke plan, duplicate visible report guard, Gateway restart preflight policy, and stop conditions를 운영 계획으로 확정하는 것이야. 실제 cleanup/removal execution, Gateway restart, live/shadow routing, deploy/apply/install, legacy deletion/movement/archival, legacy skill disable/uninstall, live route replacement/removal, external action, push/PR/release는 제외해줘.
+/conv Converge C7 live route replacement narrow correction을 수렴해줘. 목표는 owner-approved workspace trigger patch 이후 남은 installed Converge CLI sync, verification-convergence installed skill sync, --text/state-root command consistency, applied/not-applied docs drift, and post-change /goal /verify /conv smoke evidence를 좁게 보정하는 것이야. Gateway restart, cleanup/removal, legacy deletion/movement/archive, /converge promotion, external action, push/PR/release는 제외해줘.
 ```
 
 ## C0 Completed Scope

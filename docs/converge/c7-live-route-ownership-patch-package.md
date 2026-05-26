@@ -2,14 +2,15 @@
 
 Date: 2026-05-27
 
-Status: prepared, not applied.
+Status: applied to workspace trigger policy; installed-copy synchronization and
+post-change smoke evidence are required before calling the replacement complete.
 
 This package defines the exact non-Gateway route ownership patch needed to move
 the managed `/goal`, `/verify`, and `/conv` user-facing commands to the Converge
-canonical backend. It is intentionally an execution package, not an execution
-record. No live workspace trigger files, Gateway route table, cleanup/removal
-paths, deploy/install state, external action, push, PR, or release are changed by
-this document.
+canonical backend. The workspace trigger-policy patch has been applied after the
+owner approval text was received. No Gateway route table, cleanup/removal paths,
+legacy deletion/movement/archive, external action, push, PR, or release are
+changed by this document.
 
 ## Final Approval Required
 
@@ -54,15 +55,14 @@ Target ownership:
 
 | Command | Target Converge mode | Target handler |
 | --- | --- | --- |
-| `/goal` | `goal` | `converge goal --text <request> --owner-session-key <session> --visible-delivery <json>` |
-| `/verify` | `verify` | `converge verify --text <target> --owner-session-key <session> --visible-delivery <json>` |
-| `/conv` | `conv` | `converge conv --text <target> --owner-session-key <session> --visible-delivery <json>` |
+| `/goal` | `goal` | `converge --state-root <state-root> goal --text <request> --owner-session-key <session> --visible-delivery <json>` |
+| `/verify` | `verify` | `converge --state-root <state-root> verify --text <target> --owner-session-key <session> --visible-delivery <json>` |
+| `/conv` | `conv` | `converge --state-root <state-root> conv --text <target> --owner-session-key <session> --visible-delivery <json>` |
 
-## Candidate Patch - Not Applied
+## Applied Patch Summary And Rollback Hunks
 
-The later approved execution should make the smallest live ownership edit in the
-workspace trigger documents. The patch below is deliberately written as a human
-review package; apply it only after the final approval gate passes.
+The approved execution made the smallest live ownership edit in the workspace
+trigger documents. The diff below is retained as an audit and rollback package.
 
 ### `/Users/moon/.openclaw/workspace/AGENTS.md`
 
@@ -81,7 +81,7 @@ Replace the current Exact `/goal` Trigger section:
 +Route the command through the Converge canonical backend with owner session,
 +visible delivery, and state root preserved:
 +```bash
-+converge goal --text '<request without /goal>' --owner-session-key '<session>' --visible-delivery '<json>'
++converge --state-root '<state-root>' goal --text '<request without /goal>' --owner-session-key '<session>' --visible-delivery '<json>'
 +```
 +
 +Preserve the same goal-safety semantics: draft/intake first, ask unresolved
@@ -238,7 +238,11 @@ Abort immediately if any condition is true:
 
 ## Current State
 
-Go for final owner approval request and later application of this patch package.
+The owner approval text was received and the workspace trigger ownership patch
+was applied for exact `/goal`, `/verify`, and `/conv`, with `/converge` still
+excluded.
 
-No-Go for live execution until the exact approval text is provided and pre-change
-smoke is fresh.
+No-Go for completion until the installed Converge CLI and installed
+`verification-convergence` skill copy are synchronized or explicitly proven not
+to affect runtime, and post-change smoke proves Converge-only handling without a
+duplicate legacy report.

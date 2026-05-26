@@ -530,6 +530,24 @@ def assert_c7_3_route_retirement_plan_contract(state_root: Path) -> None:
         )
 
 
+def assert_readiness_policy_output_is_isolated(state_root: Path) -> None:
+    first = dry_run(state_root, "/goal mutate readiness packet")
+    first_readiness = first["route_retirement_plan"]["live_route_replacement_readiness_plan"]
+    first_readiness["exact_route_scope"]["managed_commands"].append("/mutated")
+    first_readiness["retention_decision"]["covered_sources"].append("mutated source")
+
+    second = dry_run(state_root, "/goal rebuild readiness packet")
+    second_readiness = second["route_retirement_plan"]["live_route_replacement_readiness_plan"]
+    assert_true(
+        second_readiness["exact_route_scope"]["managed_commands"] == ["/goal", "/verify", "/conv"],
+        "readiness route scope should not share mutable constants with prior packets",
+    )
+    assert_true(
+        "mutated source" not in second_readiness["retention_decision"]["covered_sources"],
+        "readiness retention decision should not share mutable constants with prior packets",
+    )
+
+
 def assert_c7_1_contract_validation_rejects_drift(state_root: Path) -> None:
     packet = dry_run(state_root, "/goal Implement accepted plan")
 
@@ -1095,6 +1113,7 @@ def main() -> None:
         assert_inventory_covers_managed_commands(state_root)
         assert_c7_1_command_metadata_contract(state_root)
         assert_c7_3_route_retirement_plan_contract(state_root)
+        assert_readiness_policy_output_is_isolated(state_root)
         assert_c7_1_contract_validation_rejects_drift(state_root)
         assert_dry_run_maps_command_without_state_creation(state_root, "/goal Build accepted plan", "goal")
         assert_dry_run_maps_command_without_state_creation(state_root, "/verify Audit docs", "verify")

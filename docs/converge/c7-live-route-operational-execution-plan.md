@@ -15,7 +15,8 @@ approval at the final execution gate.
 `No-Go` until every gate below is filled with real operational evidence:
 
 - exact implementation route inventory, including the live route config path,
-  config key, and handler ID for each command
+  config key, and handler ID for each command, or the exact workspace trigger
+  artifact/section/handler when no Gateway/plugin slash route exists
 - owner approval record using the pinned approval kind and text
 - rollback record with expiry, log path, exact legacy route scope, and
   activation/deactivation entry format
@@ -31,9 +32,9 @@ Only these route names are in scope:
 
 | Route | Current owner | Target owner | Target Converge invocation | Execution status |
 | --- | --- | --- | --- | --- |
-| `/goal` | GoalFlow exact trigger and `workspace/scripts/goalflow_start_goal.py` draft intake | Converge `goal` | `converge goal --text <request> --owner-session-key <session> --visible-delivery <json>` | blocked until final approval |
-| `/verify` | `verification-convergence` audit skill path | Converge `verify` | `converge verify --target <target> --owner-session-key <session> --visible-delivery <json>` | blocked until final approval |
-| `/conv` | `verification-convergence` repair/improvement skill path | Converge `conv` | `converge conv --target <target> --owner-session-key <session> --visible-delivery <json>` | blocked until final approval |
+| `/goal` | GoalFlow exact trigger and `workspace/scripts/goalflow_start_goal.py` draft intake | Converge `goal` | `converge --state-root <state-root> goal --text <request> --owner-session-key <session> --visible-delivery <json>` | blocked until final approval |
+| `/verify` | `verification-convergence` audit skill path | Converge `verify` | `converge --state-root <state-root> verify --text <target> --owner-session-key <session> --visible-delivery <json>` | blocked until final approval |
+| `/conv` | `verification-convergence` repair/improvement skill path | Converge `conv` | `converge --state-root <state-root> conv --text <target> --owner-session-key <session> --visible-delivery <json>` | blocked until final approval |
 
 Explicitly excluded:
 
@@ -246,9 +247,9 @@ orchestrator triggers in the main Codex/OpenClaw agent context.
 
 | Command | Installed route path/key | Current handler ID | Current owner | Replacement target |
 | --- | --- | --- | --- | --- |
-| `/goal` | no installed Gateway/plugin route; exact text trigger `^/goal(?:\s+|$)` in `/Users/moon/.openclaw/workspace/AGENTS.md` | `workspace-contract.exact-goal-trigger` -> `/Users/moon/.openclaw/workspace/scripts/goalflow_start_goal.py` draft intake, then GoalFlow tools when owner-bound context exists | Workspace AGENTS policy plus GoalFlow tool surface | `converge goal --text <request> --owner-session-key <session> --visible-delivery <json>` |
-| `/verify` | no installed Gateway/plugin route; skill trigger in `/Users/moon/.openclaw/workspace/skills/verification-convergence/SKILL.md` | `verification-convergence.verify` | `verification-convergence` skill audit path | `converge verify --target <target> --owner-session-key <session> --visible-delivery <json>` |
-| `/conv` | no installed Gateway/plugin route; skill trigger in `/Users/moon/.openclaw/workspace/skills/verification-convergence/SKILL.md` | `verification-convergence.conv` | `verification-convergence` skill repair/improve path | `converge conv --target <target> --owner-session-key <session> --visible-delivery <json>` |
+| `/goal` | no installed Gateway/plugin route; exact text trigger `^/goal(?:\s+|$)` in `/Users/moon/.openclaw/workspace/AGENTS.md` | `workspace-contract.exact-goal-trigger` -> Converge-managed `goal` trigger policy after owner approval | Workspace AGENTS policy plus Converge CLI | `converge --state-root <state-root> goal --text <request> --owner-session-key <session> --visible-delivery <json>` |
+| `/verify` | no installed Gateway/plugin route; skill trigger in `/Users/moon/.openclaw/workspace/skills/verification-convergence/SKILL.md` | `verification-convergence.verify` retained reference boundary after owner approval | `verification-convergence` skill no longer owns exact `/verify` after sync | `converge --state-root <state-root> verify --text <target> --owner-session-key <session> --visible-delivery <json>` |
+| `/conv` | no installed Gateway/plugin route; skill trigger in `/Users/moon/.openclaw/workspace/skills/verification-convergence/SKILL.md` | `verification-convergence.conv` retained reference boundary after owner approval | `verification-convergence` skill no longer owns exact `/conv` after sync | `converge --state-root <state-root> conv --text <target> --owner-session-key <session> --visible-delivery <json>` |
 | `/converge` | no installed Gateway/plugin route; legacy alias in `/Users/moon/.openclaw/workspace/skills/verification-convergence/SKILL.md` | `verification-convergence.converge_alias` | legacy alias for `/conv` | excluded from this replacement; do not promote |
 
 Supporting installed plugin/config facts:
@@ -391,9 +392,12 @@ Abort before execution if any of these are true:
 
 ### Current Go/No-Go
 
-`No-Go for execution`: the final execution approval has not been given.
+`No-Go for further execution`: the owner-approved workspace trigger patch has
+started, but completion still requires installed/source synchronization and
+post-change smoke evidence.
 
-`Go for next step`: prepare the concrete route ownership patch that changes only
-the exact `/goal`, `/verify`, and `/conv` workspace trigger ownership to
-Converge, with `/converge` excluded, then stop again before applying any Gateway
-restart/reload or live operational replacement.
+`Go for next step`: finish the narrow correction pass: synchronize the installed
+Converge CLI and retained `verification-convergence` skill source, verify
+`--text` plus `--state-root` command behavior, prove no `/converge` promotion,
+and keep Gateway restart/reload, cleanup/removal, push, PR, and release out of
+scope.

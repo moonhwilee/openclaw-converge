@@ -323,6 +323,12 @@ The plan intentionally does not guess installed Gateway/OpenClaw route config
 paths. The live operation must prove each route config path/key/handler ID from
 the installed environment before changing any route.
 
+The 2026-05-27 operational inventory found no installed Gateway/plugin slash
+route for `/goal`, `/verify`, `/conv`, or `/converge`; the live change is a
+workspace trigger-policy ownership change. When no Gateway route exists, the
+execution gate must prove the exact workspace trigger artifact, section, and
+handler instead of a Gateway route path/key.
+
 ## Implementation Slices
 
 1. **C7.0 command inventory and routing spec**
@@ -423,12 +429,17 @@ authorized until a separate owner-approved operational task:
 
 ## Readiness Verdict
 
-C7.0, C7.1, C7.2, C7.3, and C7.4 are complete. C7.2 proved that Converge
+C7.0, C7.1, C7.2, C7.3, C7.4, and C7.5 are complete as source-level planning
+and pre-execution artifacts. C7.2 proved that Converge
 recovery and delivery proof can own interrupted and terminal-unreported
 Converge workflows without leaving GoalFlow, Work Ledger, chat memory, or
 verification-convergence artifacts as the source of truth. C7.3 fixed the
 replacement plan, approval gate, rollback switch, and logging/proof
 requirements without changing live routes. C7.4 fixed the cleanup/removal
 inventory and planning boundary without deleting, moving, archiving, disabling,
-uninstalling, or rerouting legacy surfaces. Live replacement and cleanup/removal
-execution remain separate owner-approved operational tasks.
+uninstalling, or rerouting legacy surfaces. C7.5 added the operational execution
+plan and ownership patch package. After owner approval, the workspace trigger
+policy patch started, but full completion still requires installed-copy
+synchronization and post-change smoke evidence proving `/goal`, `/verify`, and
+`/conv` use Converge without `/converge` promotion or duplicate legacy reports.
+Cleanup/removal execution remains a separate owner-approved operational task.

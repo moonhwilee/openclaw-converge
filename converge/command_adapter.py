@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -551,8 +552,8 @@ def build_live_route_replacement_readiness_plan() -> dict[str, Any]:
             "must_bind_exact_commands": ["/goal", "/verify", "/conv"],
             "must_name_explicit_exclusions": ["/converge"],
         },
-        "exact_route_scope": dict(EXPECTED_LIVE_READINESS_ROUTE_SCOPE),
-        "gateway_restart_preflight": dict(EXPECTED_LIVE_READINESS_GATEWAY_PREFLIGHT),
+        "exact_route_scope": deepcopy(EXPECTED_LIVE_READINESS_ROUTE_SCOPE),
+        "gateway_restart_preflight": deepcopy(EXPECTED_LIVE_READINESS_GATEWAY_PREFLIGHT),
         "rollback_record": {
             "required": True,
             "automatic_fallback_allowed": False,
@@ -565,7 +566,7 @@ def build_live_route_replacement_readiness_plan() -> dict[str, Any]:
             "activation_and_deactivation_entries_required": True,
             "post_rollback_smoke_required": True,
         },
-        "retention_decision": dict(EXPECTED_LIVE_READINESS_RETENTION_DECISION),
+        "retention_decision": deepcopy(EXPECTED_LIVE_READINESS_RETENTION_DECISION),
         "pre_change_readiness_smoke": list(EXPECTED_LIVE_READINESS_PRE_CHANGE_SMOKE),
         "post_change_smoke_plan": list(EXPECTED_LIVE_READINESS_POST_CHANGE_SMOKE),
         "post_change_smoke_evidence_required_before_completion": True,

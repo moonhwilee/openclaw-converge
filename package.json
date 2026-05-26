@@ -1,0 +1,23 @@
+{
+  "name": "openclaw-converge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Recoverable Converge workflow runtime MVP",
+  "bin": {
+    "converge": "bin/converge"
+  },
+  "files": [
+    "README.md",
+    "bin/converge",
+    "converge/**/*.py",
+    "converge/schemas/*.json",
+    "converge/templates/*.md",
+    "openclaw.plugin.json",
+    "prompts/*.md",
+    "scripts/*.py",
+    "scripts/*.sh"
+  ],
+  "scripts": {
+    "smoke": "python3 -m converge.cli validate --sample-docs"
+  }
+}

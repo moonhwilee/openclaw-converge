@@ -1,0 +1,7 @@
+{
+  "name": "openclaw-converge",
+  "version": "0.1.0",
+  "description": "Recoverable Converge workflow runtime MVP",
+  "main": "converge/cli.py",
+  "enabled": false
+}

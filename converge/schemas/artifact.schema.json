@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Converge artifact",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "artifact_id",
+    "kind",
+    "path",
+    "created_at",
+    "sha256"
+  ],
+  "properties": {
+    "artifact_id": {
+      "type": "string"
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "plan",
+        "evidence",
+        "patch",
+        "report",
+        "context"
+      ]
+    },
+    "path": {
+      "type": "string"
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "sha256": {
+      "type": "string"
+    }
+  }
+}

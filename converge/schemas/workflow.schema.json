@@ -1,0 +1,262 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Converge workflow",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "workflow_id",
+    "kind",
+    "status",
+    "created_at",
+    "updated_at",
+    "last_activity_at",
+    "last_visible_update_at",
+    "stale_after_seconds",
+    "reminder_after_seconds",
+    "owner_session_key",
+    "visible_delivery",
+    "source_request",
+    "objective",
+    "non_goals",
+    "success_criteria",
+    "assumptions",
+    "approval_boundaries",
+    "approvals",
+    "phase",
+    "parent_workflow_id",
+    "child_workflow_ids",
+    "artifacts",
+    "context_manifest",
+    "context_artifacts",
+    "decisions",
+    "side_effects_performed",
+    "verification",
+    "active_recovery_lease",
+    "active_delivery_reservation",
+    "checkpoint_index",
+    "continuation_plan",
+    "next_safe_action",
+    "visible_delivery_state",
+    "final_status"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "enum": [
+        1
+      ]
+    },
+    "workflow_id": {
+      "type": "string"
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "plan",
+        "goal",
+        "verify",
+        "conv"
+      ]
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "draft",
+        "running",
+        "waiting_user",
+        "waiting_subagent",
+        "verifying",
+        "completed_unreported",
+        "failed_unreported",
+        "reported",
+        "blocked",
+        "abandoned"
+      ]
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "updated_at": {
+      "type": "string"
+    },
+    "last_activity_at": {
+      "type": "string"
+    },
+    "last_visible_update_at": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "stale_after_seconds": {
+      "type": "integer"
+    },
+    "reminder_after_seconds": {
+      "type": "integer"
+    },
+    "owner_session_key": {
+      "type": "string"
+    },
+    "visible_delivery": {
+      "type": "object"
+    },
+    "source_request": {
+      "type": "string"
+    },
+    "objective": {
+      "type": "string"
+    },
+    "non_goals": {
+      "type": "array"
+    },
+    "success_criteria": {
+      "type": "array"
+    },
+    "assumptions": {
+      "type": "array"
+    },
+    "approval_boundaries": {
+      "type": "array"
+    },
+    "approvals": {
+      "type": "array"
+    },
+    "phase": {
+      "type": "string"
+    },
+    "parent_workflow_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "child_workflow_ids": {
+      "type": "array"
+    },
+    "artifacts": {
+      "type": "array"
+    },
+    "context_manifest": {
+      "type": "array"
+    },
+    "context_artifacts": {
+      "type": "array"
+    },
+    "decisions": {
+      "type": "array"
+    },
+    "side_effects_performed": {
+      "type": "array"
+    },
+    "verification": {
+      "type": "object"
+    },
+    "active_recovery_lease": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "active_delivery_reservation": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "checkpoint_index": {
+      "type": "object"
+    },
+    "continuation_plan": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "next_safe_action": {
+      "type": "object"
+    },
+    "visible_delivery_state": {
+      "type": "object"
+    },
+    "final_status": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "required": [
+        "result"
+      ],
+      "properties": {
+        "result": {
+          "type": "string",
+          "enum": [
+            "pass",
+            "pass_with_risks",
+            "needs_fix",
+            "blocked",
+            "stopped"
+          ]
+        },
+        "done": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "checked": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "residuals": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "blocking_remaining": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "accepted_risks": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "implementation_backlog": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "deferred_scope": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "stop_reason": {
+          "type": "string"
+        }
+      }
+    },
+    "plan_state": {
+      "type": "object"
+    },
+    "goal_state": {
+      "type": "object"
+    },
+    "verify_state": {
+      "type": "object"
+    },
+    "conv_state": {
+      "type": "object"
+    }
+  }
+}

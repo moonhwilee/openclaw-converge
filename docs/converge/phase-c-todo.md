@@ -44,7 +44,7 @@ runs should be added there instead of being left only in chat or ledger logs.
 ## Next Goal Command
 
 ```text
-/goal Converge Phase C7.2: recovery/report-proof takeover를 진행해줘. 목표는 Converge-owned workflow의 복구와 완료 보고 증명을 Converge의 `scan`, `watchdog-check`, `recover`, `reserve-delivery`, `report-proof`, `complete-reported` 기준으로 처리하게 만드는 것이야. Work Ledger/GoalFlow/chat memory가 Converge workflow의 source of truth로 남지 않게 하고, duplicate visible report를 막아줘. Gateway restart, live traffic observation, shadow routing, live slash routing replacement, deploy/apply/install, legacy data deletion, external action, push/PR/release는 제외해줘.
+/goal Converge Phase C7.2: recovery/report-proof takeover를 진행해줘. 목표는 Converge-owned workflow의 복구와 완료 보고 증명을 Converge의 `scan`, `watchdog-check`, `recover`, `reserve-delivery`, `report-proof`, `complete-reported` 기준으로 처리하게 만드는 것이야. Work Ledger/GoalFlow/chat memory가 Converge workflow의 source of truth로 남지 않게 하고, duplicate visible report를 막아줘. 기존 GoalFlow/Work Ledger/legacy verify-conv 상태는 import/수정/삭제/재실행하지 말고, synthetic/local Converge-owned workflow fixture로만 takeover 경계를 증명해줘. Gateway restart, live traffic observation, shadow routing, live slash routing replacement, deploy/apply/install, legacy data deletion, external action, push/PR/release는 제외해줘.
 ```
 
 ## C0 Completed Scope

@@ -38,6 +38,7 @@ def assert_dry_run_maps_command_without_state_creation(state_root: Path, raw_mes
     assert_true(result["gateway_restart_required"] is False, "command-dry-run should not require Gateway restart")
     assert_true(result["legacy_data_deleted"] is False, "command-dry-run should not delete legacy data")
     assert_true(result["route"]["converge_mode"] == expected_mode, "command should map to expected Converge mode")
+    assert_true(result["route"]["alias_status"] == "primary", "primary commands should not be marked as aliases")
     assert_true(result["route"]["owner_session_key"] == "session:test", "owner session should be preserved")
     assert_true(result["route"]["visible_delivery"] == json.loads(VISIBLE_DELIVERY), "visible delivery should be preserved")
     assert_true(result["route"]["state_root"] == str(state_root), "state root should be exposed in route metadata")
@@ -130,6 +131,24 @@ def assert_c7_1_contract_validation_rejects_drift(state_root: Path) -> None:
         assert_true("route-free flags" in str(exc), "validator should reject stale route-free contract flags")
     else:
         raise AssertionError("validator should reject route-free flag drift")
+
+    invalid_owner_session = json.loads(json.dumps(packet))
+    invalid_owner_session["route"]["owner_session_key"] = {"session": "test"}
+    try:
+        validate_dry_run_packet(invalid_owner_session)
+    except ValueError as exc:
+        assert_true("owner_session_key" in str(exc), "validator should reject invalid owner session metadata")
+    else:
+        raise AssertionError("validator should reject invalid owner session metadata")
+
+    alias_drift = json.loads(json.dumps(packet))
+    alias_drift["route"]["alias_status"] = "deprecated_alias"
+    try:
+        validate_dry_run_packet(alias_drift)
+    except ValueError as exc:
+        assert_true("alias_status" in str(exc), "validator should reject alias status drift")
+    else:
+        raise AssertionError("validator should reject alias status drift")
 
     missing_rollback = json.loads(json.dumps(packet))
     missing_rollback["inventory"][0]["rollback_switch"] = ""

@@ -169,6 +169,7 @@ def build_adapter_contract(*, command: str, mode: str) -> dict[str, Any]:
             "input.text",
             "route.current_command",
             "route.converge_mode",
+            "route.alias_status",
             "route.owner_session_key",
             "route.visible_delivery",
             "route.state_root",
@@ -271,6 +272,12 @@ def validate_dry_run_packet(packet: dict[str, Any]) -> None:
         raise ValueError("C7.1 command metadata must match route.current_command")
     if metadata.get("mode") != route.get("converge_mode"):
         raise ValueError("C7.1 command metadata must match route.converge_mode")
+    owner_session_key = route.get("owner_session_key")
+    if not isinstance(owner_session_key, str):
+        raise ValueError("C7.1 route.owner_session_key must be a string")
+    expected_alias_status = "deprecated_alias" if current_command == "/converge" else "primary"
+    if route.get("alias_status") != expected_alias_status:
+        raise ValueError(f"C7.1 route.alias_status must be {expected_alias_status!r} for {current_command}")
     if not isinstance(route.get("visible_delivery"), dict):
         raise ValueError("C7.1 route.visible_delivery must be a JSON object")
     if "state_root" not in route:

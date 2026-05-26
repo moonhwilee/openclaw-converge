@@ -12,8 +12,9 @@ commands, C6 local install wiring for the standalone CLI and deterministic
 watchdog runner, C7.0 command inventory plus a synthetic dry-run adapter, C7.1
 command adapter contract hardening, C7.2 recovery/report-proof ownership for
 Converge-owned workflows, and C7.3 canonical route replacement / legacy route
-retirement planning. The next planned boundary is C7.4 cleanup and removal
-planning, not live route replacement.
+retirement planning, and C7.4 cleanup/removal planning for legacy scripts, docs,
+skills, aliases, and state paths. The next planned boundary is a separately
+approved live route replacement readiness plan, not live route replacement.
 
 The package is intentionally not wired into existing slash commands yet.
 Development uses the local CLI. C7's target is to make Converge the canonical
@@ -23,7 +24,9 @@ not a permanent `/c*` coexistence path. C7.0 starts with source inventory and a
 synthetic dry-run adapter only, C7.1 fixes the dry-run packet contract, C7.2
 keeps Converge-owned recovery/report proof inside Converge workflow state, and
 C7.3 fixes the route replacement plan, approval gate, rollback switch, and
-logging/proof requirements as dry-run-verifiable metadata.
+logging/proof requirements as dry-run-verifiable metadata. C7.4 fixes the
+cleanup/removal inventory, classifications, source-of-truth boundary, and later
+execution requirements as dry-run-verifiable metadata.
 Gateway restart, live traffic observation, shadow routing, live slash-route
 replacement/removal, deploy/apply/install, external action, deletion or movement
 of legacy files/data, push, PR, and release belong outside C7.4 and require a

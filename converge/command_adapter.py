@@ -92,6 +92,7 @@ COMMAND_INVENTORY: tuple[CommandSurface, ...] = (
 
 C7_1_CONTRACT_VERSION = "c7.1"
 C7_3_PLAN_VERSION = "c7.3"
+C7_4_PLAN_VERSION = "c7.4"
 
 EXPECTED_ROUTE_CLASSIFICATIONS = {
     "/goal": "replace_default_after_owner_approved_live_routing",
@@ -162,6 +163,65 @@ EXPECTED_C7_4_PROHIBITED_ACTIONS = [
     "legacy skill disable/uninstall",
     "push/PR/release",
 ]
+
+EXPECTED_C7_4_CLEANUP_CLASSIFICATIONS = [
+    "retired",
+    "archived",
+    "still-active-for-non-Converge",
+    "requires-owner-approval",
+]
+
+CLEANUP_REMOVAL_SURFACES: tuple[dict[str, Any], ...] = (
+    {
+        "category": "scripts",
+        "surface": "workspace/scripts/goalflow_start_goal.py",
+        "classification": "requires-owner-approval",
+        "reason": "It remains the owner of exact /goal draft intake until a separate live-routing task replaces /goal with Converge.",
+        "later_action_boundary": "Retire or narrow the script only after owner-approved live route replacement and migration evidence.",
+    },
+    {
+        "category": "docs",
+        "surface": "workspace/AGENTS.md and docs/context/goalflow.md exact /goal policy",
+        "classification": "requires-owner-approval",
+        "reason": "Workspace policy still defines the active /goal intake contract and cannot be rewritten by a plan-only cleanup slice.",
+        "later_action_boundary": "Update policy only in the separately approved route replacement operation that actually changes the live owner.",
+    },
+    {
+        "category": "skills",
+        "surface": "workspace/skills/verification-convergence/SKILL.md",
+        "classification": "still-active-for-non-Converge",
+        "reason": "The skill may remain useful for non-Converge audits while managed /verify and /conv route ownership is migrated.",
+        "later_action_boundary": "Remove managed-command ownership only after Converge handles live /verify and /conv with owner-approved routing proof.",
+    },
+    {
+        "category": "aliases",
+        "surface": "/converge legacy alias",
+        "classification": "retired",
+        "reason": "The alias has no independent state or delivery contract and must not become the primary product route.",
+        "later_action_boundary": "Execute alias removal or replacement wording only in a later owner-approved live route removal task.",
+    },
+    {
+        "category": "state paths",
+        "surface": "workspace/state/goalflow/*",
+        "classification": "archived",
+        "reason": "Historical GoalFlow records remain readable, but they are not authoritative for Converge-owned workflow recovery or completion.",
+        "later_action_boundary": "Archive, move, or delete records only after explicit retention approval and migration checks.",
+    },
+    {
+        "category": "state paths",
+        "surface": "workspace/state/work-ledger/*",
+        "classification": "still-active-for-non-Converge",
+        "reason": "Work Ledger remains valid for outer session recovery and non-Converge work, but not as Converge workflow source of truth.",
+        "later_action_boundary": "Do not remove or narrow until non-Converge ledger use is separately inventoried and approved.",
+    },
+    {
+        "category": "state paths",
+        "surface": "verification-convergence artifacts and chat-derived records",
+        "classification": "archived",
+        "reason": "Past verification artifacts can support audit history but cannot drive Converge recovery, report-proof, or complete-reported state.",
+        "later_action_boundary": "Retain as historical evidence unless a later retention task explicitly approves cleanup.",
+    },
+)
 
 ROUTE_FREE_FLAGS = {
     "dry_run": True,
@@ -250,6 +310,7 @@ def build_adapter_contract(*, command: str, mode: str) -> dict[str, Any]:
             "route_retirement_plan.rollback_switch",
             "route_retirement_plan.logging_proof",
             "route_retirement_plan.cleanup_removal_boundary",
+            "route_retirement_plan.cleanup_removal_plan",
             "converge_invocation.argv",
             "blocked_without_approval",
         ],
@@ -318,6 +379,28 @@ def build_route_retirement_plan() -> dict[str, Any]:
             "live_route_removal_allowed": False,
             "separate_owner_approval_required": True,
         },
+        "cleanup_removal_plan": build_cleanup_removal_plan(),
+    }
+
+
+def build_cleanup_removal_plan() -> dict[str, Any]:
+    return {
+        "version": C7_4_PLAN_VERSION,
+        "execution_boundary": "classification_and_plan_only",
+        "classification_values": list(EXPECTED_C7_4_CLEANUP_CLASSIFICATIONS),
+        "surfaces": [dict(surface) for surface in CLEANUP_REMOVAL_SURFACES],
+        "source_of_truth_boundary": {
+            "converge_authoritative_for_converge_work": list(EXPECTED_CONVERGE_SOURCE_OF_TRUTH),
+            "legacy_not_authoritative_for_converge_work": list(EXPECTED_LEGACY_NON_AUTHORITATIVE_SOURCES),
+        },
+        "later_execution_requires": [
+            "separate explicit owner approval",
+            "exact surface list",
+            "retention decision for historical state",
+            "rollback switch with expiry and log path",
+            "post-change smoke evidence",
+        ],
+        "prohibited_actions": list(EXPECTED_C7_4_PROHIBITED_ACTIONS),
     }
 
 
@@ -540,6 +623,42 @@ def validate_route_retirement_plan(route_plan: dict[str, Any]) -> None:
     for key in ("legacy_deletion_allowed", "live_route_removal_allowed"):
         if cleanup_boundary.get(key) is not False:
             raise ValueError(f"C7.3 cleanup boundary must set {key}=false")
+
+    validate_cleanup_removal_plan(_expect_mapping(route_plan, "cleanup_removal_plan"))
+
+
+def validate_cleanup_removal_plan(cleanup_plan: dict[str, Any]) -> None:
+    if cleanup_plan.get("version") != C7_4_PLAN_VERSION:
+        raise ValueError(f"C7.4 cleanup/removal plan version must be {C7_4_PLAN_VERSION!r}")
+    if cleanup_plan.get("execution_boundary") != "classification_and_plan_only":
+        raise ValueError("C7.4 cleanup/removal plan must stay classification_and_plan_only")
+    if cleanup_plan.get("classification_values") != EXPECTED_C7_4_CLEANUP_CLASSIFICATIONS:
+        raise ValueError("C7.4 cleanup/removal plan must define exact classification values")
+    if cleanup_plan.get("prohibited_actions") != EXPECTED_C7_4_PROHIBITED_ACTIONS:
+        raise ValueError("C7.4 cleanup/removal plan must keep exact prohibited actions")
+
+    source_boundary = _expect_mapping(cleanup_plan, "source_of_truth_boundary")
+    if source_boundary.get("converge_authoritative_for_converge_work") != EXPECTED_CONVERGE_SOURCE_OF_TRUTH:
+        raise ValueError("C7.4 cleanup/removal plan must preserve Converge source-of-truth authorities")
+    if source_boundary.get("legacy_not_authoritative_for_converge_work") != EXPECTED_LEGACY_NON_AUTHORITATIVE_SOURCES:
+        raise ValueError("C7.4 cleanup/removal plan must keep legacy sources non-authoritative for Converge work")
+
+    surfaces = cleanup_plan.get("surfaces")
+    expected_surfaces = [dict(surface) for surface in CLEANUP_REMOVAL_SURFACES]
+    if surfaces != expected_surfaces:
+        raise ValueError("C7.4 cleanup/removal plan must keep the exact legacy surface inventory")
+    observed_categories = {surface["category"] for surface in surfaces}
+    if observed_categories != {"scripts", "docs", "skills", "aliases", "state paths"}:
+        raise ValueError("C7.4 cleanup/removal plan must cover scripts, docs, skills, aliases, and state paths")
+    for surface in surfaces:
+        if surface["classification"] not in EXPECTED_C7_4_CLEANUP_CLASSIFICATIONS:
+            raise ValueError("C7.4 cleanup/removal plan has an invalid classification")
+        if not surface.get("reason") or not surface.get("later_action_boundary"):
+            raise ValueError("C7.4 cleanup/removal surfaces must include reason and later_action_boundary")
+
+    later_execution_requires = cleanup_plan.get("later_execution_requires")
+    if not isinstance(later_execution_requires, list) or "separate explicit owner approval" not in later_execution_requires:
+        raise ValueError("C7.4 cleanup/removal execution must require separate explicit owner approval")
 
 
 def _expect_mapping(parent: dict[str, Any], key: str) -> dict[str, Any]:

@@ -5,8 +5,7 @@ This is the current execution checklist for the next `/goal` work.
 detail source. C7-specific planning is headed by
 `docs/converge/c7-canonical-command-replacement.md`.
 
-Current implementation baseline: C7.3 canonical route replacement / legacy route
-retirement planning is complete on
+Current implementation baseline: C7.4 cleanup/removal planning is complete on
 top of C7.0 command inventory and synthetic dry-run adapter. The local
 implementation now
 preserves the C0-C2.5 shared mode and terminal finalization contracts, the C3
@@ -17,8 +16,9 @@ adapter plus the C7.1 adapter packet contract. C7.2 adds explicit Converge
 source-of-truth and authority metadata for recovery, delivery reservation,
 report proof, and reported completion. C7.3 adds a dry-run-verifiable route
 retirement/replacement plan, owner approval gate, rollback switch, and
-logging/proof requirements. The next open phase is C7.4 cleanup and removal
-planning.
+logging/proof requirements. C7.4 adds a dry-run-verifiable cleanup/removal plan
+with legacy surface inventory, classifications, reasons, later-action
+boundaries, source-of-truth boundaries, and later execution requirements.
 
 Deferred non-blocking cleanup items are tracked in
 `docs/converge/p3-debt-register.md`. New P3 findings from future convergence
@@ -46,7 +46,7 @@ runs should be added there instead of being left only in chat or ledger logs.
   - [x] C7.1: Converge command adapter hardening.
   - [x] C7.2: Converge recovery/report-proof takeover.
   - [x] C7.3: Canonical route replacement / legacy route retirement plan.
-  - [ ] C7.4: Cleanup and removal plan.
+  - [x] C7.4: Cleanup and removal plan.
 
 ## C7.3 Output Boundary
 
@@ -75,13 +75,40 @@ Accepted C7.3 risks:
 - Historical legacy records remain readable and are not deleted or replayed.
 - Structured rollback metadata and smoke validation are part of the C7.3 plan,
   not authorization to activate live rollback.
-- Actual route replacement and C7.4 cleanup/removal planning remain separate
-  owner-approved slices.
+- Actual route replacement and cleanup/removal execution remain separate
+  owner-approved operational slices.
+
+## C7.4 Output Boundary
+
+C7.4 is a classification-only cleanup/removal planning slice. It fixes the
+legacy inventory for scripts, docs, skills, aliases, and state paths, and every
+entry carries a classification, reason, and later-action boundary.
+
+The dry-run packet now includes
+`route_retirement_plan.cleanup_removal_plan` with:
+
+- exact classification values: `retired`, `archived`,
+  `still-active-for-non-Converge`, and `requires-owner-approval`
+- exact legacy surfaces for GoalFlow intake, workspace policy docs,
+  verification-convergence skill routing, `/converge` alias, GoalFlow state,
+  Work Ledger state, and verification-convergence/chat-derived artifacts
+- C7.2/C7.3 source-of-truth boundary: Converge workflow state, checkpoint
+  cursor, delivery reservation, `report-proof`, and `complete-reported` remain
+  authoritative for Converge work; GoalFlow, Work Ledger, chat memory, and
+  verification-convergence artifacts do not
+- later execution requirements: separate explicit owner approval, exact surface
+  list, retention decision, rollback switch with expiry/log path, and
+  post-change smoke evidence
+
+C7.4 did not and must not execute cleanup/removal, live route replacement,
+live route removal, Gateway restart, shadow routing, deploy/apply/install,
+external action, legacy data deletion, file movement, file archival, skill
+disable/uninstall, push, PR, or release.
 
 ## Next Goal Command
 
 ```text
-/goal Converge Phase C7.4: cleanup and removal plan을 작성해줘. 목표는 C7.3 route retirement/replacement plan 이후에도 남는 legacy scripts, docs, skills, aliases, and state paths를 retired / archived / still-active-for-non-Converge로 분류하고, 실제 삭제나 live route removal 없이 cleanup/removal 계획과 검증 기준만 확정하는 것이야. Gateway restart, live/shadow routing, deploy/apply/install, legacy deletion, external action, push/PR/release는 제외해줘.
+/goal Converge C7 live route replacement readiness plan을 작성해줘. 목표는 C7.0-C7.4의 command dry-run, recovery/report-proof ownership, route retirement plan, cleanup/removal plan을 바탕으로 /goal, /verify, /conv live route replacement를 실행하기 전 필요한 owner approval record, exact route scope, rollback expiry/log path, retention decision, smoke evidence, and stop conditions를 운영 계획으로 확정하는 것이야. 실제 Gateway restart, live/shadow routing, deploy/apply/install, legacy deletion, live route replacement/removal, external action, push/PR/release는 제외해줘.
 ```
 
 ## C0 Completed Scope

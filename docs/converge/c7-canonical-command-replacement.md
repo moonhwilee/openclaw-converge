@@ -214,6 +214,47 @@ The cleanup/removal boundary must stay in the next slice:
 - `live_route_removal_allowed` is false
 - `separate_owner_approval_required` is true
 
+## C7.4 Cleanup And Removal Plan Contract
+
+C7.4 turns the C7.3 boundary into an explicit cleanup/removal plan. It is still
+classification and planning only. The dry-run packet now emits
+`route_retirement_plan.cleanup_removal_plan.version: c7.4` with an exact
+inventory of legacy surfaces, their classification, the reason for that
+classification, and the later-action boundary.
+
+Allowed classifications are fixed:
+
+- `retired`
+- `archived`
+- `still-active-for-non-Converge`
+- `requires-owner-approval`
+
+Current C7.4 cleanup/removal inventory:
+
+| Category | Surface | Classification | Later-action boundary |
+| --- | --- | --- | --- |
+| scripts | `workspace/scripts/goalflow_start_goal.py` | `requires-owner-approval` | Retire or narrow only after owner-approved live route replacement and migration evidence. |
+| docs | `workspace/AGENTS.md` and `docs/context/goalflow.md` exact `/goal` policy | `requires-owner-approval` | Update policy only in the separately approved route replacement operation that actually changes the live owner. |
+| skills | `workspace/skills/verification-convergence/SKILL.md` | `still-active-for-non-Converge` | Remove managed-command ownership only after Converge handles live `/verify` and `/conv` with owner-approved routing proof. |
+| aliases | `/converge` legacy alias | `retired` | Execute alias removal or replacement wording only in a later owner-approved live route removal task. |
+| state paths | `workspace/state/goalflow/*` | `archived` | Archive, move, or delete records only after explicit retention approval and migration checks. |
+| state paths | `workspace/state/work-ledger/*` | `still-active-for-non-Converge` | Do not remove or narrow until non-Converge ledger use is separately inventoried and approved. |
+| state paths | verification-convergence artifacts and chat-derived records | `archived` | Retain as historical evidence unless a later retention task explicitly approves cleanup. |
+
+C7.4 keeps the same source-of-truth boundary as C7.2/C7.3:
+
+- Converge-owned workflow authority: workflow state, checkpoint cursor,
+  delivery reservation, `report-proof`, and `complete-reported`.
+- Legacy sources that are not authoritative for Converge work: GoalFlow, Work
+  Ledger, chat memory, and verification-convergence artifacts.
+
+Any later cleanup execution requires a separate explicit owner approval, exact
+surface list, retention decision for historical state, rollback switch with
+expiry and log path, and post-change smoke evidence. C7.4 itself forbids
+cleanup/removal execution, live route removal, Gateway restart, shadow routing,
+deploy/apply/install, external action, legacy data deletion, file movement,
+file archival, skill disable/uninstall, push, PR, and release.
+
 ## Implementation Slices
 
 1. **C7.0 command inventory and routing spec**
@@ -248,11 +289,12 @@ The cleanup/removal boundary must stay in the next slice:
    removal.
 
 5. **C7.4 cleanup and removal plan**
-   Classify replaced legacy scripts, docs, skills, aliases, and state paths as
-   retired, archived, or still active for non-Converge work. C7.4 is
-   classification and planning only: it must not delete, move, archive,
-   disable, uninstall, reroute, or remove any legacy script, doc, skill, alias,
-   route, or state path.
+   Completed. The dry-run route plan now includes a C7.4
+   `cleanup_removal_plan` with exact legacy surface categories, classifications,
+   reasons, later-action boundaries, source-of-truth boundaries, and later
+   execution requirements. C7.4 is classification and planning only: it did not
+   delete, move, archive, disable, uninstall, reroute, or remove any legacy
+   script, doc, skill, alias, route, or state path.
 
 ### C7.4 Readiness Boundary
 

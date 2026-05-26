@@ -127,6 +127,10 @@ def assert_c7_3_route_retirement_plan_contract(state_root: Path) -> None:
         "route_retirement_plan.cleanup_removal_boundary" in required_packet_fields,
         "C7.4 cleanup boundary should be a required field",
     )
+    assert_true(
+        "route_retirement_plan.cleanup_removal_plan" in required_packet_fields,
+        "C7.4 cleanup/removal plan should be a required field",
+    )
     assert_true(route_plan["scope"]["managed_commands"] == ["/goal", "/verify", "/conv"], "C7.3 should scope managed commands")
     assert_true(route_plan["scope"]["legacy_aliases"] == ["/converge"], "C7.3 should classify /converge as legacy alias")
     assert_true(
@@ -199,6 +203,58 @@ def assert_c7_3_route_retirement_plan_contract(state_root: Path) -> None:
     assert_true(
         cleanup_boundary["separate_owner_approval_required"] is True,
         "C7.4 cleanup/removal should require separate owner approval",
+    )
+
+    cleanup_plan = route_plan["cleanup_removal_plan"]
+    assert_true(cleanup_plan["version"] == "c7.4", "C7.4 cleanup/removal plan should expose C7.4 version")
+    assert_true(
+        cleanup_plan["execution_boundary"] == "classification_and_plan_only",
+        "C7.4 cleanup/removal plan should stay classification/plan only",
+    )
+    assert_true(
+        cleanup_plan["classification_values"]
+        == ["retired", "archived", "still-active-for-non-Converge", "requires-owner-approval"],
+        "C7.4 should fix exact cleanup classification values",
+    )
+    categories = {surface["category"] for surface in cleanup_plan["surfaces"]}
+    assert_true(categories == {"scripts", "docs", "skills", "aliases", "state paths"}, "C7.4 should cover all legacy surface categories")
+    classifications = {surface["classification"] for surface in cleanup_plan["surfaces"]}
+    assert_true("retired" in classifications, "C7.4 should include retired surfaces")
+    assert_true("archived" in classifications, "C7.4 should include archived surfaces")
+    assert_true("still-active-for-non-Converge" in classifications, "C7.4 should include non-Converge active surfaces")
+    assert_true("requires-owner-approval" in classifications, "C7.4 should include owner-approval surfaces")
+    surfaces_by_name = {surface["surface"]: surface for surface in cleanup_plan["surfaces"]}
+    assert_true(
+        surfaces_by_name["/converge legacy alias"]["classification"] == "retired",
+        "C7.4 should mark /converge alias as retired in the later plan",
+    )
+    assert_true(
+        surfaces_by_name["workspace/state/goalflow/*"]["classification"] == "archived",
+        "C7.4 should keep GoalFlow state historical/readable, not authoritative",
+    )
+    for surface in cleanup_plan["surfaces"]:
+        assert_true(surface["reason"], "C7.4 cleanup surface should include a reason")
+        assert_true(surface["later_action_boundary"], "C7.4 cleanup surface should include later action boundary")
+    source_boundary = cleanup_plan["source_of_truth_boundary"]
+    assert_true(
+        "report-proof" in source_boundary["converge_authoritative_for_converge_work"],
+        "C7.4 should preserve Converge report-proof authority",
+    )
+    assert_true(
+        "Work Ledger" in source_boundary["legacy_not_authoritative_for_converge_work"],
+        "C7.4 should keep Work Ledger non-authoritative for Converge workflow completion",
+    )
+    assert_true(
+        "cleanup/removal execution" in cleanup_plan["prohibited_actions"],
+        "C7.4 should prohibit cleanup/removal execution",
+    )
+    assert_true(
+        "legacy file archival" in cleanup_plan["prohibited_actions"],
+        "C7.4 should prohibit archival execution in this slice",
+    )
+    assert_true(
+        "separate explicit owner approval" in cleanup_plan["later_execution_requires"],
+        "C7.4 later execution should require separate explicit owner approval",
     )
 
 
@@ -356,6 +412,47 @@ def assert_c7_1_contract_validation_rejects_drift(state_root: Path) -> None:
         assert_true("prohibited actions" in str(exc), "validator should reject cleanup prohibited-action drift")
     else:
         raise AssertionError("validator should reject cleanup prohibited-action drift")
+
+    cleanup_plan_surface_drift = json.loads(json.dumps(packet))
+    cleanup_plan_surface_drift["route_retirement_plan"]["cleanup_removal_plan"]["surfaces"][0][
+        "classification"
+    ] = "archived"
+    try:
+        validate_dry_run_packet(cleanup_plan_surface_drift)
+    except ValueError as exc:
+        assert_true("surface inventory" in str(exc), "validator should reject C7.4 surface inventory drift")
+    else:
+        raise AssertionError("validator should reject C7.4 surface inventory drift")
+
+    cleanup_plan_category_drift = json.loads(json.dumps(packet))
+    cleanup_plan_category_drift["route_retirement_plan"]["cleanup_removal_plan"]["surfaces"] = [
+        surface
+        for surface in cleanup_plan_category_drift["route_retirement_plan"]["cleanup_removal_plan"]["surfaces"]
+        if surface["category"] != "skills"
+    ]
+    try:
+        validate_dry_run_packet(cleanup_plan_category_drift)
+    except ValueError as exc:
+        assert_true(
+            "surface inventory" in str(exc) or "scripts, docs, skills" in str(exc),
+            "validator should reject missing C7.4 surface category",
+        )
+    else:
+        raise AssertionError("validator should reject missing C7.4 surface category")
+
+    cleanup_plan_source_drift = json.loads(json.dumps(packet))
+    cleanup_plan_source_drift["route_retirement_plan"]["cleanup_removal_plan"]["source_of_truth_boundary"][
+        "converge_authoritative_for_converge_work"
+    ].remove("complete-reported")
+    try:
+        validate_dry_run_packet(cleanup_plan_source_drift)
+    except ValueError as exc:
+        assert_true(
+            "source-of-truth" in str(exc),
+            "validator should reject missing C7.4 Converge source-of-truth authority",
+        )
+    else:
+        raise AssertionError("validator should reject missing C7.4 source-of-truth authority")
 
 
 def assert_rejects_non_managed_or_empty_commands(state_root: Path) -> None:

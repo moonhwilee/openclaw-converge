@@ -61,10 +61,14 @@ The command returns JSON with:
 - `route_retirement_plan.cleanup_removal_boundary`: C7.4 cleanup/removal remains
   plan-only, forbids legacy deletion and live route removal, and requires a
   separate owner approval
+- `route_retirement_plan.cleanup_removal_plan`: C7.4 legacy surface inventory
+  for scripts, docs, skills, aliases, and state paths, with fixed
+  classifications, reasons, later-action boundaries, source-of-truth boundary,
+  and later execution requirements
 
 ## Explicit Non-Goals
 
-C7.0-C7.3 do not restart Gateway, observe traffic, enable shadow routing,
+C7.0-C7.4 do not restart Gateway, observe traffic, enable shadow routing,
 replace slash routes, deploy, apply, install, push, open a PR, release, delete
 legacy data, or send external messages.
 

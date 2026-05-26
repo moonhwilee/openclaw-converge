@@ -159,17 +159,20 @@ visible reports or replay side effects.
 ## Implementation Slices
 
 1. **C7.0 command inventory and routing spec**
-   Identify every installed or documented `/goal`, `/verify`, `/conv`, and
-   `/converge` route. Record the current owner, state root, delivery behavior,
-   and rollback switch.
+   Completed. Identified every installed or documented `/goal`, `/verify`,
+   `/conv`, and `/converge` route, recorded the current owner, intended C7
+   owner, state root, delivery behavior, rollback switch, transitional
+   behavior, and final behavior, and added a route-free `command-dry-run`
+   adapter.
 
 2. **C7.1 Converge command adapter**
-   Add the smallest synthetic command layer that invokes `converge goal`,
-   `converge verify`, or `converge conv` with owner session, visible delivery,
-   and state-root metadata. The adapter must not implement mode semantics
-   itself, must not replace live routes, and must not touch Gateway traffic
-   unless a separate owner-approved operational task later enables shadow or
-   live routing.
+   Harden the existing synthetic `command-dry-run` adapter contract. Keep this
+   to packet fields and validation for `/goal` draft/confirmation metadata,
+   `/verify` audit intent, `/conv` round metadata, and state-root, delivery, and
+   rollback fields. Do not create a new artifact store, routing layer, or mode
+   semantics implementation. Do not replace live routes or touch Gateway
+   traffic unless a separate owner-approved operational task later enables
+   shadow or live routing.
 
 3. **C7.2 Converge recovery/report-proof takeover**
    Route Converge-owned workflows through `scan`, `watchdog-check`, `recover`,
@@ -202,9 +205,10 @@ visible reports or replay side effects.
 
 ## Verification Gates
 
-C7.0 inventory and dry-run adapter work is the next implementable slice. Live
-route replacement and route retirement are not ready until these gates are
-documented or tested:
+C7.0 inventory and dry-run adapter work is complete. C7.1 should harden the
+existing synthetic packet contract without changing live routes. Live route
+replacement and route retirement are not ready until these gates are documented
+or tested:
 
 - Command inventory proves every current `/goal`, `/verify`, `/conv`, and
   `/converge` entrypoint has one intended C7 owner.
@@ -221,9 +225,8 @@ documented or tested:
 
 ## Readiness Verdict
 
-C7.0 is ready for an implementation `/goal` only when this document, the Phase
-C todo, and the project index agree that C7 means canonical command replacement
-plus legacy retirement. The next implementation should begin with source-of-
-truth inventory and synthetic adapter dry-run work, not live slash-route
-replacement. Live replacement can be planned by C7, but execution remains a
-separate owner-approved operational task.
+C7.0 is complete and the next implementation is C7.1 adapter hardening, not
+another inventory or live slash-route replacement. C7.1 should keep the
+existing `command-dry-run` boundary small while making the packet metadata
+strong enough for a later owner-approved route plan. Live replacement can be
+planned by C7, but execution remains a separate owner-approved operational task.

@@ -200,6 +200,10 @@ def assert_c7_3_route_retirement_plan_contract(state_root: Path) -> None:
         "route_retirement_plan.cleanup_removal_plan" in required_packet_fields,
         "C7.4 cleanup/removal plan should be a required field",
     )
+    assert_true(
+        "route_retirement_plan.live_route_replacement_readiness_plan" in required_packet_fields,
+        "C7 live route readiness plan should be a required field",
+    )
     assert_true(route_plan["scope"]["managed_commands"] == ["/goal", "/verify", "/conv"], "C7.3 should scope managed commands")
     assert_true(route_plan["scope"]["legacy_aliases"] == ["/converge"], "C7.3 should classify /converge as legacy alias")
     assert_true(
@@ -343,6 +347,134 @@ def assert_c7_3_route_retirement_plan_contract(state_root: Path) -> None:
         cleanup_plan["later_execution_requires"] == expected_later_execution_requires,
         "C7.4 later execution requirements should be exact",
     )
+
+    readiness_plan = route_plan["live_route_replacement_readiness_plan"]
+    assert_true(
+        readiness_plan["version"] == "c7-live-route-readiness",
+        "live route readiness plan should expose a stable version",
+    )
+    assert_true(
+        readiness_plan["execution_boundary"] == "readiness_validation_only",
+        "live route readiness should stay validation-only",
+    )
+    assert_true(
+        readiness_plan["readiness_authorizes_live_change"] is False,
+        "live route readiness should not authorize live changes",
+    )
+    approval_schema = readiness_plan["owner_approval_record_schema"]
+    expected_approval_fields = [
+        "approver",
+        "approved_at",
+        "approval_ref",
+        "exact_route_scope",
+        "explicit_exclusions",
+        "rollback_expires_at",
+        "rollback_log_path",
+        "retention_decision_ref",
+        "pre_change_smoke_evidence",
+        "post_change_smoke_plan",
+        "stop_condition_acknowledgement",
+    ]
+    assert_true(approval_schema["required"] is True, "live route readiness should require an owner approval record")
+    assert_true(
+        approval_schema["required_fields"] == expected_approval_fields,
+        "live route readiness should fix approval record fields",
+    )
+    assert_true(
+        approval_schema["must_bind_exact_commands"] == ["/goal", "/verify", "/conv"],
+        "live route readiness approval should bind exact managed commands",
+    )
+    assert_true(
+        approval_schema["must_name_explicit_exclusions"] == ["/converge"],
+        "live route readiness approval should explicitly exclude /converge promotion",
+    )
+    exact_scope = readiness_plan["exact_route_scope"]
+    assert_true(
+        exact_scope["managed_commands"] == ["/goal", "/verify", "/conv"],
+        "live route readiness should scope only managed commands",
+    )
+    assert_true(
+        exact_scope["legacy_aliases_excluded_from_primary_route"] == ["/converge"],
+        "live route readiness should keep /converge out of primary routing",
+    )
+    assert_true(
+        exact_scope["implementation_scope_required"] is True,
+        "live route readiness should require implementation route inventory",
+    )
+    assert_true(
+        exact_scope["source_of_truth_after_gate"] == "converge.workflow",
+        "live route readiness should preserve Converge workflow source of truth",
+    )
+    gateway_preflight = readiness_plan["gateway_restart_preflight"]
+    assert_true(gateway_preflight["decision_required"] is True, "Gateway preflight decision should be required")
+    assert_true(
+        gateway_preflight["preflight_required_if_gateway_restart_or_route_config_reload"] is True,
+        "Gateway preflight should be required if restart/config reload is needed",
+    )
+    assert_true(
+        gateway_preflight["command"] == "python3 /Users/moon/.openclaw/workspace/scripts/gateway_restart_preflight.py",
+        "Gateway preflight command should be exact",
+    )
+    assert_true(
+        gateway_preflight["run_during_readiness_validation"] is False,
+        "readiness validation should not run Gateway preflight",
+    )
+    assert_true(
+        gateway_preflight["restart_authorized_by_readiness"] is False,
+        "readiness validation should not authorize restart",
+    )
+    assert_true(gateway_preflight["blocks_if_failed"] is True, "failed Gateway preflight should block later execution")
+    rollback_record = readiness_plan["rollback_record"]
+    assert_true(rollback_record["automatic_fallback_allowed"] is False, "rollback should not be automatic fallback")
+    assert_true(rollback_record["expires_at_required"] is True, "rollback should require expiry")
+    assert_true(rollback_record["log_path_required"] is True, "rollback should require log path")
+    assert_true(rollback_record["max_duration_hours"] == 24, "rollback max duration should be bounded")
+    retention = readiness_plan["retention_decision"]
+    assert_true(retention["required"] is True, "live route readiness should require retention decision")
+    assert_true(
+        retention["deletion_authorized_by_readiness"] is False,
+        "live route readiness should not authorize legacy deletion",
+    )
+    for source in ("GoalFlow state", "Work Ledger state", "verification-convergence artifacts", "chat-derived records"):
+        assert_true(source in retention["covered_sources"], f"retention decision should cover {source}")
+    assert_true(
+        readiness_plan["pre_change_readiness_smoke"]
+        == [
+            "command adapter smoke",
+            "recovery/report-proof smoke",
+            "C7 route retirement dry-run packet",
+            "C7 cleanup/removal dry-run packet",
+            "synthetic duplicate visible report guard",
+        ],
+        "live route readiness should fix pre-change smoke evidence",
+    )
+    assert_true(
+        "reserve-delivery/report-proof/complete-reported remains single-owner"
+        in readiness_plan["post_change_smoke_plan"],
+        "live route readiness should require post-change duplicate report smoke",
+    )
+    duplicate_guard = readiness_plan["duplicate_visible_report_guard"]
+    assert_true(duplicate_guard["exactly_one_route_owner_required"] is True, "readiness should require one route owner")
+    assert_true(
+        duplicate_guard["legacy_handler_must_be_suppressed_or_rollback_only"] is True,
+        "legacy handler should be suppressed or rollback-only",
+    )
+    assert_true(
+        duplicate_guard["no_replay_from_goalflow_work_ledger_or_chat_memory"] is True,
+        "legacy records should not replay visible reports",
+    )
+    for stop_condition in (
+        "missing exact owner approval record",
+        "Gateway restart preflight failed",
+        "attempted /converge alias promotion",
+        "duplicate visible report risk unresolved",
+        "post-change smoke plan missing",
+        "cleanup/removal execution requested",
+    ):
+        assert_true(
+            stop_condition in readiness_plan["stop_conditions"],
+            f"live route readiness should stop on {stop_condition}",
+        )
 
 
 def assert_c7_1_contract_validation_rejects_drift(state_root: Path) -> None:
@@ -759,6 +891,72 @@ def assert_c7_1_contract_validation_rejects_drift(state_root: Path) -> None:
         assert_true("surface inventory" in str(exc), "validator should reject missing exact path discovery flag")
     else:
         raise AssertionError("validator should reject missing exact path discovery flag")
+
+    readiness_live_change_drift = json.loads(json.dumps(packet))
+    readiness_live_change_drift["route_retirement_plan"]["live_route_replacement_readiness_plan"][
+        "readiness_authorizes_live_change"
+    ] = True
+    try:
+        validate_dry_run_packet(readiness_live_change_drift)
+    except ValueError as exc:
+        assert_true("must not authorize live changes" in str(exc), "validator should reject live-change authorization")
+    else:
+        raise AssertionError("validator should reject live route authorization from readiness plan")
+
+    readiness_scope_drift = json.loads(json.dumps(packet))
+    readiness_scope_drift["route_retirement_plan"]["live_route_replacement_readiness_plan"]["exact_route_scope"][
+        "managed_commands"
+    ].remove("/conv")
+    try:
+        validate_dry_run_packet(readiness_scope_drift)
+    except ValueError as exc:
+        assert_true("exact route scope" in str(exc), "validator should reject narrowed live readiness route scope")
+    else:
+        raise AssertionError("validator should reject narrowed live readiness route scope")
+
+    readiness_preflight_drift = json.loads(json.dumps(packet))
+    readiness_preflight_drift["route_retirement_plan"]["live_route_replacement_readiness_plan"][
+        "gateway_restart_preflight"
+    ]["run_during_readiness_validation"] = True
+    try:
+        validate_dry_run_packet(readiness_preflight_drift)
+    except ValueError as exc:
+        assert_true("Gateway preflight policy" in str(exc), "validator should reject readiness preflight execution drift")
+    else:
+        raise AssertionError("validator should reject running Gateway preflight during readiness validation")
+
+    readiness_rollback_drift = json.loads(json.dumps(packet))
+    readiness_rollback_drift["route_retirement_plan"]["live_route_replacement_readiness_plan"]["rollback_record"][
+        "automatic_fallback_allowed"
+    ] = True
+    try:
+        validate_dry_run_packet(readiness_rollback_drift)
+    except ValueError as exc:
+        assert_true("automatic fallback" in str(exc), "validator should reject automatic rollback fallback drift")
+    else:
+        raise AssertionError("validator should reject automatic rollback fallback drift")
+
+    readiness_retention_drift = json.loads(json.dumps(packet))
+    readiness_retention_drift["route_retirement_plan"]["live_route_replacement_readiness_plan"][
+        "retention_decision"
+    ]["deletion_authorized_by_readiness"] = True
+    try:
+        validate_dry_run_packet(readiness_retention_drift)
+    except ValueError as exc:
+        assert_true("retention decision" in str(exc), "validator should reject readiness retention deletion drift")
+    else:
+        raise AssertionError("validator should reject readiness retention deletion drift")
+
+    readiness_stop_drift = json.loads(json.dumps(packet))
+    readiness_stop_drift["route_retirement_plan"]["live_route_replacement_readiness_plan"]["stop_conditions"].remove(
+        "duplicate visible report risk unresolved"
+    )
+    try:
+        validate_dry_run_packet(readiness_stop_drift)
+    except ValueError as exc:
+        assert_true("stop conditions" in str(exc), "validator should reject missing live readiness stop condition")
+    else:
+        raise AssertionError("validator should reject missing live readiness stop condition")
 
 
 def assert_rejects_non_managed_or_empty_commands(state_root: Path) -> None:

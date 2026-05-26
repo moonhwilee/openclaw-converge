@@ -93,6 +93,7 @@ COMMAND_INVENTORY: tuple[CommandSurface, ...] = (
 C7_1_CONTRACT_VERSION = "c7.1"
 C7_3_PLAN_VERSION = "c7.3"
 C7_4_PLAN_VERSION = "c7.4"
+C7_READINESS_PLAN_VERSION = "c7-live-route-readiness"
 
 EXPECTED_ROUTE_CLASSIFICATIONS = {
     "/goal": "replace_default_after_owner_approved_live_routing",
@@ -189,6 +190,91 @@ EXPECTED_C7_4_LATER_EXECUTION_REQUIRES = [
     "post-change smoke evidence",
 ]
 
+EXPECTED_LIVE_READINESS_APPROVAL_RECORD_FIELDS = [
+    "approver",
+    "approved_at",
+    "approval_ref",
+    "exact_route_scope",
+    "explicit_exclusions",
+    "rollback_expires_at",
+    "rollback_log_path",
+    "retention_decision_ref",
+    "pre_change_smoke_evidence",
+    "post_change_smoke_plan",
+    "stop_condition_acknowledgement",
+]
+
+EXPECTED_LIVE_READINESS_ROUTE_SCOPE = {
+    "managed_commands": ["/goal", "/verify", "/conv"],
+    "legacy_aliases_excluded_from_primary_route": ["/converge"],
+    "forbidden_scope_expansion": ["/plan", "/cgoal", "/cverify", "/cconv", "unlisted slash commands"],
+    "implementation_scope_required": True,
+    "source_of_truth_after_gate": "converge.workflow",
+}
+
+EXPECTED_LIVE_READINESS_GATEWAY_PREFLIGHT = {
+    "decision_required": True,
+    "preflight_required_if_gateway_restart_or_route_config_reload": True,
+    "command": "python3 /Users/moon/.openclaw/workspace/scripts/gateway_restart_preflight.py",
+    "required_success_output": "Gateway restart preflight: OK",
+    "run_during_readiness_validation": False,
+    "restart_authorized_by_readiness": False,
+    "explicit_restart_approval_required": True,
+    "blocks_if_failed": True,
+}
+
+EXPECTED_LIVE_READINESS_RETENTION_DECISION = {
+    "required": True,
+    "exact_paths_required_before_move_archive_delete": True,
+    "allowed_decisions": ["retain", "archive", "migrate/import", "freeze", "delete"],
+    "deletion_authorized_by_readiness": False,
+    "covered_sources": [
+        "GoalFlow state",
+        "Work Ledger state",
+        "verification-convergence artifacts",
+        "chat-derived records",
+        "/converge alias history",
+    ],
+}
+
+EXPECTED_LIVE_READINESS_PRE_CHANGE_SMOKE = [
+    "command adapter smoke",
+    "recovery/report-proof smoke",
+    "C7 route retirement dry-run packet",
+    "C7 cleanup/removal dry-run packet",
+    "synthetic duplicate visible report guard",
+]
+
+EXPECTED_LIVE_READINESS_POST_CHANGE_SMOKE = [
+    "/goal route packet reaches Converge only",
+    "/verify route packet reaches Converge only",
+    "/conv route packet reaches Converge only",
+    "legacy route suppressed or rollback-only",
+    "reserve-delivery/report-proof/complete-reported remains single-owner",
+    "rollback activation and rollback deactivation records are logged",
+]
+
+EXPECTED_LIVE_READINESS_STOP_CONDITIONS = [
+    "missing exact owner approval record",
+    "missing exact route scope",
+    "missing implementation route inventory",
+    "attempted /converge alias promotion",
+    "missing rollback expiry or log path",
+    "automatic fallback requested",
+    "missing retention decision",
+    "Gateway restart preflight decision missing",
+    "Gateway restart preflight failed",
+    "Gateway restart requested without explicit restart approval",
+    "post-change smoke plan missing",
+    "owner/session/delivery/state-root propagation mismatch",
+    "duplicate visible report risk unresolved",
+    "cleanup/removal execution requested",
+    "legacy deletion/movement/archive requested",
+    "deploy/apply/install requested without approval",
+    "external action requested",
+    "push/PR/release requested",
+]
+
 EXPECTED_REQUIRED_PACKET_FIELDS = [
     "input.raw_message",
     "input.command",
@@ -209,6 +295,7 @@ EXPECTED_REQUIRED_PACKET_FIELDS = [
     "route_retirement_plan.logging_proof",
     "route_retirement_plan.cleanup_removal_boundary",
     "route_retirement_plan.cleanup_removal_plan",
+    "route_retirement_plan.live_route_replacement_readiness_plan",
     "converge_invocation.argv",
     "blocked_without_approval",
 ]
@@ -410,6 +497,7 @@ def build_route_retirement_plan() -> dict[str, Any]:
             "separate_owner_approval_required": True,
         },
         "cleanup_removal_plan": build_cleanup_removal_plan(),
+        "live_route_replacement_readiness_plan": build_live_route_replacement_readiness_plan(),
     }
 
 
@@ -425,6 +513,47 @@ def build_cleanup_removal_plan() -> dict[str, Any]:
         },
         "later_execution_requires": list(EXPECTED_C7_4_LATER_EXECUTION_REQUIRES),
         "prohibited_actions": list(EXPECTED_C7_4_PROHIBITED_ACTIONS),
+    }
+
+
+def build_live_route_replacement_readiness_plan() -> dict[str, Any]:
+    return {
+        "version": C7_READINESS_PLAN_VERSION,
+        "execution_boundary": "readiness_validation_only",
+        "readiness_authorizes_live_change": False,
+        "owner_approval_record_schema": {
+            "required": True,
+            "required_fields": list(EXPECTED_LIVE_READINESS_APPROVAL_RECORD_FIELDS),
+            "must_bind_exact_commands": ["/goal", "/verify", "/conv"],
+            "must_name_explicit_exclusions": ["/converge"],
+        },
+        "exact_route_scope": dict(EXPECTED_LIVE_READINESS_ROUTE_SCOPE),
+        "gateway_restart_preflight": dict(EXPECTED_LIVE_READINESS_GATEWAY_PREFLIGHT),
+        "rollback_record": {
+            "required": True,
+            "automatic_fallback_allowed": False,
+            "expires_at_required": True,
+            "expires_at_format": "ISO-8601 UTC timestamp",
+            "max_duration_hours": 24,
+            "log_path_required": True,
+            "log_path_root": "approved Converge or OpenClaw state/log root",
+            "legacy_route_scope_required": True,
+            "activation_and_deactivation_entries_required": True,
+            "post_rollback_smoke_required": True,
+        },
+        "retention_decision": dict(EXPECTED_LIVE_READINESS_RETENTION_DECISION),
+        "pre_change_readiness_smoke": list(EXPECTED_LIVE_READINESS_PRE_CHANGE_SMOKE),
+        "post_change_smoke_plan": list(EXPECTED_LIVE_READINESS_POST_CHANGE_SMOKE),
+        "duplicate_visible_report_guard": {
+            "required": True,
+            "exactly_one_route_owner_required": True,
+            "legacy_handler_must_be_suppressed_or_rollback_only": True,
+            "reserve_delivery_required": True,
+            "report_proof_required": True,
+            "complete_reported_required": True,
+            "no_replay_from_goalflow_work_ledger_or_chat_memory": True,
+        },
+        "stop_conditions": list(EXPECTED_LIVE_READINESS_STOP_CONDITIONS),
     }
 
 
@@ -675,6 +804,7 @@ def validate_route_retirement_plan(route_plan: dict[str, Any]) -> None:
             raise ValueError(f"C7.3 cleanup boundary must set {key}=false")
 
     validate_cleanup_removal_plan(_expect_mapping(route_plan, "cleanup_removal_plan"))
+    validate_live_route_replacement_readiness_plan(_expect_mapping(route_plan, "live_route_replacement_readiness_plan"))
 
 
 def validate_cleanup_removal_plan(cleanup_plan: dict[str, Any]) -> None:
@@ -711,6 +841,72 @@ def validate_cleanup_removal_plan(cleanup_plan: dict[str, Any]) -> None:
 
     if cleanup_plan.get("later_execution_requires") != EXPECTED_C7_4_LATER_EXECUTION_REQUIRES:
         raise ValueError("C7.4 cleanup/removal plan must keep exact later execution requirements")
+
+
+def validate_live_route_replacement_readiness_plan(readiness_plan: dict[str, Any]) -> None:
+    if readiness_plan.get("version") != C7_READINESS_PLAN_VERSION:
+        raise ValueError(f"C7 live route readiness plan version must be {C7_READINESS_PLAN_VERSION!r}")
+    if readiness_plan.get("execution_boundary") != "readiness_validation_only":
+        raise ValueError("C7 live route readiness must stay readiness_validation_only")
+    if readiness_plan.get("readiness_authorizes_live_change") is not False:
+        raise ValueError("C7 live route readiness must not authorize live changes")
+
+    approval_schema = _expect_mapping(readiness_plan, "owner_approval_record_schema")
+    if approval_schema.get("required") is not True:
+        raise ValueError("C7 live route readiness must require an owner approval record")
+    if approval_schema.get("required_fields") != EXPECTED_LIVE_READINESS_APPROVAL_RECORD_FIELDS:
+        raise ValueError("C7 live route readiness must keep exact approval record fields")
+    if approval_schema.get("must_bind_exact_commands") != ["/goal", "/verify", "/conv"]:
+        raise ValueError("C7 live route readiness approval must bind exact managed commands")
+    if approval_schema.get("must_name_explicit_exclusions") != ["/converge"]:
+        raise ValueError("C7 live route readiness approval must explicitly exclude /converge promotion")
+
+    if _expect_mapping(readiness_plan, "exact_route_scope") != EXPECTED_LIVE_READINESS_ROUTE_SCOPE:
+        raise ValueError("C7 live route readiness must keep exact route scope")
+    if _expect_mapping(readiness_plan, "gateway_restart_preflight") != EXPECTED_LIVE_READINESS_GATEWAY_PREFLIGHT:
+        raise ValueError("C7 live route readiness must keep exact Gateway preflight policy")
+
+    rollback = _expect_mapping(readiness_plan, "rollback_record")
+    for key in (
+        "required",
+        "expires_at_required",
+        "log_path_required",
+        "legacy_route_scope_required",
+        "activation_and_deactivation_entries_required",
+        "post_rollback_smoke_required",
+    ):
+        if rollback.get(key) is not True:
+            raise ValueError(f"C7 live route readiness rollback record must set {key}=true")
+    if rollback.get("automatic_fallback_allowed") is not False:
+        raise ValueError("C7 live route readiness rollback must not allow automatic fallback")
+    if rollback.get("expires_at_format") != "ISO-8601 UTC timestamp":
+        raise ValueError("C7 live route readiness rollback expiry must use ISO-8601 UTC")
+    if rollback.get("max_duration_hours") != 24:
+        raise ValueError("C7 live route readiness rollback max duration must be fixed")
+    if rollback.get("log_path_root") != "approved Converge or OpenClaw state/log root":
+        raise ValueError("C7 live route readiness rollback log path root must be fixed")
+
+    if _expect_mapping(readiness_plan, "retention_decision") != EXPECTED_LIVE_READINESS_RETENTION_DECISION:
+        raise ValueError("C7 live route readiness must keep exact retention decision requirements")
+    if readiness_plan.get("pre_change_readiness_smoke") != EXPECTED_LIVE_READINESS_PRE_CHANGE_SMOKE:
+        raise ValueError("C7 live route readiness must keep exact pre-change smoke requirements")
+    if readiness_plan.get("post_change_smoke_plan") != EXPECTED_LIVE_READINESS_POST_CHANGE_SMOKE:
+        raise ValueError("C7 live route readiness must keep exact post-change smoke plan")
+
+    duplicate_guard = _expect_mapping(readiness_plan, "duplicate_visible_report_guard")
+    for key in (
+        "required",
+        "exactly_one_route_owner_required",
+        "legacy_handler_must_be_suppressed_or_rollback_only",
+        "reserve_delivery_required",
+        "report_proof_required",
+        "complete_reported_required",
+        "no_replay_from_goalflow_work_ledger_or_chat_memory",
+    ):
+        if duplicate_guard.get(key) is not True:
+            raise ValueError(f"C7 live route readiness duplicate report guard must set {key}=true")
+    if readiness_plan.get("stop_conditions") != EXPECTED_LIVE_READINESS_STOP_CONDITIONS:
+        raise ValueError("C7 live route readiness must keep exact stop conditions")
 
 
 def _expect_mapping(parent: dict[str, Any], key: str) -> dict[str, Any]:

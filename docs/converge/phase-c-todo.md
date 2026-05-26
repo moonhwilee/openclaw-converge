@@ -41,7 +41,8 @@ runs should be added there instead of being left only in chat or ledger logs.
 - [x] C4.5 / Slice 8.5: Smoke Helper Consolidation.
 - [x] C5 / Slice 9: Recovery.
 - [x] C6 / Slice 10: Install Wiring.
-- [ ] C7 / Slice 11: Canonical Command Replacement + Legacy Retirement.
+- [ ] C7 / Slice 11: Canonical Command Replacement + Legacy Retirement
+  (C7.0-C7.4 planning complete; live route readiness pending).
   - [x] C7.0: Entrypoint inventory + synthetic dry-run adapter.
   - [x] C7.1: Converge command adapter hardening.
   - [x] C7.2: Converge recovery/report-proof takeover.
@@ -106,10 +107,51 @@ live route removal, Gateway restart, shadow routing, deploy/apply/install,
 external action, legacy data deletion, legacy file deletion, file movement,
 file archival, skill disable/uninstall, push, PR, or release.
 
+## C7 Live Route Replacement Readiness Gate
+
+Live route replacement readiness is a validation gate, not operational approval.
+It may prove that `/goal`, `/verify`, and `/conv` can be moved to Converge in a
+later approved task, but it does not authorize Gateway restart, live/shadow
+routing, deploy/apply/install, cleanup/removal execution, legacy deletion,
+external action, push, PR, or release.
+
+The dry-run packet now includes
+`route_retirement_plan.live_route_replacement_readiness_plan` with the required
+readiness fields:
+
+- owner approval record schema with approver, timestamp, approval reference,
+  exact route scope, explicit exclusions, rollback expiry/log path, retention
+  decision reference, smoke evidence, and stop-condition acknowledgement
+- exact live route scope for `/goal`, `/verify`, and `/conv`; `/converge` stays
+  excluded from primary routing and must not be silently promoted
+- implementation route inventory requirement for the later operational task,
+  including exact files/config keys/handler IDs before approval can execute
+- Gateway restart preflight policy: readiness validation does not run preflight
+  or authorize restart; a later operational restart/config reload must run
+  `python3 /Users/moon/.openclaw/workspace/scripts/gateway_restart_preflight.py`
+  immediately before restart and must see `Gateway restart preflight: OK`
+- rollback record requirements: explicit approval, ISO-8601 UTC expiry, maximum
+  24 hour duration, required log path, exact legacy route scope,
+  activation/deactivation entries, and post-rollback smoke; rollback is never
+  automatic fallback
+- retention decision for GoalFlow state, Work Ledger state,
+  verification-convergence artifacts, chat-derived records, and `/converge`
+  alias history; readiness does not authorize deletion
+- pre-change readiness smoke separate from post-change smoke plan
+- duplicate visible report guard requiring exactly one route owner and no replay
+  from GoalFlow, Work Ledger, chat memory, or verification artifacts
+
+Go/No-Go is `No-Go` if any approval record field, exact route scope,
+implementation inventory, rollback expiry/log path, retention decision, Gateway
+preflight decision, post-change smoke plan, or duplicate-report guard is
+missing. It is also `No-Go` if the request tries to promote `/converge`, allow
+automatic fallback, execute cleanup/removal, delete/move/archive legacy state,
+restart Gateway, route live traffic, deploy/apply/install, push, PR, or release.
+
 ## Next Goal Command
 
 ```text
-/goal Converge C7 live route replacement readiness plan을 작성해줘. 목표는 C7.0-C7.4의 command dry-run, recovery/report-proof ownership, route retirement plan, cleanup/removal plan을 바탕으로 /goal, /verify, /conv live route replacement를 실행하기 전 필요한 owner approval record, exact route scope, rollback expiry/log path, retention decision, smoke evidence, and stop conditions를 운영 계획으로 확정하는 것이야. 실제 cleanup/removal execution, Gateway restart, live/shadow routing, deploy/apply/install, legacy deletion/movement/archival, legacy skill disable/uninstall, live route replacement/removal, external action, push/PR/release는 제외해줘.
+/goal Converge C7 live route replacement readiness plan을 작성해줘. 목표는 C7.0-C7.4의 command dry-run, recovery/report-proof ownership, route retirement plan, cleanup/removal plan을 바탕으로 /goal, /verify, /conv live route replacement를 실행하기 전 필요한 owner approval record, exact route scope, implementation route inventory, rollback expiry/log path, retention decision, pre-change readiness smoke, post-change smoke plan, duplicate visible report guard, Gateway restart preflight policy, and stop conditions를 운영 계획으로 확정하는 것이야. 실제 cleanup/removal execution, Gateway restart, live/shadow routing, deploy/apply/install, legacy deletion/movement/archival, legacy skill disable/uninstall, live route replacement/removal, external action, push/PR/release는 제외해줘.
 ```
 
 ## C0 Completed Scope

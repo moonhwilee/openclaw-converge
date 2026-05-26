@@ -36,7 +36,11 @@ task.
 ```bash
 python -m converge.cli start --kind goal --text "demo" --json
 python -m converge.cli validate --sample-docs
-python -m converge.cli command-dry-run --raw-message "/goal demo" --json
+python -m converge.cli --state-root /tmp/converge-dry-run command-dry-run \
+  --raw-message "/goal demo" \
+  --owner-session-key session:demo \
+  --visible-delivery '{"channel":"telegram","target":"demo"}' \
+  --json
 npm run smoke:command-adapter
 ```
 

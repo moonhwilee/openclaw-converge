@@ -9,11 +9,17 @@ worklog initialization, atomic checkpoints, visible message formatting, shared
 mode-handler primitives, terminal delivery reservation, report proof, manual
 reconcile guards, C4 `goal` mode, C4.5 smoke helper/docs cleanup, and C5
 Recovery commands, and C6 local install wiring for the standalone CLI and
-deterministic watchdog runner. The next planned boundary is C7 Slash/Ledger
-Adapter Routing.
+deterministic watchdog runner. The next planned boundary is C7 Canonical Command
+Replacement + Legacy Retirement.
 
 The package is intentionally not wired into existing slash commands yet.
-Development uses the local CLI:
+Development uses the local CLI. C7's target is to make Converge the canonical
+backend for managed `/goal`, `/verify`, and `/conv` work after command-routing,
+recovery, delivery-proof, and separately approved live-routing gates pass; it is
+not a permanent `/c*` coexistence path. C7.0 starts with source inventory and a
+synthetic dry-run adapter only; Gateway restart, live traffic observation,
+shadow routing, live slash-route replacement, push, PR, and release require
+separate owner approval.
 
 ```bash
 python -m converge.cli start --kind goal --text "demo" --json

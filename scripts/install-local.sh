@@ -31,7 +31,7 @@ fi
 copy_runtime_tree() {
   local target_root="$1"
   rm -rf "$target_root/converge" "$target_root/bin" "$target_root/scripts" "$target_root/prompts" "$target_root/tests"
-  mkdir -p "$target_root/bin" "$target_root/scripts" "$target_root/prompts"
+  mkdir -p "$target_root/bin" "$target_root/scripts" "$target_root/prompts" "$target_root/tests"
 
   cp "$SOURCE_ROOT/README.md" "$target_root/README.md"
   cp -R "$SOURCE_ROOT/converge" "$target_root/"
@@ -42,6 +42,7 @@ copy_runtime_tree() {
   cp "$SOURCE_ROOT/prompts/converge-watchdog.md" "$target_root/prompts/converge-watchdog.md"
   cp "$SOURCE_ROOT/package.json" "$target_root/package.json"
   cp "$SOURCE_ROOT/openclaw.plugin.json" "$target_root/openclaw.plugin.json"
+  cp -R "$SOURCE_ROOT/tests/smoke" "$target_root/tests/"
 
   find "$target_root" -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
   find "$target_root" -type f -name '*.pyc' -delete

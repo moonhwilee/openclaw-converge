@@ -1,15 +1,17 @@
 # Converge Phase C Todo
 
-This is the current execution checklist for the next `/goal` work. The source of
-truth for design detail remains `docs/converge/implementation-structure.md`.
+This is the current execution checklist for the next `/goal` work.
+`docs/converge/implementation-structure.md` remains the general Phase C design
+detail source. C7-specific planning is headed by
+`docs/converge/c7-canonical-command-replacement.md`.
 
 Current implementation baseline: C6 Install Wiring is complete on top of C5
 Recovery and C4.5 smoke helper/docs cleanup. The local implementation now
 preserves the C0-C2.5 shared mode and terminal finalization contracts, the C3
 iterative mode invariants, the C4 durable accepted-plan slice queue, the C4.5
 shared smoke helper boundary, the C5 recovery commands, and the C6 local
-install/watchdog runner wiring. The next open phase is C7 Slash/Ledger Adapter
-Routing.
+install/watchdog runner wiring. The next open phase is C7 Canonical Command
+Replacement and Legacy Retirement.
 
 Deferred non-blocking cleanup items are tracked in
 `docs/converge/p3-debt-register.md`. New P3 findings from future convergence
@@ -32,12 +34,12 @@ runs should be added there instead of being left only in chat or ledger logs.
 - [x] C4.5 / Slice 8.5: Smoke Helper Consolidation.
 - [x] C5 / Slice 9: Recovery.
 - [x] C6 / Slice 10: Install Wiring.
-- [ ] C7 / Slice 11: Slash/Ledger Adapter Routing.
+- [ ] C7 / Slice 11: Canonical Command Replacement + Legacy Retirement.
 
 ## Next Goal Command
 
 ```text
-/goal Converge Phase C7: Slash/Ledger Adapter Routing 설계 초안을 작성해줘. C0-C6 런타임, recovery, install wiring이 안정화된 현재 상태를 기준으로, 기존 /goal, /verify, /conv, Ledger 흐름과 Converge CLI를 어떻게 연결할지 구현 전 계획만 세워줘. Gateway restart, external action, push/PR/release, 실제 adapter 구현은 제외하고, 승인 경계와 검증 기준을 명확히 해줘.
+/goal Converge Phase C7.0: Canonical Command Replacement inventory and synthetic dry-run adapter 설계/구현/검증을 진행해줘. C7의 목표는 기존 /goal, /verify, /conv의 canonical backend를 Converge로 교체하고 GoalFlow/Ledger/legacy verify-conv 경로를 retirement 대상으로 전환하는 것이야. 이번 C7.0은 현재 설치/문서/라우팅 entrypoint 인벤토리와 live-route 변경 없는 synthetic dry-run adapter까지만 처리해줘. source checkout과 installed copy에 남은 구 Slash/Ledger wording은 먼저 stale source로 분류하고 workspace C7 docs를 기준으로 삼아줘. Gateway restart, live traffic observation, shadow routing, live slash routing replacement, legacy data deletion, external action, push/PR/release는 제외해줘.
 ```
 
 ## C0 Completed Scope
@@ -233,3 +235,27 @@ runs should be added there instead of being left only in chat or ledger logs.
   packets, plugin manifest `main` existence, and Python cache exclusion.
 - Kept C6 limited to install wiring: no adapter routing, slash routing, Gateway
   restart, external action, push, PR, or release.
+
+## C7 Planned Scope
+
+- Replace the older Slash/Ledger Adapter Routing concept with Canonical Command
+  Replacement + Legacy Retirement.
+- Use `docs/converge/c7-canonical-command-replacement.md` as the C7 design
+  target.
+- Make Converge the canonical backend for managed `/goal`, `/verify`, and
+  `/conv` work after acceptance gates and a separately approved live-routing
+  operation pass.
+- Treat GoalFlow, Work Ledger orchestration, and verification-convergence skill
+  paths as migration/retirement surfaces for Converge-owned workflows, not as
+  performance baselines or default fallbacks.
+- Start with C7.0 command inventory and synthetic, live-route-free dry-run
+  adapter work. C7.0 must classify stale source-checkout or installed-copy
+  Slash/Ledger wording as non-canonical until those copies are explicitly
+  synchronized.
+- Keep Gateway restart, live slash routing replacement, external action, push,
+  PR, release, and development-server apply outside C7 unless a later explicit
+  owner-approved operational task is requested.
+- Keep live traffic observation and shadow routing outside C7 by default unless
+  a later explicit owner-approved operational task enables them.
+- Keep legacy or historical data deletion outside C7 entirely; it requires a
+  later separately approved cleanup phase.

@@ -47,11 +47,27 @@ openclaw-converge/
     deploy-local.sh
     install-local.sh
     converge_watchdog_runner.py
+  tests/
+    smoke/
+      smoke_helpers.py
+      terminal_invariant_helpers.py
+      converge_store_smoke.py
+      converge_checkpoint_smoke.py
+      converge_message_format_smoke.py
+      converge_mode_base_smoke.py
+      converge_plan_mode_smoke.py
+      converge_verify_mode_smoke.py
+      converge_runtime_foundation_smoke.py
+      converge_terminal_finalization_smoke.py
+      converge_conv_mode_smoke.py
+      converge_goal_mode_smoke.py
+      converge_recovery_smoke.py
+      converge_install_wiring_smoke.py
 ```
 
 Python is the preferred MVP runtime because current Ledger and GoalFlow runtime
-helpers already use Python for durable local state and watchdog logic. A later
-JS plugin wrapper can call the Python CLI.
+helpers already use Python for durable local state, smoke tests, and watchdog
+logic. A later JS plugin wrapper can call the Python CLI.
 
 ## Runtime State Layout
 
@@ -125,10 +141,12 @@ C2.5 stabilized terminal finalization invariants as reusable validation helpers
 and smoke-test patterns for later modes. Phase C3 implemented the first
 iterative mode behavior slice: `conv` round metadata, bounded convergence gates,
 material-change follow-up, and evidence-sufficiency/max-round stops. Phase C4
-implemented `goal` durable slice queue behavior. Phase C4.5 completed internal
-smoke helper/docs cleanup; Phase C5 completed recovery commands, and Phase C6
-completed local install wiring. The next boundary is Phase C7: Slash/Ledger
-Adapter Routing.
+implemented `goal` durable slice queue behavior. Phase C4.5 completed smoke
+helper/docs cleanup; `2465654 Consolidate C4.5 smoke helpers` is the helper
+extraction anchor, and later C4.5 convergence commits only refine tests/docs.
+Phase C5 completed recovery commands, and Phase C6 completed local install
+wiring. The next boundary is Phase C7: Canonical Command Replacement + Legacy
+Retirement.
 
 The current executable Phase C todo is `docs/converge/phase-c-todo.md`.
 
@@ -1246,29 +1264,44 @@ emits the resulting packet with a local-only policy marker. It does not wake
 sessions, restart Gateway, route slash commands, or perform external delivery.
 
 Existing `/verify`, `/conv`, `/goal`, or Ledger adapters are not part of Phase
-C1-C6. Add them only after recovery smoke and install wiring pass, and only
-through explicit routing/migration work.
+C1-C6. C7 owns the routing/migration boundary, but its accepted target is no
+longer adapter coexistence. See
+`docs/converge/c7-canonical-command-replacement.md`.
 
-### Phase C7 / Slice 11: Slash/Ledger Adapter Routing
+### Phase C7 / Slice 11: Canonical Command Replacement + Legacy Retirement
 
-Add explicit routing only after the CLI modes, recovery, and install wiring are
-stable. Existing slash commands remain unchanged until this phase. Adapter work
-must be explicit, testable, and reversible.
+Replace the default backend for managed `/goal`, `/verify`, and `/conv` work
+with Converge, then retire the replaced legacy GoalFlow, Work Ledger
+orchestration, and verification-convergence skill surfaces. Adapter work must
+be thin, explicit, testable, and subordinate to Converge mode semantics.
 
-## Integration Strategy
+## C7 Integration Strategy
 
-MVP command names should avoid clashing with current slash commands:
+The previous `/cplan`, `/cgoal`, `/cverify`, and `/cconv` coexistence idea is
+not the product path. C7 must preserve rollback only as a separately
+owner-approved, logged, time-bounded migration safety switch, not as a long-term
+parallel UX or automatic fallback.
 
-- Use CLI `converge ...` for development.
-- Keep current `/goal`, `/verify`, and `/conv` unchanged.
-- Later, add explicit routing only after Converge passes recovery smoke:
-  - `/cplan`
-  - `/cgoal`
-  - `/cverify`
-  - `/cconv`
+- `converge goal`, `converge verify`, and `converge conv` remain the backend
+  commands that own workflow creation and mode semantics.
+- The OpenClaw-facing routing layer starts as a synthetic dry-run adapter. It
+  must only translate owner/session/delivery metadata into Converge CLI
+  invocations and must not observe live traffic, replace live routes, or touch
+  Gateway routing unless a separate owner-approved operational task enables it.
+- Converge recovery commands become the source of truth for Converge-owned
+  workflow recovery.
+- Converge delivery reservation and proof commands become the source of truth
+  for Converge-owned terminal reporting.
+- Legacy GoalFlow, Work Ledger, and verification-convergence paths must be
+  marked retiring or retired for Converge-owned workflows once replacement
+  verification and the relevant live-routing operation pass.
 
-After confidence grows, decide whether existing slash commands should migrate.
-Migration must be explicit and reversible.
+Implementation starts with C7.0 command inventory and synthetic dry-run adapter
+work. Live traffic observation, shadow routing, Gateway route replacement,
+Gateway restart, external action, push, PR, or release require a separate explicit
+owner-approved operational task after C7 verification.
+Historical or legacy data deletion is outside C7 entirely and requires a later
+separately approved cleanup phase.
 
 ## Verification Checklist Before First PR
 

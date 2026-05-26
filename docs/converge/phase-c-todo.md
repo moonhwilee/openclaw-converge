@@ -120,8 +120,9 @@ The dry-run packet now includes
 readiness fields:
 
 - owner approval record schema with approver, timestamp, approval reference,
-  exact route scope, explicit exclusions, rollback expiry/log path, retention
-  decision reference, smoke evidence, and stop-condition acknowledgement
+  exact approval kind/text, exact route scope, explicit exclusions, rollback
+  expiry/log path, retention decision reference, smoke evidence, and
+  stop-condition acknowledgement
 - exact live route scope for `/goal`, `/verify`, and `/conv`; `/converge` stays
   excluded from primary routing and must not be silently promoted
 - implementation route inventory requirement for the later operational task,
@@ -129,24 +130,31 @@ readiness fields:
 - Gateway restart preflight policy: readiness validation does not run preflight
   or authorize restart; a later operational restart/config reload must run
   `python3 /Users/moon/.openclaw/workspace/scripts/gateway_restart_preflight.py`
-  immediately before restart and must see `Gateway restart preflight: OK`
+  immediately before restart/reload, must see `Gateway restart preflight: OK`,
+  and must stop on missing explicit restart/reload approval
 - rollback record requirements: explicit approval, ISO-8601 UTC expiry, maximum
-  24 hour duration, required log path, exact legacy route scope,
-  activation/deactivation entries, and post-rollback smoke; rollback is never
-  automatic fallback
+  24 hour duration, exact log path template under
+  `/Users/moon/.openclaw/state/converge/route-replacement/`, exact legacy route
+  scope, activation/deactivation entries, and post-rollback smoke; rollback is
+  never automatic fallback
 - retention decision for GoalFlow state, Work Ledger state,
   verification-convergence artifacts, chat-derived records, and `/converge`
-  alias history; readiness does not authorize deletion
+  alias history; readiness does not authorize deletion, and delete remains only
+  a later cleanup/removal decision
 - pre-change readiness smoke separate from post-change smoke plan
+- post-change smoke evidence is required before the later operational task can
+  be reported complete
 - duplicate visible report guard requiring exactly one route owner and no replay
-  from GoalFlow, Work Ledger, chat memory, or verification artifacts
+  from GoalFlow, Work Ledger, chat memory, or verification-convergence artifacts
 
 Go/No-Go is `No-Go` if any approval record field, exact route scope,
 implementation inventory, rollback expiry/log path, retention decision, Gateway
-preflight decision, post-change smoke plan, or duplicate-report guard is
+preflight decision, pre-change readiness smoke, post-change smoke plan/evidence,
+or duplicate-report guard is
 missing. It is also `No-Go` if the request tries to promote `/converge`, allow
 automatic fallback, execute cleanup/removal, delete/move/archive legacy state,
-restart Gateway, route live traffic, deploy/apply/install, push, PR, or release.
+restart Gateway, route live traffic, replace/remove live routes,
+deploy/apply/install, push, PR, or release.
 
 ## Next Goal Command
 

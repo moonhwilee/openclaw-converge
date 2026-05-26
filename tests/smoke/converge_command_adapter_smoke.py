@@ -363,6 +363,8 @@ def assert_c7_3_route_retirement_plan_contract(state_root: Path) -> None:
     )
     approval_schema = readiness_plan["owner_approval_record_schema"]
     expected_approval_fields = [
+        "approval_kind",
+        "approval_text",
         "approver",
         "approved_at",
         "approval_ref",
@@ -379,6 +381,29 @@ def assert_c7_3_route_retirement_plan_contract(state_root: Path) -> None:
     assert_true(
         approval_schema["required_fields"] == expected_approval_fields,
         "live route readiness should fix approval record fields",
+    )
+    assert_true(
+        approval_schema["approval_kind"] == "operational_live_route_replacement",
+        "live route readiness should require operational approval kind",
+    )
+    expected_approval_text = (
+        "I explicitly approve the operational live route replacement for exact commands "
+        "/goal, /verify, and /conv to the Converge canonical backend. I do not approve "
+        "/converge promotion, cleanup/removal execution, legacy deletion/movement/archive, "
+        "deploy/apply/install, external action, push/PR/release, or Gateway restart unless "
+        "separately stated with preflight evidence."
+    )
+    assert_true(
+        approval_schema["approval_text_template"] == expected_approval_text,
+        "live route readiness should pin exact approval text",
+    )
+    assert_true(
+        "/goal, /verify, and /conv" in approval_schema["approval_text_template"],
+        "live route readiness should provide exact approval text",
+    )
+    assert_true(
+        "/converge promotion" in approval_schema["approval_text_template"],
+        "live route readiness approval text should exclude /converge promotion",
     )
     assert_true(
         approval_schema["must_bind_exact_commands"] == ["/goal", "/verify", "/conv"],
@@ -429,8 +454,15 @@ def assert_c7_3_route_retirement_plan_contract(state_root: Path) -> None:
     assert_true(rollback_record["expires_at_required"] is True, "rollback should require expiry")
     assert_true(rollback_record["log_path_required"] is True, "rollback should require log path")
     assert_true(rollback_record["max_duration_hours"] == 24, "rollback max duration should be bounded")
+    assert_true(
+        rollback_record["log_path_template"]
+        == "/Users/moon/.openclaw/state/converge/route-replacement/rollback-{approval_ref}-{yyyyMMddTHHmmssZ}.jsonl",
+        "rollback log path should use an exact artifact template",
+    )
     retention = readiness_plan["retention_decision"]
     assert_true(retention["required"] is True, "live route readiness should require retention decision")
+    assert_true("delete" not in retention["allowed_readiness_decisions"], "readiness should not allow delete decision")
+    assert_true(retention["later_cleanup_decisions"] == ["delete"], "delete should stay a later cleanup decision")
     assert_true(
         retention["deletion_authorized_by_readiness"] is False,
         "live route readiness should not authorize legacy deletion",
@@ -453,6 +485,10 @@ def assert_c7_3_route_retirement_plan_contract(state_root: Path) -> None:
         in readiness_plan["post_change_smoke_plan"],
         "live route readiness should require post-change duplicate report smoke",
     )
+    assert_true(
+        readiness_plan["post_change_smoke_evidence_required_before_completion"] is True,
+        "live route readiness should require post-change smoke evidence before completion",
+    )
     duplicate_guard = readiness_plan["duplicate_visible_report_guard"]
     assert_true(duplicate_guard["exactly_one_route_owner_required"] is True, "readiness should require one route owner")
     assert_true(
@@ -463,13 +499,30 @@ def assert_c7_3_route_retirement_plan_contract(state_root: Path) -> None:
         duplicate_guard["no_replay_from_goalflow_work_ledger_or_chat_memory"] is True,
         "legacy records should not replay visible reports",
     )
+    assert_true(
+        duplicate_guard["no_replay_from_verification_convergence_artifacts"] is True,
+        "verification-convergence artifacts should not replay visible reports",
+    )
     for stop_condition in (
         "missing exact owner approval record",
+        "Gateway restart preflight decision missing",
         "Gateway restart preflight failed",
+        "Gateway restart requested without explicit restart approval",
+        "route config reload preflight decision missing",
+        "route config reload preflight failed",
+        "route config reload requested without explicit reload approval",
         "attempted /converge alias promotion",
         "duplicate visible report risk unresolved",
+        "pre-change readiness smoke failed",
         "post-change smoke plan missing",
+        "post-change smoke evidence missing before completion",
+        "post-change smoke failed",
+        "unexpected live traffic observed",
+        "live routing requested during readiness",
+        "live route replacement requested during readiness",
+        "live route removal requested during readiness",
         "cleanup/removal execution requested",
+        "deploy/apply/install requested during readiness",
     ):
         assert_true(
             stop_condition in readiness_plan["stop_conditions"],
@@ -946,6 +999,72 @@ def assert_c7_1_contract_validation_rejects_drift(state_root: Path) -> None:
         assert_true("retention decision" in str(exc), "validator should reject readiness retention deletion drift")
     else:
         raise AssertionError("validator should reject readiness retention deletion drift")
+
+    readiness_retention_delete_drift = json.loads(json.dumps(packet))
+    readiness_retention_delete_drift["route_retirement_plan"]["live_route_replacement_readiness_plan"][
+        "retention_decision"
+    ]["allowed_readiness_decisions"].append("delete")
+    try:
+        validate_dry_run_packet(readiness_retention_delete_drift)
+    except ValueError as exc:
+        assert_true("retention decision" in str(exc), "validator should reject readiness delete decision drift")
+    else:
+        raise AssertionError("validator should reject readiness delete decision drift")
+
+    readiness_approval_kind_drift = json.loads(json.dumps(packet))
+    readiness_approval_kind_drift["route_retirement_plan"]["live_route_replacement_readiness_plan"][
+        "owner_approval_record_schema"
+    ]["approval_kind"] = "readiness_plan_only"
+    try:
+        validate_dry_run_packet(readiness_approval_kind_drift)
+    except ValueError as exc:
+        assert_true("approval kind" in str(exc), "validator should reject ambiguous approval kind")
+    else:
+        raise AssertionError("validator should reject ambiguous approval kind")
+
+    readiness_approval_text_drift = json.loads(json.dumps(packet))
+    readiness_approval_text_drift["route_retirement_plan"]["live_route_replacement_readiness_plan"][
+        "owner_approval_record_schema"
+    ]["approval_text_template"] = "I approve the readiness plan."
+    try:
+        validate_dry_run_packet(readiness_approval_text_drift)
+    except ValueError as exc:
+        assert_true("approval text" in str(exc), "validator should reject ambiguous approval text")
+    else:
+        raise AssertionError("validator should reject ambiguous approval text")
+
+    readiness_rollback_path_drift = json.loads(json.dumps(packet))
+    readiness_rollback_path_drift["route_retirement_plan"]["live_route_replacement_readiness_plan"][
+        "rollback_record"
+    ]["log_path_template"] = "approved Converge or OpenClaw state/log root"
+    try:
+        validate_dry_run_packet(readiness_rollback_path_drift)
+    except ValueError as exc:
+        assert_true("log path template" in str(exc), "validator should reject generic rollback log path")
+    else:
+        raise AssertionError("validator should reject generic rollback log path")
+
+    readiness_duplicate_guard_drift = json.loads(json.dumps(packet))
+    readiness_duplicate_guard_drift["route_retirement_plan"]["live_route_replacement_readiness_plan"][
+        "duplicate_visible_report_guard"
+    ].pop("no_replay_from_verification_convergence_artifacts")
+    try:
+        validate_dry_run_packet(readiness_duplicate_guard_drift)
+    except ValueError as exc:
+        assert_true("duplicate report guard" in str(exc), "validator should reject missing verification artifact replay guard")
+    else:
+        raise AssertionError("validator should reject missing verification artifact replay guard")
+
+    readiness_post_smoke_evidence_drift = json.loads(json.dumps(packet))
+    readiness_post_smoke_evidence_drift["route_retirement_plan"]["live_route_replacement_readiness_plan"][
+        "post_change_smoke_evidence_required_before_completion"
+    ] = False
+    try:
+        validate_dry_run_packet(readiness_post_smoke_evidence_drift)
+    except ValueError as exc:
+        assert_true("post-change smoke evidence" in str(exc), "validator should reject missing post-change smoke evidence gate")
+    else:
+        raise AssertionError("validator should reject missing post-change smoke evidence gate")
 
     readiness_stop_drift = json.loads(json.dumps(packet))
     readiness_stop_drift["route_retirement_plan"]["live_route_replacement_readiness_plan"]["stop_conditions"].remove(

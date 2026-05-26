@@ -271,9 +271,10 @@ any operational change.
 Required readiness fields:
 
 - `owner_approval_record_schema`: approver, approval timestamp, approval
-  reference, exact `/goal` `/verify` `/conv` scope, explicit `/converge`
-  exclusion, rollback expiry/log path, retention decision reference, pre-change
-  smoke evidence, post-change smoke plan, and stop-condition acknowledgement.
+  reference, exact approval kind/text, exact `/goal` `/verify` `/conv` scope,
+  explicit `/converge` exclusion, rollback expiry/log path, retention decision
+  reference, pre-change smoke evidence, post-change smoke plan, and
+  stop-condition acknowledgement.
 - `exact_route_scope`: `/goal`, `/verify`, and `/conv` only; `/converge` is
   excluded from primary routing, and the later operational task must provide
   exact implementation files/config keys/handler IDs before approval executes.
@@ -281,19 +282,22 @@ Required readiness fields:
   preflight or authorize restart. If the later operation needs a Gateway restart
   or route config reload, it must run
   `python3 /Users/moon/.openclaw/workspace/scripts/gateway_restart_preflight.py`
-  immediately before restart, require `Gateway restart preflight: OK`, and stop
-  on failure or missing explicit restart approval.
+  immediately before restart/reload, require `Gateway restart preflight: OK`,
+  and stop on failure or missing explicit restart/reload approval.
 - `rollback_record`: rollback must be explicit, logged, scoped to the exact
   legacy route, have an ISO-8601 UTC expiry, last at most 24 hours, record
-  activation/deactivation entries, and include post-rollback smoke. Rollback is
-  never automatic fallback.
+  activation/deactivation entries, use
+  `/Users/moon/.openclaw/state/converge/route-replacement/rollback-{approval_ref}-{yyyyMMddTHHmmssZ}.jsonl`,
+  and include post-rollback smoke. Rollback is never automatic fallback.
 - `retention_decision`: GoalFlow state, Work Ledger state,
   verification-convergence artifacts, chat-derived records, and `/converge`
   alias history require an explicit decision. Readiness does not authorize
-  legacy deletion, movement, or archive execution.
+  legacy deletion, movement, or archive execution. Delete is only a later
+  cleanup/removal decision with separate owner approval.
 - `pre_change_readiness_smoke` and `post_change_smoke_plan` are separate.
   Pre-change smoke is dry-run/local proof; post-change smoke belongs only to a
-  later approved operational task.
+  later approved operational task. The later task cannot be reported complete
+  until post-change smoke evidence exists and passes.
 - `duplicate_visible_report_guard`: exactly one route owner must be selected,
   legacy handlers must be suppressed or rollback-only, and no visible report can
   be replayed from GoalFlow, Work Ledger, chat memory, or verification
@@ -301,8 +305,9 @@ Required readiness fields:
 
 The readiness verdict is `No-Go` if any of these fields are missing or if the
 plan attempts `/converge` promotion, automatic fallback, Gateway restart, live
-routing, cleanup/removal execution, legacy deletion/movement/archive,
-deploy/apply/install, external action, push, PR, or release.
+routing, live route replacement/removal, cleanup/removal execution, legacy
+deletion/movement/archive, deploy/apply/install, external action, push, PR, or
+release.
 
 ## Implementation Slices
 

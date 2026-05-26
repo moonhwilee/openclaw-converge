@@ -15,19 +15,39 @@ except ModuleNotFoundError:
 from converge.command_adapter import validate_dry_run_packet
 
 
-def assert_dry_run_maps_command_without_state_creation(state_root: Path, raw_message: str, expected_mode: str) -> None:
-    result = run(
+OWNER_SESSION = "session:test"
+
+
+def dry_run(state_root: Path, raw_message: str, *extra: str) -> dict:
+    return run(
         "command-dry-run",
         "--raw-message",
         raw_message,
-        "--workflow-id",
-        "synthetic-c7",
         "--owner-session-key",
-        "session:test",
+        OWNER_SESSION,
         "--visible-delivery",
         VISIBLE_DELIVERY,
+        *extra,
         state_root=state_root,
     )
+
+
+def dry_run_fail(state_root: Path, raw_message: str, *extra: str) -> dict:
+    return run_fail(
+        "command-dry-run",
+        "--raw-message",
+        raw_message,
+        "--owner-session-key",
+        OWNER_SESSION,
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        *extra,
+        state_root=state_root,
+    )
+
+
+def assert_dry_run_maps_command_without_state_creation(state_root: Path, raw_message: str, expected_mode: str) -> None:
+    result = dry_run(state_root, raw_message, "--workflow-id", "synthetic-c7")
     assert_true(result["ok"] is True, "command-dry-run should return ok")
     assert_true(result["dry_run"] is True, "command-dry-run should mark dry_run")
     assert_true(result["workflow_created"] is False, "command-dry-run should not create workflows")
@@ -39,7 +59,7 @@ def assert_dry_run_maps_command_without_state_creation(state_root: Path, raw_mes
     assert_true(result["legacy_data_deleted"] is False, "command-dry-run should not delete legacy data")
     assert_true(result["route"]["converge_mode"] == expected_mode, "command should map to expected Converge mode")
     assert_true(result["route"]["alias_status"] == "primary", "primary commands should not be marked as aliases")
-    assert_true(result["route"]["owner_session_key"] == "session:test", "owner session should be preserved")
+    assert_true(result["route"]["owner_session_key"] == OWNER_SESSION, "owner session should be preserved")
     assert_true(result["route"]["visible_delivery"] == json.loads(VISIBLE_DELIVERY), "visible delivery should be preserved")
     assert_true(result["route"]["state_root"] == str(state_root), "state root should be exposed in route metadata")
     assert_true(result["adapter_contract"]["version"] == "c7.1", "adapter contract should expose C7.1 version")
@@ -62,7 +82,7 @@ def assert_dry_run_maps_command_without_state_creation(state_root: Path, raw_mes
 
 
 def assert_inventory_covers_managed_commands(state_root: Path) -> None:
-    result = run("command-dry-run", "--raw-message", "/goal Implement dry-run adapter", state_root=state_root)
+    result = dry_run(state_root, "/goal Implement dry-run adapter")
     commands = {item["command"] for item in result["inventory"]}
     assert_true(commands == {"/goal", "/verify", "/conv", "/converge"}, "inventory should cover managed commands")
     owners = {item["command"]: item["c7_owner"] for item in result["inventory"]}
@@ -83,7 +103,7 @@ def assert_inventory_covers_managed_commands(state_root: Path) -> None:
 
 
 def assert_c7_1_command_metadata_contract(state_root: Path) -> None:
-    goal = run("command-dry-run", "--raw-message", "/goal Implement accepted plan", state_root=state_root)
+    goal = dry_run(state_root, "/goal Implement accepted plan")
     goal_metadata = goal["adapter_contract"]["command_metadata"]
     assert_true(goal_metadata["intent"] == "goal_intake", "/goal should expose goal intake intent")
     assert_true(
@@ -96,14 +116,14 @@ def assert_c7_1_command_metadata_contract(state_root: Path) -> None:
     )
     assert_true("approval_boundaries" in goal_metadata["required_fields"], "/goal should require approval boundaries")
 
-    verify = run("command-dry-run", "--raw-message", "/verify Audit C7 docs", state_root=state_root)
+    verify = dry_run(state_root, "/verify Audit C7 docs")
     verify_metadata = verify["adapter_contract"]["command_metadata"]
     assert_true(verify_metadata["intent"] == "audit", "/verify should expose audit intent")
     assert_true(verify_metadata["audit"]["default_intent"] is True, "/verify should default to audit intent")
     assert_true(verify_metadata["audit"]["evidence_capture_required"] is True, "/verify should require evidence capture")
     assert_true("residuals" in verify_metadata["required_fields"], "/verify should require residual fields")
 
-    conv = run("command-dry-run", "--raw-message", "/conv Improve C7 plan", state_root=state_root)
+    conv = dry_run(state_root, "/conv Improve C7 plan")
     conv_metadata = conv["adapter_contract"]["command_metadata"]
     assert_true(conv_metadata["intent"] == "repair_or_improve", "/conv should expose repair/improve intent")
     assert_true(conv_metadata["rounds"]["round_metadata_required"] is True, "/conv should require round metadata")
@@ -113,7 +133,7 @@ def assert_c7_1_command_metadata_contract(state_root: Path) -> None:
 
 
 def assert_c7_3_route_retirement_plan_contract(state_root: Path) -> None:
-    result = run("command-dry-run", "--raw-message", "/goal Implement route retirement plan", state_root=state_root)
+    result = dry_run(state_root, "/goal Implement route retirement plan")
     route_plan = result["route_retirement_plan"]
     expected_prohibited_actions = [
         "cleanup/removal execution",
@@ -125,6 +145,7 @@ def assert_c7_3_route_retirement_plan_contract(state_root: Path) -> None:
         "deploy/apply/install",
         "external action",
         "legacy data deletion",
+        "legacy file deletion",
         "legacy file movement",
         "legacy file archival",
         "legacy skill disable/uninstall",
@@ -230,7 +251,12 @@ def assert_c7_3_route_retirement_plan_contract(state_root: Path) -> None:
         )
 
     cleanup_boundary = route_plan["cleanup_removal_boundary"]
-    assert_true(cleanup_boundary["next_slice"] == "C7.4 cleanup and removal plan", "C7.3 should point cleanup to C7.4")
+    assert_true(cleanup_boundary["status"] == "completed", "C7.4 cleanup boundary should be completed")
+    assert_true(cleanup_boundary["completed_slice"] == "C7.4 cleanup and removal plan", "C7.4 boundary should name the completed slice")
+    assert_true(
+        cleanup_boundary["next_operational_slice"] == "C7 live route replacement readiness plan",
+        "C7.4 boundary should point to live route replacement readiness",
+    )
     assert_true(cleanup_boundary["plan_only"] is True, "C7.4 boundary should remain plan-only")
     assert_true(cleanup_boundary["classification_only"] is True, "C7.4 boundary should remain classification-only")
     assert_true(cleanup_boundary["execution_allowed"] is False, "C7.4 boundary should not allow execution")
@@ -243,6 +269,10 @@ def assert_c7_3_route_retirement_plan_contract(state_root: Path) -> None:
     assert_true(
         "cleanup/removal execution" in cleanup_boundary["prohibited_actions"],
         "C7.4 boundary should prohibit cleanup/removal execution",
+    )
+    assert_true(
+        "legacy file deletion" in cleanup_boundary["prohibited_actions"],
+        "C7.4 boundary should prohibit legacy file deletion",
     )
     assert_true(
         "legacy file movement" in cleanup_boundary["prohibited_actions"],
@@ -316,7 +346,7 @@ def assert_c7_3_route_retirement_plan_contract(state_root: Path) -> None:
 
 
 def assert_c7_1_contract_validation_rejects_drift(state_root: Path) -> None:
-    packet = run("command-dry-run", "--raw-message", "/goal Implement accepted plan", state_root=state_root)
+    packet = dry_run(state_root, "/goal Implement accepted plan")
 
     missing_required = json.loads(json.dumps(packet))
     del missing_required["route"]["state_root"]
@@ -326,6 +356,42 @@ def assert_c7_1_contract_validation_rejects_drift(state_root: Path) -> None:
         assert_true("route.state_root" in str(exc), "validator should reject missing required packet fields")
     else:
         raise AssertionError("validator should reject missing route.state_root")
+
+    narrowed_required = json.loads(json.dumps(packet))
+    narrowed_required["adapter_contract"]["required_packet_fields"].remove("route_retirement_plan.cleanup_removal_plan")
+    try:
+        validate_dry_run_packet(narrowed_required)
+    except ValueError as exc:
+        assert_true("required_packet_fields" in str(exc), "validator should reject narrowed required packet fields")
+    else:
+        raise AssertionError("validator should reject narrowed required packet fields")
+
+    raw_message_drift = json.loads(json.dumps(packet))
+    raw_message_drift["input"]["command"] = "/conv"
+    try:
+        validate_dry_run_packet(raw_message_drift)
+    except ValueError as exc:
+        assert_true("input fields" in str(exc), "validator should reject parsed command drift")
+    else:
+        raise AssertionError("validator should reject parsed command drift")
+
+    route_command_drift = json.loads(json.dumps(packet))
+    route_command_drift["route"]["current_command"] = "/verify"
+    try:
+        validate_dry_run_packet(route_command_drift)
+    except ValueError as exc:
+        assert_true("current_command" in str(exc), "validator should reject route command drift")
+    else:
+        raise AssertionError("validator should reject route command drift")
+
+    argv_drift = json.loads(json.dumps(packet))
+    argv_drift["converge_invocation"]["argv"].remove("--owner-session-key")
+    try:
+        validate_dry_run_packet(argv_drift)
+    except ValueError as exc:
+        assert_true("argv" in str(exc), "validator should reject invocation argv drift")
+    else:
+        raise AssertionError("validator should reject invocation argv drift")
 
     stale_flags = json.loads(json.dumps(packet))
     stale_flags["adapter_contract"]["route_free_flags"]["live_route_changed"] = True
@@ -344,6 +410,33 @@ def assert_c7_1_contract_validation_rejects_drift(state_root: Path) -> None:
         assert_true("owner_session_key" in str(exc), "validator should reject invalid owner session metadata")
     else:
         raise AssertionError("validator should reject invalid owner session metadata")
+
+    empty_owner_session = json.loads(json.dumps(packet))
+    empty_owner_session["route"]["owner_session_key"] = ""
+    try:
+        validate_dry_run_packet(empty_owner_session)
+    except ValueError as exc:
+        assert_true("owner_session_key" in str(exc), "validator should reject empty owner session metadata")
+    else:
+        raise AssertionError("validator should reject empty owner session metadata")
+
+    invalid_visible_delivery = json.loads(json.dumps(packet))
+    invalid_visible_delivery["route"]["visible_delivery"] = {"channel": "telegram"}
+    try:
+        validate_dry_run_packet(invalid_visible_delivery)
+    except ValueError as exc:
+        assert_true("visible_delivery.target" in str(exc), "validator should reject incomplete visible delivery metadata")
+    else:
+        raise AssertionError("validator should reject incomplete visible delivery metadata")
+
+    empty_state_root = json.loads(json.dumps(packet))
+    empty_state_root["route"]["state_root"] = ""
+    try:
+        validate_dry_run_packet(empty_state_root)
+    except ValueError as exc:
+        assert_true("state_root" in str(exc), "validator should reject empty state root metadata")
+    else:
+        raise AssertionError("validator should reject empty state root metadata")
 
     alias_drift = json.loads(json.dumps(packet))
     alias_drift["route"]["alias_status"] = "deprecated_alias"
@@ -478,6 +571,17 @@ def assert_c7_1_contract_validation_rejects_drift(state_root: Path) -> None:
         assert_true("prohibited actions" in str(exc), "validator should reject cleanup prohibited-action drift")
     else:
         raise AssertionError("validator should reject cleanup prohibited-action drift")
+
+    cleanup_file_delete_drift = json.loads(json.dumps(packet))
+    cleanup_file_delete_drift["route_retirement_plan"]["cleanup_removal_plan"]["prohibited_actions"].remove(
+        "legacy file deletion"
+    )
+    try:
+        validate_dry_run_packet(cleanup_file_delete_drift)
+    except ValueError as exc:
+        assert_true("prohibited actions" in str(exc), "validator should reject legacy file deletion action drift")
+    else:
+        raise AssertionError("validator should reject legacy file deletion action drift")
 
     cleanup_gateway_action_drift = json.loads(json.dumps(packet))
     cleanup_gateway_action_drift["route_retirement_plan"]["cleanup_removal_plan"]["prohibited_actions"].remove(
@@ -658,13 +762,13 @@ def assert_c7_1_contract_validation_rejects_drift(state_root: Path) -> None:
 
 
 def assert_rejects_non_managed_or_empty_commands(state_root: Path) -> None:
-    missing_text = run_fail("command-dry-run", "--raw-message", "/goal", state_root=state_root)
+    missing_text = dry_run_fail(state_root, "/goal")
     assert_true("requires non-empty text" in missing_text["error"], "empty command should fail deterministically")
-    unmanaged = run_fail("command-dry-run", "--raw-message", "/plan demo", state_root=state_root)
+    unmanaged = dry_run_fail(state_root, "/plan demo")
     assert_true("must start with" in unmanaged["error"], "unmanaged slash command should fail deterministically")
-    leading_space = run_fail("command-dry-run", "--raw-message", " /goal demo", state_root=state_root)
+    leading_space = dry_run_fail(state_root, " /goal demo")
     assert_true("must start with" in leading_space["error"], "leading whitespace should not match exact slash scope")
-    leading_tab = run_fail("command-dry-run", "--raw-message", "\t/conv demo", state_root=state_root)
+    leading_tab = dry_run_fail(state_root, "\t/conv demo")
     assert_true("must start with" in leading_tab["error"], "leading tab should not match exact slash scope")
 
 
@@ -678,7 +782,7 @@ def main() -> None:
         assert_dry_run_maps_command_without_state_creation(state_root, "/goal Build accepted plan", "goal")
         assert_dry_run_maps_command_without_state_creation(state_root, "/verify Audit docs", "verify")
         assert_dry_run_maps_command_without_state_creation(state_root, "/conv Improve plan", "conv")
-        alias = run("command-dry-run", "--raw-message", "/converge Improve plan", state_root=state_root)
+        alias = dry_run(state_root, "/converge Improve plan")
         assert_true(alias["route"]["converge_mode"] == "conv", "/converge should map to conv")
         assert_true(alias["route"]["alias_status"] == "deprecated_alias", "/converge should be marked deprecated")
         assert_rejects_non_managed_or_empty_commands(state_root)

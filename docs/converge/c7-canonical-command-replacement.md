@@ -183,8 +183,9 @@ The approval gate must be exact and evidence-backed:
 - evidence must include the C7.3 dry-run packet, command adapter smoke,
   recovery/report-proof smoke, and rollback switch plan
 - stop conditions include missing exact approval, missing rollback expiry or log
-  path, any live route change request inside C7.3, and any legacy deletion
-  request inside C7.3
+  path, any live route change request inside C7.3, cleanup/removal execution,
+  legacy deletion, legacy file movement or archival, and legacy skill
+  disable/uninstall requests inside C7.3
 
 The rollback switch must be a bounded operational safety switch, not a normal
 fallback:
@@ -206,10 +207,12 @@ The logging/proof requirement must preserve C7.2 source-of-truth ownership:
   not authoritative for Converge-owned workflow completion after the C7.2/C7.3
   gates
 
-The cleanup/removal boundary must stay in the next slice:
+The cleanup/removal boundary now records C7.4 as complete while preserving the
+next operational boundary:
 
-- `route_retirement_plan.cleanup_removal_boundary.next_slice` is `C7.4 cleanup
-  and removal plan`
+- `route_retirement_plan.cleanup_removal_boundary.status` is `completed`
+- `completed_slice` is `C7.4 cleanup and removal plan`
+- `next_operational_slice` is `C7 live route replacement readiness plan`
 - `plan_only` is true
 - `legacy_deletion_allowed` is false
 - `live_route_removal_allowed` is false
@@ -253,8 +256,9 @@ Any later cleanup execution requires a separate explicit owner approval, exact
 surface list, retention decision for historical state, rollback switch with
 expiry and log path, and post-change smoke evidence. C7.4 itself forbids
 cleanup/removal execution, live route removal, Gateway restart, shadow routing,
-deploy/apply/install, external action, legacy data deletion, file movement,
-file archival, skill disable/uninstall, push, PR, and release.
+deploy/apply/install, external action, legacy data deletion, legacy file
+deletion, file movement, file archival, skill disable/uninstall, push, PR, and
+release.
 
 ## Implementation Slices
 
@@ -308,7 +312,7 @@ C7.4 may produce only:
 
 C7.4 must not execute cleanup/removal. Approval inside a C7.4 goal cannot
 authorize execution. It must not restart Gateway, observe live traffic, enable
-shadow routing, replace or remove live routes, deploy, apply, install, delete
+shadow routing, replace or remove live routes, deploy, apply, install, delete,
 move, or archive legacy data/files, disable or uninstall legacy skills, send
 external messages, push, open a PR, or release.
 

@@ -51,7 +51,7 @@ COMMAND_INVENTORY: tuple[CommandSurface, ...] = (
         retirement_classification="replace_default_after_owner_approved_live_routing",
         state_root="Legacy GoalFlow state during C7.0; future Converge workflow state after approved live routing.",
         delivery_behavior="Draft and confirmation first; visible completion remains bound to the original Telegram delivery route.",
-        rollback_switch="Keep existing /goal route until owner-approved replacement; disable C7 adapter route to fall back.",
+        rollback_switch="No active C7 route in C7.0-C7.4; later rollback only through the owner-approved, logged, time-bounded rollback switch.",
         transitional_behavior="Synthetic dry-run only; preserves draft/confirmation gates without live route changes.",
         final_behavior="New managed /goal work creates Converge goal workflows after separate live-routing approval.",
     ),
@@ -62,7 +62,7 @@ COMMAND_INVENTORY: tuple[CommandSurface, ...] = (
         retirement_classification="replace_default_after_owner_approved_live_routing",
         state_root="Legacy verification-convergence artifacts during C7.0; future Converge workflow state after approved live routing.",
         delivery_behavior="One visible audit report through the original delivery route after evidence/report material is reserved.",
-        rollback_switch="Keep existing /verify handler until owner-approved replacement; disable C7 adapter route to fall back.",
+        rollback_switch="No active C7 route in C7.0-C7.4; later rollback only through the owner-approved, logged, time-bounded rollback switch.",
         transitional_behavior="Synthetic dry-run only; no live observation, duplicate report, or shadow routing.",
         final_behavior="New managed /verify work records evidence, residuals, report material, and proof in Converge.",
     ),
@@ -73,7 +73,7 @@ COMMAND_INVENTORY: tuple[CommandSurface, ...] = (
         retirement_classification="replace_default_after_owner_approved_live_routing",
         state_root="Legacy verification-convergence artifacts during C7.0; future Converge workflow state after approved live routing.",
         delivery_behavior="Round summaries and final report through the original delivery route; material changes need follow-up proof.",
-        rollback_switch="Keep existing /conv handler until owner-approved replacement; disable C7 adapter route to fall back.",
+        rollback_switch="No active C7 route in C7.0-C7.4; later rollback only through the owner-approved, logged, time-bounded rollback switch.",
         transitional_behavior="Synthetic dry-run only; verifies round metadata route shape without live replacement.",
         final_behavior="New managed /conv work records convergence rounds and recovery cursor state in Converge.",
     ),
@@ -112,7 +112,10 @@ EXPECTED_APPROVAL_STOP_CONDITIONS = [
     "missing exact owner approval",
     "missing rollback expiry or log path",
     "live route change requested inside C7.3",
-    "legacy state deletion requested inside C7.3",
+    "cleanup/removal execution requested inside C7.3",
+    "legacy deletion requested inside C7.3",
+    "legacy file movement or archival requested inside C7.3",
+    "legacy skill disable/uninstall requested inside C7.3",
 ]
 
 EXPECTED_CONVERGE_SOURCE_OF_TRUTH = [
@@ -140,6 +143,7 @@ EXPECTED_BLOCKED_WITHOUT_APPROVAL = [
     "deploy/apply/install",
     "external action",
     "legacy data deletion",
+    "legacy file deletion",
     "legacy file movement",
     "legacy file archival",
     "legacy skill disable/uninstall",
@@ -163,6 +167,7 @@ EXPECTED_C7_4_PROHIBITED_ACTIONS = [
     "deploy/apply/install",
     "external action",
     "legacy data deletion",
+    "legacy file deletion",
     "legacy file movement",
     "legacy file archival",
     "legacy skill disable/uninstall",
@@ -182,6 +187,30 @@ EXPECTED_C7_4_LATER_EXECUTION_REQUIRES = [
     "retention decision for historical state",
     "rollback switch with expiry and log path",
     "post-change smoke evidence",
+]
+
+EXPECTED_REQUIRED_PACKET_FIELDS = [
+    "input.raw_message",
+    "input.command",
+    "input.text",
+    "route.current_command",
+    "route.converge_mode",
+    "route.alias_status",
+    "route.owner_session_key",
+    "route.visible_delivery",
+    "route.workflow_id",
+    "route.state_root",
+    "adapter_contract.command_metadata",
+    "route_retirement_plan.version",
+    "route_retirement_plan.scope",
+    "route_retirement_plan.route_classification",
+    "route_retirement_plan.approval_gate",
+    "route_retirement_plan.rollback_switch",
+    "route_retirement_plan.logging_proof",
+    "route_retirement_plan.cleanup_removal_boundary",
+    "route_retirement_plan.cleanup_removal_plan",
+    "converge_invocation.argv",
+    "blocked_without_approval",
 ]
 
 CLEANUP_REMOVAL_SURFACES: tuple[dict[str, Any], ...] = (
@@ -264,6 +293,11 @@ def build_dry_run_packet(
     command, text = parse_raw_message(raw_message)
     mode = "conv" if command == "converge" else command
     delivery = visible_delivery or {}
+    if not owner_session_key:
+        raise ValueError("command dry-run requires non-empty owner_session_key")
+    _validate_visible_delivery(delivery)
+    if state_root is None:
+        raise ValueError("command dry-run requires explicit state_root")
     converge_argv = build_converge_argv(
         mode=mode,
         text=text,
@@ -287,7 +321,8 @@ def build_dry_run_packet(
             "alias_status": "deprecated_alias" if command == "converge" else "primary",
             "owner_session_key": owner_session_key,
             "visible_delivery": delivery,
-            "state_root": str(state_root) if state_root else None,
+            "workflow_id": workflow_id,
+            "state_root": str(state_root),
         },
         "adapter_contract": build_adapter_contract(command=f"/{command}", mode=mode),
         "route_retirement_plan": build_route_retirement_plan(),
@@ -306,28 +341,7 @@ def build_adapter_contract(*, command: str, mode: str) -> dict[str, Any]:
     return {
         "version": C7_1_CONTRACT_VERSION,
         "route_free_flags": dict(ROUTE_FREE_FLAGS),
-        "required_packet_fields": [
-            "input.raw_message",
-            "input.command",
-            "input.text",
-            "route.current_command",
-            "route.converge_mode",
-            "route.alias_status",
-            "route.owner_session_key",
-            "route.visible_delivery",
-            "route.state_root",
-            "adapter_contract.command_metadata",
-            "route_retirement_plan.version",
-            "route_retirement_plan.scope",
-            "route_retirement_plan.route_classification",
-            "route_retirement_plan.approval_gate",
-            "route_retirement_plan.rollback_switch",
-            "route_retirement_plan.logging_proof",
-            "route_retirement_plan.cleanup_removal_boundary",
-            "route_retirement_plan.cleanup_removal_plan",
-            "converge_invocation.argv",
-            "blocked_without_approval",
-        ],
+        "required_packet_fields": list(EXPECTED_REQUIRED_PACKET_FIELDS),
         "shared_metadata": {
             "state_root_field": "route.state_root",
             "delivery_field": "route.visible_delivery",
@@ -383,7 +397,9 @@ def build_route_retirement_plan() -> dict[str, Any]:
             "legacy_sources_not_authoritative_for_converge_work": list(EXPECTED_LEGACY_NON_AUTHORITATIVE_SOURCES),
         },
         "cleanup_removal_boundary": {
-            "next_slice": "C7.4 cleanup and removal plan",
+            "status": "completed",
+            "completed_slice": "C7.4 cleanup and removal plan",
+            "next_operational_slice": "C7 live route replacement readiness plan",
             "plan_only": True,
             "classification_only": True,
             "execution_allowed": False,
@@ -489,28 +505,50 @@ def validate_dry_run_packet(packet: dict[str, Any]) -> None:
         raise ValueError("C7.1 contract route-free flags must match packet route-free flags")
 
     required_packet_fields = contract.get("required_packet_fields")
-    if not isinstance(required_packet_fields, list) or not required_packet_fields:
-        raise ValueError("C7.1 contract required_packet_fields must be a non-empty list")
-    for field_path in required_packet_fields:
+    if required_packet_fields != EXPECTED_REQUIRED_PACKET_FIELDS:
+        raise ValueError("C7.1 contract required_packet_fields must match the exact canonical list")
+    for field_path in EXPECTED_REQUIRED_PACKET_FIELDS:
         if not isinstance(field_path, str):
             raise ValueError("C7.1 contract required_packet_fields entries must be strings")
         _get_path(packet, field_path)
 
+    input_fields = _expect_mapping(packet, "input")
+    parsed_command, parsed_text = parse_raw_message(str(input_fields.get("raw_message", "")))
+    if input_fields.get("command") != f"/{parsed_command}" or input_fields.get("text") != parsed_text:
+        raise ValueError("C7.1 input fields must match exact slash parsing of input.raw_message")
+
     current_command = route.get("current_command")
+    if current_command != input_fields.get("command"):
+        raise ValueError("C7.1 route.current_command must match input.command")
     if metadata.get("command") != current_command:
         raise ValueError("C7.1 command metadata must match route.current_command")
     if metadata.get("mode") != route.get("converge_mode"):
         raise ValueError("C7.1 command metadata must match route.converge_mode")
     owner_session_key = route.get("owner_session_key")
-    if not isinstance(owner_session_key, str):
-        raise ValueError("C7.1 route.owner_session_key must be a string")
+    if not isinstance(owner_session_key, str) or not owner_session_key:
+        raise ValueError("C7.1 route.owner_session_key must be a non-empty string")
     expected_alias_status = "deprecated_alias" if current_command == "/converge" else "primary"
     if route.get("alias_status") != expected_alias_status:
         raise ValueError(f"C7.1 route.alias_status must be {expected_alias_status!r} for {current_command}")
-    if not isinstance(route.get("visible_delivery"), dict):
-        raise ValueError("C7.1 route.visible_delivery must be a JSON object")
-    if "state_root" not in route:
-        raise ValueError("C7.1 route.state_root field is required")
+    visible_delivery = route.get("visible_delivery")
+    _validate_visible_delivery(visible_delivery)
+    state_root = route.get("state_root")
+    if not isinstance(state_root, str) or not state_root:
+        raise ValueError("C7.1 route.state_root must be a non-empty string")
+    workflow_id = route.get("workflow_id")
+    if workflow_id is not None and not isinstance(workflow_id, str):
+        raise ValueError("C7.1 route.workflow_id must be a string or null")
+    invocation = _expect_mapping(packet, "converge_invocation")
+    expected_argv = build_converge_argv(
+        mode=str(route.get("converge_mode")),
+        text=parsed_text,
+        owner_session_key=owner_session_key,
+        visible_delivery=visible_delivery,
+        workflow_id=workflow_id,
+        state_root=Path(state_root),
+    )
+    if invocation.get("argv") != expected_argv:
+        raise ValueError("C7.1 converge_invocation.argv must match route metadata and exact slash parsing")
 
     shared = _expect_mapping(contract, "shared_metadata")
     if shared.get("state_root_field") != "route.state_root":
@@ -617,8 +655,12 @@ def validate_route_retirement_plan(route_plan: dict[str, Any]) -> None:
         raise ValueError("C7.3 logging/proof must keep all legacy sources non-authoritative for Converge work")
 
     cleanup_boundary = _expect_mapping(route_plan, "cleanup_removal_boundary")
-    if cleanup_boundary.get("next_slice") != "C7.4 cleanup and removal plan":
-        raise ValueError("C7.3 cleanup boundary must point to C7.4")
+    if cleanup_boundary.get("status") != "completed":
+        raise ValueError("C7.4 cleanup boundary must mark the C7.4 plan completed")
+    if cleanup_boundary.get("completed_slice") != "C7.4 cleanup and removal plan":
+        raise ValueError("C7.4 cleanup boundary must identify the completed C7.4 slice")
+    if cleanup_boundary.get("next_operational_slice") != "C7 live route replacement readiness plan":
+        raise ValueError("C7.4 cleanup boundary must point to live route replacement readiness")
     for key in ("plan_only", "classification_only", "separate_owner_approval_required"):
         if cleanup_boundary.get(key) is not True:
             raise ValueError(f"C7.3 cleanup boundary must set {key}=true")
@@ -685,6 +727,17 @@ def _get_path(parent: dict[str, Any], dotted_path: str) -> Any:
             raise ValueError(f"C7.1 required packet field missing: {dotted_path}")
         current = current[part]
     return current
+
+
+def _validate_visible_delivery(visible_delivery: Any) -> None:
+    if not isinstance(visible_delivery, dict) or not visible_delivery:
+        raise ValueError("C7.1 route.visible_delivery must be a non-empty JSON object")
+    channel = visible_delivery.get("channel")
+    target = visible_delivery.get("target")
+    if not isinstance(channel, str) or not channel:
+        raise ValueError("C7.1 route.visible_delivery.channel must be a non-empty string")
+    if not isinstance(target, str) or not target:
+        raise ValueError("C7.1 route.visible_delivery.target must be a non-empty string")
 
 
 def parse_raw_message(raw_message: str) -> tuple[str, str]:

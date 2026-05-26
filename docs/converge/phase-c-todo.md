@@ -54,8 +54,9 @@ C7.3 is a plan-only route retirement slice. It should produce route
 classification, rollback gates, readiness checks, and accepted/deferred risks
 for moving managed `/goal`, `/verify`, and `/conv` defaults toward Converge.
 It must not execute live slash-route replacement, Gateway restart, shadow
-routing, deploy/apply/install, legacy deletion, external action, push, PR, or
-release.
+routing, deploy/apply/install, cleanup/removal execution, legacy deletion,
+legacy file deletion/movement/archival, legacy skill disable/uninstall,
+external action, push, PR, or release.
 
 C7.3 is now represented in `command-dry-run` output as
 `route_retirement_plan`. That packet fixes:
@@ -102,8 +103,8 @@ The dry-run packet now includes
 
 C7.4 did not and must not execute cleanup/removal, live route replacement,
 live route removal, Gateway restart, shadow routing, deploy/apply/install,
-external action, legacy data deletion, file movement, file archival, skill
-disable/uninstall, push, PR, or release.
+external action, legacy data deletion, legacy file deletion, file movement,
+file archival, skill disable/uninstall, push, PR, or release.
 
 ## Next Goal Command
 

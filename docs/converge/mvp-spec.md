@@ -109,8 +109,11 @@ artifacts, and child workflow references. Phase C4.5 consolidated smoke helpers
 and documentation boundaries without changing production runtime behavior. Phase
 C5 added local recovery inspection, watchdog packet emission, and recovery lease
 acquisition. Phase C6 added local install wiring for the CLI and watchdog
-runner. The next implementation boundary is C7 Canonical Command Replacement
-and Legacy Retirement.
+runner. C7.0-C7.4 added command inventory, the route-free command dry-run
+adapter contract, recovery/report-proof takeover metadata, route retirement
+planning, and cleanup/removal planning. The next implementation boundary is a
+separately owner-approved live route replacement readiness plan; live route
+replacement and cleanup execution remain outside C7.4.
 
 ## Verdict And Closure Contract
 
@@ -1038,14 +1041,17 @@ Manual smoke tests:
     deploy wrapper, plugin manifest copy, deterministic local watchdog runner,
     post-install verification commands, and install-path smoke coverage.
 12. Replace canonical managed `/goal`, `/verify`, and `/conv` routing with
-    Converge only after the new runtime passes smoke tests. C7 is command
-    replacement plus legacy retirement planning, not a long-term `/c*` adapter
-    family.
+    Converge only after the new runtime passes smoke tests and a separate
+    owner-approved live route replacement readiness plan. C7.0-C7.4 are command
+    replacement and legacy retirement planning, not a long-term `/c*` adapter
+    family and not live routing execution.
 
 ## Open Questions
 
-- Command replacement rollout: C7 starts with inventory and dry-run adapter
-  work, then replaces live routes only after explicit owner approval.
+- Command replacement rollout: C7.0-C7.4 have fixed inventory, dry-run adapter,
+  recovery/report-proof authority, route retirement, and cleanup/removal
+  planning; live routes change only in a later explicit owner-approved
+  operational task.
 - Package home: independent package is cleaner for MVP; integration into Ledger
   or GoalFlow should wait until the runtime proves stable.
 - Subagent orchestration: MVP should record subagent ids/results, but not own a

@@ -54,6 +54,13 @@ def main() -> int:
         stale_record = next(item for item in stale_scan["workflows"] if item["workflow_id"] == "stale-conv")
         assert_true(stale_record["needs_recovery"] and stale_record["reason"] == "stale_active", "stale active workflow should need recovery")
         assert_true(stale_record["source_of_truth"]["owner"] == "converge", "recovery scan source of truth should be Converge")
+        assert_true(
+            stale_record["source_of_truth"]["authoritative_for_converge_work"]
+            == ["workflow state", "checkpoint cursor", "delivery reservation", "report-proof", "complete-reported"],
+            "recovery scan should expose exact Converge source-of-truth authorities",
+        )
+        assert_true(stale_record["owner_session_key"] == "session:test", "recovery scan should propagate owner session")
+        assert_true(stale_record["visible_delivery"] == json.loads(TEST_VISIBLE_DELIVERY), "recovery scan should propagate visible delivery")
         assert_true("Work Ledger" in stale_record["source_of_truth"]["not_source_of_truth"], "Work Ledger should not be recovery source of truth")
         assert_true(
             "verification-convergence artifacts" in stale_record["source_of_truth"]["not_source_of_truth"],
@@ -63,6 +70,8 @@ def main() -> int:
         assert_true(stale_watchdog["needs_wake"], "stale active workflow should wake")
         stale_packet = next(item for item in stale_watchdog["recoveries"] if item["workflow_id"] == "stale-conv")
         assert_true(stale_packet["source_of_truth"]["state"] == "workflow_state", "watchdog packet should point at Converge workflow state")
+        assert_true(stale_packet["owner_session_key"] == "session:test", "watchdog packet should propagate owner session")
+        assert_true(stale_packet["visible_delivery"] == json.loads(TEST_VISIBLE_DELIVERY), "watchdog packet should propagate visible delivery")
         assert_true(
             "verification-convergence artifacts" in stale_packet["source_of_truth"]["not_source_of_truth"],
             "watchdog packet should keep verification-convergence artifacts non-authoritative",
@@ -142,6 +151,14 @@ def main() -> int:
         assert_true(
             workflow(state_root, "terminal-plan").get("active_recovery_lease") is None,
             "terminal unreported recover should not persist a recovery lease",
+        )
+        assert_true(
+            terminal_recover["recovery_packet"]["owner_session_key"] == "session:test",
+            "terminal recovery packet should preserve owner session",
+        )
+        assert_true(
+            terminal_recover["recovery_packet"]["visible_delivery"] == json.loads(TEST_VISIBLE_DELIVERY),
+            "terminal recovery packet should preserve visible delivery",
         )
         reservation = run(
             "reserve-delivery",

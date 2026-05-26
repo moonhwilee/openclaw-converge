@@ -1264,8 +1264,11 @@ emits the resulting packet with a local-only policy marker. It does not wake
 sessions, restart Gateway, route slash commands, or perform external delivery.
 
 Existing `/verify`, `/conv`, `/goal`, or Ledger adapters are not part of Phase
-C1-C6. C7 owns the routing/migration boundary, but its accepted target is no
-longer adapter coexistence. See
+C1-C6. C7.0-C7.4 now own the local inventory, dry-run adapter contract,
+recovery/report-proof authority boundary, route retirement plan, and
+cleanup/removal plan. The next operational boundary is a separately
+owner-approved live route replacement readiness plan, not adapter coexistence.
+See
 `docs/converge/c7-canonical-command-replacement.md`.
 
 ### Phase C7 / Slice 11: Canonical Command Replacement + Legacy Retirement
@@ -1296,12 +1299,14 @@ parallel UX or automatic fallback.
   marked retiring or retired for Converge-owned workflows once replacement
   verification and the relevant live-routing operation pass.
 
-Implementation starts with C7.0 command inventory and synthetic dry-run adapter
-work. Live traffic observation, shadow routing, Gateway route replacement,
-Gateway restart, external action, push, PR, or release require a separate explicit
-owner-approved operational task after C7 verification.
-Historical or legacy data deletion is outside C7 entirely and requires a later
-separately approved cleanup phase.
+C7.0-C7.4 completed the command inventory, synthetic dry-run adapter contract,
+recovery/report-proof takeover boundary, route retirement plan, and
+cleanup/removal plan without changing live routes. Live traffic observation,
+shadow routing, Gateway route replacement, Gateway restart, cleanup/removal
+execution, external action, push, PR, or release require a separate explicit
+owner-approved operational task after C7 verification. Historical or legacy data
+and file deletion are outside C7.4 and require later separately approved cleanup
+execution.
 
 ## Verification Checklist Before First PR
 

@@ -5,13 +5,13 @@ This is the current execution checklist for the next `/goal` work.
 detail source. C7-specific planning is headed by
 `docs/converge/c7-canonical-command-replacement.md`.
 
-Current implementation baseline: C6 Install Wiring is complete on top of C5
-Recovery and C4.5 smoke helper/docs cleanup. The local implementation now
+Current implementation baseline: C7.0 command inventory and synthetic dry-run
+adapter is complete on top of C6 Install Wiring. The local implementation now
 preserves the C0-C2.5 shared mode and terminal finalization contracts, the C3
 iterative mode invariants, the C4 durable accepted-plan slice queue, the C4.5
-shared smoke helper boundary, the C5 recovery commands, and the C6 local
-install/watchdog runner wiring. The next open phase is C7 Canonical Command
-Replacement and Legacy Retirement.
+shared smoke helper boundary, the C5 recovery commands, the C6 local
+install/watchdog runner wiring, and the C7.0 route-free command dry-run
+adapter. The next open phase is C7.1 Converge command adapter hardening.
 
 Deferred non-blocking cleanup items are tracked in
 `docs/converge/p3-debt-register.md`. New P3 findings from future convergence
@@ -35,6 +35,8 @@ runs should be added there instead of being left only in chat or ledger logs.
 - [x] C5 / Slice 9: Recovery.
 - [x] C6 / Slice 10: Install Wiring.
 - [ ] C7 / Slice 11: Canonical Command Replacement + Legacy Retirement.
+  - [x] C7.0: Entrypoint inventory + synthetic dry-run adapter.
+  - [ ] C7.1: Converge command adapter hardening.
 
 ## Next Goal Command
 
@@ -258,4 +260,17 @@ runs should be added there instead of being left only in chat or ledger logs.
 - Keep live traffic observation and shadow routing outside C7 by default unless
   a later explicit owner-approved operational task enables them.
 - Keep legacy or historical data deletion outside C7 entirely; it requires a
-  later separately approved cleanup phase.
+  separate owner-approved cleanup task.
+
+## C7.0 Completed Scope
+
+- Added `converge command-dry-run` as a synthetic adapter for `/goal`,
+  `/verify`, `/conv`, and the legacy `/converge` alias.
+- Kept the adapter strictly route-free: it does not create workflows, observe
+  live traffic, enable shadow routing, restart Gateway, perform external
+  actions, delete legacy data, deploy, push, open PRs, or release.
+- Recorded the command ownership inventory in
+  `docs/converge/c7-entrypoint-inventory.md`.
+- Added smoke coverage proving command mapping, owner/session and
+  visible-delivery metadata preservation, no workflow state materialization, and
+  `/converge` deprecated-alias handling.

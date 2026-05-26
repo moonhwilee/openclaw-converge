@@ -7,10 +7,10 @@ terminal-finalization invariants, C3 `conv` mode, and the common
 runtime-reporting/reconciliation foundation: JSON schemas, append-only events,
 worklog initialization, atomic checkpoints, visible message formatting, shared
 mode-handler primitives, terminal delivery reservation, report proof, manual
-reconcile guards, C4 `goal` mode, C4.5 smoke helper/docs cleanup, and C5
-Recovery commands, and C6 local install wiring for the standalone CLI and
-deterministic watchdog runner. The next planned boundary is C7 Canonical Command
-Replacement + Legacy Retirement.
+reconcile guards, C4 `goal` mode, C4.5 smoke helper/docs cleanup, C5 Recovery
+commands, C6 local install wiring for the standalone CLI and deterministic
+watchdog runner, and C7.0 command inventory plus a synthetic dry-run adapter.
+The next planned boundary is C7.1 Converge command adapter hardening.
 
 The package is intentionally not wired into existing slash commands yet.
 Development uses the local CLI. C7's target is to make Converge the canonical
@@ -24,6 +24,7 @@ separate owner approval.
 ```bash
 python -m converge.cli start --kind goal --text "demo" --json
 python -m converge.cli validate --sample-docs
+python -m converge.cli command-dry-run --raw-message "/goal demo" --json
 ```
 
 Local install wiring is available for the standalone CLI and deterministic

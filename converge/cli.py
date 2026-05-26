@@ -13,6 +13,7 @@ from typing import Any
 
 from .acceptance import validate_acceptance_payload
 from .checkpoint import record_checkpoint, validate_evidence_artifact_refs, validate_evidence_object
+from .command_adapter import build_dry_run_packet
 from .continuation import TERMINAL_CONTINUATION_TARGETS, current_cursor, default_continuation_plan
 from .messages import VALID_VERDICTS, lint_verdict_residuals, normalize_residuals, progress_block
 from .modes.conv import CONV_REPORT_ARTIFACT_ID, ConvHandler, ConvRecord, ConvRound, render_conv_report, validate_conv_state
@@ -205,6 +206,21 @@ def cmd_goal(args: argparse.Namespace) -> int:
     )
     workflow = store.load_workflow(workflow["workflow_id"])
     print_json({"ok": True, "workflow": workflow, **goal})
+    return 0
+
+
+def cmd_command_dry_run(args: argparse.Namespace) -> int:
+    if args.visible_delivery:
+        _validate_visible_delivery_arg(args.visible_delivery)
+    print_json(
+        build_dry_run_packet(
+            raw_message=args.raw_message,
+            owner_session_key=args.owner_session_key or "",
+            visible_delivery=args.visible_delivery or {},
+            workflow_id=args.workflow_id,
+            state_root=args.state_root,
+        )
+    )
     return 0
 
 
@@ -2039,6 +2055,14 @@ def build_parser() -> argparse.ArgumentParser:
     conv.add_argument("--recovery-lease-holder")
     conv.add_argument("--json", action="store_true", help=json_help)
     conv.set_defaults(func=cmd_conv)
+
+    command_dry_run = sub.add_parser("command-dry-run")
+    command_dry_run.add_argument("--raw-message", required=True)
+    command_dry_run.add_argument("--workflow-id")
+    command_dry_run.add_argument("--owner-session-key")
+    command_dry_run.add_argument("--visible-delivery", type=parse_json)
+    command_dry_run.add_argument("--json", action="store_true", help=json_help)
+    command_dry_run.set_defaults(func=cmd_command_dry_run)
 
     status = sub.add_parser("status")
     status.add_argument("--workflow-id", required=True)

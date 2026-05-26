@@ -309,6 +309,20 @@ routing, live route replacement/removal, cleanup/removal execution, legacy
 deletion/movement/archive, deploy/apply/install, external action, push, PR, or
 release.
 
+## C7 Live Route Operational Execution Plan
+
+`docs/converge/c7-live-route-operational-execution-plan.md` records the
+pre-execution operational plan for the later approved route replacement. It
+keeps the same no-execution boundary as the readiness contract, but packages the
+fields the later execution gate must fill: exact live route inventory, pinned
+owner approval kind/text, rollback record, retention decision, pre-change smoke
+evidence, Gateway restart/reload preflight decision, post-change smoke
+checklist, and abort conditions.
+
+The plan intentionally does not guess installed Gateway/OpenClaw route config
+paths. The live operation must prove each route config path/key/handler ID from
+the installed environment before changing any route.
+
 ## Implementation Slices
 
 1. **C7.0 command inventory and routing spec**

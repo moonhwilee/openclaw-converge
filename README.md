@@ -13,8 +13,9 @@ watchdog runner, C7.0 command inventory plus a synthetic dry-run adapter, C7.1
 command adapter contract hardening, C7.2 recovery/report-proof ownership for
 Converge-owned workflows, and C7.3 canonical route replacement / legacy route
 retirement planning, and C7.4 cleanup/removal planning for legacy scripts, docs,
-skills, aliases, and state paths. The next planned boundary is a separately
-approved live route replacement readiness plan, not live route replacement.
+skills, aliases, and state paths. The C7 live route operational execution plan
+now records the pre-execution gate package for a later separately approved
+route replacement; it is still not live route replacement.
 
 The package is intentionally not wired into existing slash commands yet.
 Development uses the local CLI. C7's target is to make Converge the canonical
@@ -26,12 +27,14 @@ keeps Converge-owned recovery/report proof inside Converge workflow state, and
 C7.3 fixes the route replacement plan, approval gate, rollback switch, and
 logging/proof requirements as dry-run-verifiable metadata. C7.4 fixes the
 cleanup/removal inventory, classifications, source-of-truth boundary, and later
-execution requirements as dry-run-verifiable metadata.
+execution requirements as dry-run-verifiable metadata. The operational
+execution plan fixes the exact route scope, approval text, rollback, retention,
+smoke, Gateway preflight, and abort gates that must be filled before a later
+owner-approved live operation.
 Gateway restart, live traffic observation, shadow routing, live slash-route
 replacement/removal, deploy/apply/install, external action, deletion or movement
 or archival of legacy files/data, legacy skill disable/uninstall, push, PR, and
-release belong outside C7.4 and require a later separately approved operational
-task.
+release remain separate owner-approved operational actions.
 
 ```bash
 python -m converge.cli start --kind goal --text "demo" --json

@@ -5,8 +5,9 @@ This is the current execution checklist for the next `/goal` work.
 detail source. C7-specific planning is headed by
 `docs/converge/c7-canonical-command-replacement.md`.
 
-Current implementation baseline: C7.4 cleanup/removal planning is complete on
-top of C7.0 command inventory and synthetic dry-run adapter. The local
+Current implementation baseline: C7.4 cleanup/removal planning and the
+pre-execution C7 live route operational execution plan are complete on top of
+C7.0 command inventory and synthetic dry-run adapter. The local
 implementation now
 preserves the C0-C2.5 shared mode and terminal finalization contracts, the C3
 iterative mode invariants, the C4 durable accepted-plan slice queue, the C4.5
@@ -18,7 +19,10 @@ report proof, and reported completion. C7.3 adds a dry-run-verifiable route
 retirement/replacement plan, owner approval gate, rollback switch, and
 logging/proof requirements. C7.4 adds a dry-run-verifiable cleanup/removal plan
 with legacy surface inventory, classifications, reasons, later-action
-boundaries, source-of-truth boundaries, and later execution requirements.
+boundaries, source-of-truth boundaries, and later execution requirements. The
+C7 live route operational execution plan records the exact gate package needed
+before any later owner-approved live replacement of `/goal`, `/verify`, and
+`/conv`.
 
 Deferred non-blocking cleanup items are tracked in
 `docs/converge/p3-debt-register.md`. New P3 findings from future convergence
@@ -42,12 +46,14 @@ runs should be added there instead of being left only in chat or ledger logs.
 - [x] C5 / Slice 9: Recovery.
 - [x] C6 / Slice 10: Install Wiring.
 - [ ] C7 / Slice 11: Canonical Command Replacement + Legacy Retirement
-  (C7.0-C7.4 planning complete; live route readiness pending).
+  (C7.0-C7.4 planning and live route operational execution planning complete;
+  live route execution pending separate approval).
   - [x] C7.0: Entrypoint inventory + synthetic dry-run adapter.
   - [x] C7.1: Converge command adapter hardening.
   - [x] C7.2: Converge recovery/report-proof takeover.
   - [x] C7.3: Canonical route replacement / legacy route retirement plan.
   - [x] C7.4: Cleanup and removal plan.
+  - [x] C7.5: Live route replacement operational execution plan.
 
 ## C7.3 Output Boundary
 
@@ -155,6 +161,37 @@ missing. It is also `No-Go` if the request tries to promote `/converge`, allow
 automatic fallback, execute cleanup/removal, delete/move/archive legacy state,
 restart Gateway, route live traffic, replace/remove live routes,
 deploy/apply/install, push, PR, or release.
+
+## C7 Live Route Operational Execution Plan
+
+The operational execution plan is recorded in
+`docs/converge/c7-live-route-operational-execution-plan.md`.
+
+It remains a pre-execution artifact. It does not perform or authorize Gateway
+restart, route config reload, live/shadow routing, live route replacement,
+cleanup/removal execution, legacy deletion/movement/archive, deploy/apply/install,
+external action, push, PR, or release.
+
+The plan fixes:
+
+- exact managed route scope: `/goal`, `/verify`, and `/conv` only
+- `/converge` as an excluded legacy alias boundary
+- the pinned `operational_live_route_replacement` approval kind and exact
+  approval text
+- exact rollback log path template under
+  `/Users/moon/.openclaw/state/converge/route-replacement/`
+- retention decisions that retain all legacy state/artifacts in place during
+  route replacement
+- pre-change smoke evidence requirements
+- Gateway restart/reload preflight decision and separate approval boundary
+- post-change smoke evidence required before completion reporting
+- abort conditions for ambiguous route inventory, missing approval, automatic
+  fallback, failed smoke, duplicate visible reports, cleanup/removal, deploy,
+  external action, push, PR, or release
+
+The plan intentionally leaves the installed live route config path/key/handler
+ID as a required pre-execution discovery gate. The operation must abort if those
+values cannot be proven from the installed environment before any route change.
 
 ## Next Goal Command
 

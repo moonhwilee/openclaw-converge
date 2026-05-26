@@ -131,13 +131,18 @@ EXPECTED_LEGACY_NON_AUTHORITATIVE_SOURCES = [
 ]
 
 EXPECTED_BLOCKED_WITHOUT_APPROVAL = [
+    "cleanup/removal execution",
     "Gateway restart",
     "live traffic observation",
     "shadow routing",
     "live route replacement",
+    "live route removal",
     "deploy/apply/install",
     "external action",
     "legacy data deletion",
+    "legacy file movement",
+    "legacy file archival",
+    "legacy skill disable/uninstall",
     "push/PR/release",
 ]
 
@@ -169,6 +174,14 @@ EXPECTED_C7_4_CLEANUP_CLASSIFICATIONS = [
     "archived",
     "still-active-for-non-Converge",
     "requires-owner-approval",
+]
+
+EXPECTED_C7_4_LATER_EXECUTION_REQUIRES = [
+    "separate explicit owner approval",
+    "exact surface list",
+    "retention decision for historical state",
+    "rollback switch with expiry and log path",
+    "post-change smoke evidence",
 ]
 
 CLEANUP_REMOVAL_SURFACES: tuple[dict[str, Any], ...] = (
@@ -217,9 +230,10 @@ CLEANUP_REMOVAL_SURFACES: tuple[dict[str, Any], ...] = (
     {
         "category": "state paths",
         "surface": "verification-convergence artifacts and chat-derived records",
-        "classification": "archived",
-        "reason": "Past verification artifacts can support audit history but cannot drive Converge recovery, report-proof, or complete-reported state.",
-        "later_action_boundary": "Retain as historical evidence unless a later retention task explicitly approves cleanup.",
+        "classification": "requires-owner-approval",
+        "reason": "Past verification artifacts can support audit history but their exact storage roots are not fixed by C7.4.",
+        "later_action_boundary": "Discover exact paths before any retention, archive, move, or delete decision.",
+        "exact_path_discovery_required": True,
     },
 )
 
@@ -393,13 +407,7 @@ def build_cleanup_removal_plan() -> dict[str, Any]:
             "converge_authoritative_for_converge_work": list(EXPECTED_CONVERGE_SOURCE_OF_TRUTH),
             "legacy_not_authoritative_for_converge_work": list(EXPECTED_LEGACY_NON_AUTHORITATIVE_SOURCES),
         },
-        "later_execution_requires": [
-            "separate explicit owner approval",
-            "exact surface list",
-            "retention decision for historical state",
-            "rollback switch with expiry and log path",
-            "post-change smoke evidence",
-        ],
+        "later_execution_requires": list(EXPECTED_C7_4_LATER_EXECUTION_REQUIRES),
         "prohibited_actions": list(EXPECTED_C7_4_PROHIBITED_ACTIONS),
     }
 
@@ -655,10 +663,12 @@ def validate_cleanup_removal_plan(cleanup_plan: dict[str, Any]) -> None:
             raise ValueError("C7.4 cleanup/removal plan has an invalid classification")
         if not surface.get("reason") or not surface.get("later_action_boundary"):
             raise ValueError("C7.4 cleanup/removal surfaces must include reason and later_action_boundary")
+        if surface["category"] == "state paths" and "/" not in surface["surface"] and "*" not in surface["surface"]:
+            if surface.get("exact_path_discovery_required") is not True:
+                raise ValueError("C7.4 descriptive state-path surfaces must require exact path discovery")
 
-    later_execution_requires = cleanup_plan.get("later_execution_requires")
-    if not isinstance(later_execution_requires, list) or "separate explicit owner approval" not in later_execution_requires:
-        raise ValueError("C7.4 cleanup/removal execution must require separate explicit owner approval")
+    if cleanup_plan.get("later_execution_requires") != EXPECTED_C7_4_LATER_EXECUTION_REQUIRES:
+        raise ValueError("C7.4 cleanup/removal plan must keep exact later execution requirements")
 
 
 def _expect_mapping(parent: dict[str, Any], key: str) -> dict[str, Any]:

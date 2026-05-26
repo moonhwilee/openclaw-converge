@@ -29,17 +29,20 @@ cleanup/removal inventory, classifications, source-of-truth boundary, and later
 execution requirements as dry-run-verifiable metadata.
 Gateway restart, live traffic observation, shadow routing, live slash-route
 replacement/removal, deploy/apply/install, external action, deletion or movement
-of legacy files/data, push, PR, and release belong outside C7.4 and require a
-later separately approved operational task.
+or archival of legacy files/data, legacy skill disable/uninstall, push, PR, and
+release belong outside C7.4 and require a later separately approved operational
+task.
 
 ```bash
 python -m converge.cli start --kind goal --text "demo" --json
 python -m converge.cli validate --sample-docs
 python -m converge.cli command-dry-run --raw-message "/goal demo" --json
+npm run smoke:command-adapter
 ```
 
-Local install wiring is available for the standalone CLI and deterministic
-watchdog runner only:
+Existing C6 local install wiring is available for the standalone CLI and
+deterministic watchdog runner only. Do not run it as part of C7.4 or route
+replacement readiness unless separately requested:
 
 ```bash
 scripts/install-local.sh

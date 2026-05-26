@@ -104,7 +104,8 @@ replacement gate passes.
 | `/converge` legacy alias | Do not promote. Either map to Converge only as a temporary alias or retire with a clear replacement message. |
 
 Retirement does not mean deleting historical data in C7. Data deletion,
-archival, and repository removal require a later approved cleanup phase.
+archival, and repository removal require a later separately owner-approved
+operational cleanup execution task outside C7.4.
 
 ## Legacy State Policy
 
@@ -231,15 +232,15 @@ Allowed classifications are fixed:
 
 Current C7.4 cleanup/removal inventory:
 
-| Category | Surface | Classification | Later-action boundary |
-| --- | --- | --- | --- |
-| scripts | `workspace/scripts/goalflow_start_goal.py` | `requires-owner-approval` | Retire or narrow only after owner-approved live route replacement and migration evidence. |
-| docs | `workspace/AGENTS.md` and `docs/context/goalflow.md` exact `/goal` policy | `requires-owner-approval` | Update policy only in the separately approved route replacement operation that actually changes the live owner. |
-| skills | `workspace/skills/verification-convergence/SKILL.md` | `still-active-for-non-Converge` | Remove managed-command ownership only after Converge handles live `/verify` and `/conv` with owner-approved routing proof. |
-| aliases | `/converge` legacy alias | `retired` | Execute alias removal or replacement wording only in a later owner-approved live route removal task. |
-| state paths | `workspace/state/goalflow/*` | `archived` | Archive, move, or delete records only after explicit retention approval and migration checks. |
-| state paths | `workspace/state/work-ledger/*` | `still-active-for-non-Converge` | Do not remove or narrow until non-Converge ledger use is separately inventoried and approved. |
-| state paths | verification-convergence artifacts and chat-derived records | `archived` | Retain as historical evidence unless a later retention task explicitly approves cleanup. |
+| Category | Surface | Classification | Reason | Later-action boundary |
+| --- | --- | --- | --- | --- |
+| scripts | `workspace/scripts/goalflow_start_goal.py` | `requires-owner-approval` | It remains the owner of exact `/goal` draft intake until a separate live-routing task replaces `/goal` with Converge. | Retire or narrow only after owner-approved live route replacement and migration evidence. |
+| docs | `workspace/AGENTS.md` and `docs/context/goalflow.md` exact `/goal` policy | `requires-owner-approval` | Workspace policy still defines the active `/goal` intake contract and cannot be rewritten by a plan-only cleanup slice. | Update policy only in the separately approved route replacement operation that actually changes the live owner. |
+| skills | `workspace/skills/verification-convergence/SKILL.md` | `still-active-for-non-Converge` | The skill may remain useful for non-Converge audits while managed `/verify` and `/conv` route ownership is migrated. | Remove managed-command ownership only after Converge handles live `/verify` and `/conv` with owner-approved routing proof. |
+| aliases | `/converge` legacy alias | `retired` | The alias has no independent state or delivery contract and must not become the primary product route. | Execute alias removal or replacement wording only in a later owner-approved live route removal task. |
+| state paths | `workspace/state/goalflow/*` | `archived` | Historical GoalFlow records remain readable, but they are not authoritative for Converge-owned workflow recovery or completion. | Archive, move, or delete records only after explicit retention approval and migration checks. |
+| state paths | `workspace/state/work-ledger/*` | `still-active-for-non-Converge` | Work Ledger remains valid for outer session recovery and non-Converge work, but not as Converge workflow source of truth. | Do not remove or narrow until non-Converge ledger use is separately inventoried and approved. |
+| state paths | verification-convergence artifacts and chat-derived records | `requires-owner-approval` | Past verification artifacts can support audit history but their exact storage roots are not fixed by C7.4. | Discover exact paths before any retention, archive, move, or delete decision. |
 
 C7.4 keeps the same source-of-truth boundary as C7.2/C7.3:
 
@@ -308,7 +309,8 @@ C7.4 may produce only:
 C7.4 must not execute cleanup/removal. Approval inside a C7.4 goal cannot
 authorize execution. It must not restart Gateway, observe live traffic, enable
 shadow routing, replace or remove live routes, deploy, apply, install, delete
-or move legacy data/files, send external messages, push, open a PR, or release.
+move, or archive legacy data/files, disable or uninstall legacy skills, send
+external messages, push, open a PR, or release.
 
 ## Non-Goals
 
@@ -327,11 +329,14 @@ or move legacy data/files, send external messages, push, open a PR, or release.
 ## Verification Gates
 
 C7.0 inventory, C7.1 dry-run adapter contract, C7.2 recovery/report-proof
-ownership, and C7.3 route retirement/replacement planning work are complete.
+ownership, C7.3 route retirement/replacement planning, and C7.4
+cleanup/removal planning work are complete.
 C7.2 proves Converge-owned workflows recover and finalize visible report proof
 from Converge workflow state without changing live routes. C7.3 proves the
 route replacement plan, approval gate, rollback switch, and logging/proof
-requirements as dry-run metadata. Live route replacement is still not
+requirements as dry-run metadata. C7.4 proves the cleanup/removal inventory,
+classifications, source-of-truth boundary, and later execution requirements as
+dry-run metadata. Live route replacement is still not
 authorized until a separate owner-approved operational task:
 
 - Command inventory proves every current `/goal`, `/verify`, `/conv`, and
@@ -351,11 +356,12 @@ authorized until a separate owner-approved operational task:
 
 ## Readiness Verdict
 
-C7.0, C7.1, C7.2, and C7.3 are complete. The next implementation is C7.4
-cleanup and removal planning, not live slash-route replacement. C7.2 proved
-that Converge recovery and delivery proof can own interrupted and
-terminal-unreported Converge workflows without leaving GoalFlow, Work Ledger,
-chat memory, or verification-convergence artifacts as the source of truth. C7.3 fixed the replacement plan,
-approval gate, rollback switch, and logging/proof requirements without changing
-live routes. Live replacement remains a separate owner-approved operational
-task.
+C7.0, C7.1, C7.2, C7.3, and C7.4 are complete. C7.2 proved that Converge
+recovery and delivery proof can own interrupted and terminal-unreported
+Converge workflows without leaving GoalFlow, Work Ledger, chat memory, or
+verification-convergence artifacts as the source of truth. C7.3 fixed the
+replacement plan, approval gate, rollback switch, and logging/proof
+requirements without changing live routes. C7.4 fixed the cleanup/removal
+inventory and planning boundary without deleting, moving, archiving, disabling,
+uninstalling, or rerouting legacy surfaces. Live replacement and cleanup/removal
+execution remain separate owner-approved operational tasks.

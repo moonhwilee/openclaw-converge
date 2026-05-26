@@ -108,7 +108,7 @@ disable/uninstall, push, PR, or release.
 ## Next Goal Command
 
 ```text
-/goal Converge C7 live route replacement readiness plan을 작성해줘. 목표는 C7.0-C7.4의 command dry-run, recovery/report-proof ownership, route retirement plan, cleanup/removal plan을 바탕으로 /goal, /verify, /conv live route replacement를 실행하기 전 필요한 owner approval record, exact route scope, rollback expiry/log path, retention decision, smoke evidence, and stop conditions를 운영 계획으로 확정하는 것이야. 실제 Gateway restart, live/shadow routing, deploy/apply/install, legacy deletion, live route replacement/removal, external action, push/PR/release는 제외해줘.
+/goal Converge C7 live route replacement readiness plan을 작성해줘. 목표는 C7.0-C7.4의 command dry-run, recovery/report-proof ownership, route retirement plan, cleanup/removal plan을 바탕으로 /goal, /verify, /conv live route replacement를 실행하기 전 필요한 owner approval record, exact route scope, rollback expiry/log path, retention decision, smoke evidence, and stop conditions를 운영 계획으로 확정하는 것이야. 실제 cleanup/removal execution, Gateway restart, live/shadow routing, deploy/apply/install, legacy deletion/movement/archival, legacy skill disable/uninstall, live route replacement/removal, external action, push/PR/release는 제외해줘.
 ```
 
 ## C0 Completed Scope
@@ -322,13 +322,14 @@ disable/uninstall, push, PR, or release.
   route-free boundary and continue treating stale source-checkout or
   installed-copy Slash/Ledger wording as non-canonical until those copies are
   explicitly synchronized.
-- Keep Gateway restart, live slash routing replacement, external action, push,
-  PR, release, and development-server apply outside C7 unless a later explicit
-  owner-approved operational task is requested.
+- Keep Gateway restart, live slash routing replacement/removal, external action,
+  push, PR, release, and development-server apply outside C7 unless a later
+  explicit owner-approved operational task is requested.
 - Keep live traffic observation and shadow routing outside C7 by default unless
   a later explicit owner-approved operational task enables them.
-- Keep legacy or historical data deletion outside C7 entirely; it requires a
-  separate owner-approved cleanup task.
+- Keep legacy or historical data deletion, movement, archival, and legacy skill
+  disable/uninstall outside C7 entirely; they require a separate owner-approved
+  cleanup execution task.
 
 ## C7.0 Completed Scope
 

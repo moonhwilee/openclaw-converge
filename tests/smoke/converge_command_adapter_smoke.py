@@ -115,7 +115,55 @@ def assert_c7_1_command_metadata_contract(state_root: Path) -> None:
 def assert_c7_3_route_retirement_plan_contract(state_root: Path) -> None:
     result = run("command-dry-run", "--raw-message", "/goal Implement route retirement plan", state_root=state_root)
     route_plan = result["route_retirement_plan"]
+    expected_prohibited_actions = [
+        "cleanup/removal execution",
+        "Gateway restart",
+        "live traffic observation",
+        "shadow routing",
+        "live route replacement",
+        "live route removal",
+        "deploy/apply/install",
+        "external action",
+        "legacy data deletion",
+        "legacy file movement",
+        "legacy file archival",
+        "legacy skill disable/uninstall",
+        "push/PR/release",
+    ]
+    expected_sources = {
+        "workspace/scripts/goalflow_start_goal.py": "requires-owner-approval",
+        "workspace/AGENTS.md and docs/context/goalflow.md exact /goal policy": "requires-owner-approval",
+        "workspace/skills/verification-convergence/SKILL.md": "still-active-for-non-Converge",
+        "/converge legacy alias": "retired",
+        "workspace/state/goalflow/*": "archived",
+        "workspace/state/work-ledger/*": "still-active-for-non-Converge",
+        "verification-convergence artifacts and chat-derived records": "requires-owner-approval",
+    }
+    expected_authoritative = [
+        "workflow state",
+        "checkpoint cursor",
+        "delivery reservation",
+        "report-proof",
+        "complete-reported",
+    ]
+    expected_non_authoritative = [
+        "GoalFlow",
+        "Work Ledger",
+        "chat memory",
+        "verification-convergence artifacts",
+    ]
+    expected_later_execution_requires = [
+        "separate explicit owner approval",
+        "exact surface list",
+        "retention decision for historical state",
+        "rollback switch with expiry and log path",
+        "post-change smoke evidence",
+    ]
     assert_true(route_plan["version"] == "c7.3", "route retirement plan should expose C7.3 version")
+    assert_true(
+        result["blocked_without_approval"] == expected_prohibited_actions,
+        "top-level blocked_without_approval should include the full C7.4 prohibited-action set",
+    )
     required_packet_fields = result["adapter_contract"]["required_packet_fields"]
     assert_true("route_retirement_plan.version" in required_packet_fields, "C7.3 version should be a required field")
     assert_true("route_retirement_plan.scope" in required_packet_fields, "C7.3 scope should be a required field")
@@ -216,6 +264,11 @@ def assert_c7_3_route_retirement_plan_contract(state_root: Path) -> None:
         == ["retired", "archived", "still-active-for-non-Converge", "requires-owner-approval"],
         "C7.4 should fix exact cleanup classification values",
     )
+    surfaces_by_name = {surface["surface"]: surface for surface in cleanup_plan["surfaces"]}
+    assert_true(
+        {surface: item["classification"] for surface, item in surfaces_by_name.items()} == expected_sources,
+        "C7.4 should keep exact cleanup surface names and classifications",
+    )
     categories = {surface["category"] for surface in cleanup_plan["surfaces"]}
     assert_true(categories == {"scripts", "docs", "skills", "aliases", "state paths"}, "C7.4 should cover all legacy surface categories")
     classifications = {surface["classification"] for surface in cleanup_plan["surfaces"]}
@@ -223,7 +276,6 @@ def assert_c7_3_route_retirement_plan_contract(state_root: Path) -> None:
     assert_true("archived" in classifications, "C7.4 should include archived surfaces")
     assert_true("still-active-for-non-Converge" in classifications, "C7.4 should include non-Converge active surfaces")
     assert_true("requires-owner-approval" in classifications, "C7.4 should include owner-approval surfaces")
-    surfaces_by_name = {surface["surface"]: surface for surface in cleanup_plan["surfaces"]}
     assert_true(
         surfaces_by_name["/converge legacy alias"]["classification"] == "retired",
         "C7.4 should mark /converge alias as retired in the later plan",
@@ -232,29 +284,34 @@ def assert_c7_3_route_retirement_plan_contract(state_root: Path) -> None:
         surfaces_by_name["workspace/state/goalflow/*"]["classification"] == "archived",
         "C7.4 should keep GoalFlow state historical/readable, not authoritative",
     )
+    assert_true(
+        surfaces_by_name["verification-convergence artifacts and chat-derived records"]["exact_path_discovery_required"]
+        is True,
+        "C7.4 should flag descriptive state-path buckets for exact path discovery",
+    )
     for surface in cleanup_plan["surfaces"]:
         assert_true(surface["reason"], "C7.4 cleanup surface should include a reason")
         assert_true(surface["later_action_boundary"], "C7.4 cleanup surface should include later action boundary")
     source_boundary = cleanup_plan["source_of_truth_boundary"]
     assert_true(
-        "report-proof" in source_boundary["converge_authoritative_for_converge_work"],
-        "C7.4 should preserve Converge report-proof authority",
+        source_boundary["converge_authoritative_for_converge_work"] == expected_authoritative,
+        "C7.4 should preserve exact Converge source-of-truth authorities",
     )
     assert_true(
-        "Work Ledger" in source_boundary["legacy_not_authoritative_for_converge_work"],
-        "C7.4 should keep Work Ledger non-authoritative for Converge workflow completion",
+        source_boundary["legacy_not_authoritative_for_converge_work"] == expected_non_authoritative,
+        "C7.4 should preserve exact non-authoritative legacy sources",
     )
     assert_true(
-        "cleanup/removal execution" in cleanup_plan["prohibited_actions"],
-        "C7.4 should prohibit cleanup/removal execution",
+        cleanup_boundary["prohibited_actions"] == expected_prohibited_actions,
+        "C7.4 cleanup boundary should fix the exact prohibited-action list",
     )
     assert_true(
-        "legacy file archival" in cleanup_plan["prohibited_actions"],
-        "C7.4 should prohibit archival execution in this slice",
+        cleanup_plan["prohibited_actions"] == expected_prohibited_actions,
+        "C7.4 cleanup plan should fix the exact prohibited-action list",
     )
     assert_true(
-        "separate explicit owner approval" in cleanup_plan["later_execution_requires"],
-        "C7.4 later execution should require separate explicit owner approval",
+        cleanup_plan["later_execution_requires"] == expected_later_execution_requires,
+        "C7.4 later execution requirements should be exact",
     )
 
 
@@ -351,6 +408,15 @@ def assert_c7_1_contract_validation_rejects_drift(state_root: Path) -> None:
     else:
         raise AssertionError("validator should reject blocked action drift")
 
+    blocked_cleanup_drift = json.loads(json.dumps(packet))
+    blocked_cleanup_drift["blocked_without_approval"].remove("legacy skill disable/uninstall")
+    try:
+        validate_dry_run_packet(blocked_cleanup_drift)
+    except ValueError as exc:
+        assert_true("blocked_without_approval" in str(exc), "validator should reject C7.4 blocked action drift")
+    else:
+        raise AssertionError("validator should reject C7.4 blocked action drift")
+
     missing_evidence = json.loads(json.dumps(packet))
     missing_evidence["route_retirement_plan"]["approval_gate"]["evidence_required"].remove("rollback switch plan")
     try:
@@ -413,6 +479,28 @@ def assert_c7_1_contract_validation_rejects_drift(state_root: Path) -> None:
     else:
         raise AssertionError("validator should reject cleanup prohibited-action drift")
 
+    cleanup_gateway_action_drift = json.loads(json.dumps(packet))
+    cleanup_gateway_action_drift["route_retirement_plan"]["cleanup_removal_plan"]["prohibited_actions"].remove(
+        "Gateway restart"
+    )
+    try:
+        validate_dry_run_packet(cleanup_gateway_action_drift)
+    except ValueError as exc:
+        assert_true("prohibited actions" in str(exc), "validator should reject cleanup Gateway action drift")
+    else:
+        raise AssertionError("validator should reject cleanup Gateway action drift")
+
+    cleanup_deploy_action_drift = json.loads(json.dumps(packet))
+    cleanup_deploy_action_drift["route_retirement_plan"]["cleanup_removal_boundary"]["prohibited_actions"].remove(
+        "deploy/apply/install"
+    )
+    try:
+        validate_dry_run_packet(cleanup_deploy_action_drift)
+    except ValueError as exc:
+        assert_true("prohibited actions" in str(exc), "validator should reject cleanup deploy action drift")
+    else:
+        raise AssertionError("validator should reject cleanup deploy action drift")
+
     cleanup_plan_surface_drift = json.loads(json.dumps(packet))
     cleanup_plan_surface_drift["route_retirement_plan"]["cleanup_removal_plan"]["surfaces"][0][
         "classification"
@@ -440,6 +528,39 @@ def assert_c7_1_contract_validation_rejects_drift(state_root: Path) -> None:
     else:
         raise AssertionError("validator should reject missing C7.4 surface category")
 
+    cleanup_plan_missing_surface_drift = json.loads(json.dumps(packet))
+    cleanup_plan_missing_surface_drift["route_retirement_plan"]["cleanup_removal_plan"]["surfaces"] = [
+        surface
+        for surface in cleanup_plan_missing_surface_drift["route_retirement_plan"]["cleanup_removal_plan"][
+            "surfaces"
+        ]
+        if surface["surface"] != "workspace/state/work-ledger/*"
+    ]
+    try:
+        validate_dry_run_packet(cleanup_plan_missing_surface_drift)
+    except ValueError as exc:
+        assert_true("surface inventory" in str(exc), "validator should reject missing C7.4 same-category surface")
+    else:
+        raise AssertionError("validator should reject missing C7.4 same-category surface")
+
+    cleanup_plan_extra_surface_drift = json.loads(json.dumps(packet))
+    cleanup_plan_extra_surface_drift["route_retirement_plan"]["cleanup_removal_plan"]["surfaces"].append(
+        {
+            "category": "state paths",
+            "surface": "workspace/state/unreviewed-extra/*",
+            "classification": "retired",
+            "reason": "drift fixture",
+            "later_action_boundary": "drift fixture",
+            "source_of_truth_boundary": "drift fixture",
+        }
+    )
+    try:
+        validate_dry_run_packet(cleanup_plan_extra_surface_drift)
+    except ValueError as exc:
+        assert_true("surface inventory" in str(exc), "validator should reject extra C7.4 same-category surface")
+    else:
+        raise AssertionError("validator should reject extra C7.4 same-category surface")
+
     cleanup_plan_source_drift = json.loads(json.dumps(packet))
     cleanup_plan_source_drift["route_retirement_plan"]["cleanup_removal_plan"]["source_of_truth_boundary"][
         "converge_authoritative_for_converge_work"
@@ -453,6 +574,87 @@ def assert_c7_1_contract_validation_rejects_drift(state_root: Path) -> None:
         )
     else:
         raise AssertionError("validator should reject missing C7.4 source-of-truth authority")
+
+    cleanup_plan_extra_source_drift = json.loads(json.dumps(packet))
+    cleanup_plan_extra_source_drift["route_retirement_plan"]["cleanup_removal_plan"]["source_of_truth_boundary"][
+        "converge_authoritative_for_converge_work"
+    ].append("GoalFlow")
+    try:
+        validate_dry_run_packet(cleanup_plan_extra_source_drift)
+    except ValueError as exc:
+        assert_true(
+            "source-of-truth" in str(exc),
+            "validator should reject extra C7.4 Converge source-of-truth authority",
+        )
+    else:
+        raise AssertionError("validator should reject extra C7.4 source-of-truth authority")
+
+    cleanup_plan_legacy_source_drift = json.loads(json.dumps(packet))
+    cleanup_plan_legacy_source_drift["route_retirement_plan"]["cleanup_removal_plan"]["source_of_truth_boundary"][
+        "legacy_not_authoritative_for_converge_work"
+    ].remove("chat memory")
+    try:
+        validate_dry_run_packet(cleanup_plan_legacy_source_drift)
+    except ValueError as exc:
+        assert_true(
+            "legacy sources" in str(exc),
+            "validator should reject missing C7.4 non-authoritative legacy source",
+        )
+    else:
+        raise AssertionError("validator should reject missing C7.4 non-authoritative legacy source")
+
+    cleanup_plan_extra_legacy_source_drift = json.loads(json.dumps(packet))
+    cleanup_plan_extra_legacy_source_drift["route_retirement_plan"]["cleanup_removal_plan"][
+        "source_of_truth_boundary"
+    ]["legacy_not_authoritative_for_converge_work"].append("unreviewed legacy source")
+    try:
+        validate_dry_run_packet(cleanup_plan_extra_legacy_source_drift)
+    except ValueError as exc:
+        assert_true(
+            "legacy sources" in str(exc),
+            "validator should reject extra C7.4 non-authoritative legacy source",
+        )
+    else:
+        raise AssertionError("validator should reject extra C7.4 non-authoritative legacy source")
+
+    cleanup_plan_later_requirement_drift = json.loads(json.dumps(packet))
+    cleanup_plan_later_requirement_drift["route_retirement_plan"]["cleanup_removal_plan"][
+        "later_execution_requires"
+    ].remove("retention decision for historical state")
+    try:
+        validate_dry_run_packet(cleanup_plan_later_requirement_drift)
+    except ValueError as exc:
+        assert_true(
+            "later execution requirements" in str(exc),
+            "validator should reject missing C7.4 later execution requirement",
+        )
+    else:
+        raise AssertionError("validator should reject missing C7.4 later execution requirement")
+
+    cleanup_plan_extra_requirement_drift = json.loads(json.dumps(packet))
+    cleanup_plan_extra_requirement_drift["route_retirement_plan"]["cleanup_removal_plan"][
+        "later_execution_requires"
+    ].append("implicit cleanup permission")
+    try:
+        validate_dry_run_packet(cleanup_plan_extra_requirement_drift)
+    except ValueError as exc:
+        assert_true(
+            "later execution requirements" in str(exc),
+            "validator should reject extra C7.4 later execution requirement",
+        )
+    else:
+        raise AssertionError("validator should reject extra C7.4 later execution requirement")
+
+    cleanup_plan_path_discovery_drift = json.loads(json.dumps(packet))
+    cleanup_plan_path_discovery_drift["route_retirement_plan"]["cleanup_removal_plan"]["surfaces"][-1].pop(
+        "exact_path_discovery_required"
+    )
+    try:
+        validate_dry_run_packet(cleanup_plan_path_discovery_drift)
+    except ValueError as exc:
+        assert_true("surface inventory" in str(exc), "validator should reject missing exact path discovery flag")
+    else:
+        raise AssertionError("validator should reject missing exact path discovery flag")
 
 
 def assert_rejects_non_managed_or_empty_commands(state_root: Path) -> None:

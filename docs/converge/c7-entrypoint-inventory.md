@@ -69,8 +69,9 @@ The command returns JSON with:
 ## Explicit Non-Goals
 
 C7.0-C7.4 do not restart Gateway, observe traffic, enable shadow routing,
-replace slash routes, deploy, apply, install, push, open a PR, release, delete
-legacy data, or send external messages.
+replace or remove slash routes, deploy, apply, install, push, open a PR,
+release, delete legacy data, move or archive legacy files, disable or uninstall
+legacy skills, or send external messages.
 
 Live route replacement remains a later owner-approved operational task after
 the synthetic adapter and the C7 verification gates pass.

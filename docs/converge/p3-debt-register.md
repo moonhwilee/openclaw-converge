@@ -4,13 +4,16 @@ This register keeps non-blocking Converge cleanup items in one place. P0-P2
 items do not belong here unless they are explicitly outside the current phase
 and assigned to a later phase with a reason.
 
-Current baseline: latest local C7.4 cleanup/removal planning on `main`. C7.2 keeps Converge-owned recovery, delivery
-reservation, report proof, and reported completion inside Converge workflow
-state. C7.3 remains plan-only route retirement/replacement work; live slash
-routing, Gateway restart, shadow routing, deploy/apply/install, legacy deletion,
-external action, push, PR, and release remain out of scope. C7.4 keeps cleanup
-and removal execution out of scope while classifying legacy scripts, docs,
-skills, aliases, and state paths for a later owner-approved operational task.
+Current baseline: latest local C7.4 cleanup/removal planning on `main`. C7.2
+keeps Converge-owned recovery, delivery reservation, report proof, and reported
+completion inside Converge workflow state. C7.3 remains plan-only route
+retirement/replacement work. Gateway restart, live traffic observation, shadow
+routing, live slash-route replacement/removal, deploy/apply/install, external
+action, deletion, movement, or archival of legacy files/data, legacy skill
+disable/uninstall, push, PR, and release remain out of scope. C7.4 keeps
+cleanup and removal execution out of scope while classifying legacy scripts,
+docs, skills, aliases, and state paths for a later owner-approved operational
+task.
 
 ## Maintenance Rule
 

@@ -1,0 +1,224 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Converge checkpoint state update",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "checkpoint_type",
+    "status_after",
+    "phase_after",
+    "cursor_before",
+    "cursor_after",
+    "event_type",
+    "worklog_block_kind",
+    "step_result"
+  ],
+  "properties": {
+    "checkpoint_type": {
+      "type": "string",
+      "enum": [
+        "checkpoint",
+        "advance",
+        "terminal"
+      ]
+    },
+    "status_after": {
+      "type": "string",
+      "enum": [
+        "draft",
+        "running",
+        "waiting_user",
+        "waiting_subagent",
+        "verifying",
+        "completed_unreported",
+        "failed_unreported",
+        "reported",
+        "blocked",
+        "abandoned"
+      ]
+    },
+    "phase_after": {
+      "type": "string"
+    },
+    "cursor_before": {
+      "type": "string"
+    },
+    "cursor_after": {
+      "type": "string"
+    },
+    "event_type": {
+      "type": "string",
+      "enum": [
+        "checkpoint",
+        "advance",
+        "complete",
+        "fail"
+      ]
+    },
+    "worklog_block_kind": {
+      "type": "string",
+      "enum": [
+        "checkpoint_summary",
+        "round_summary",
+        "slice_summary",
+        "terminal_summary",
+        "recovery_summary"
+      ]
+    },
+    "step_result": {
+      "type": "string",
+      "enum": [
+        "none",
+        "passed",
+        "failed",
+        "blocked",
+        "waiting",
+        "terminal"
+      ]
+    },
+    "event_status": {
+      "type": "string"
+    },
+    "residuals": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "blocking_remaining": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "accepted_risks": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "implementation_backlog": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deferred_scope": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "side_effects": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "side_effect_key",
+          "idempotency_policy"
+        ],
+        "properties": {
+          "side_effect_key": {
+            "type": "string",
+            "minLength": 1
+          },
+          "idempotency_policy": {
+            "type": "string",
+            "enum": [
+              "repeatable",
+              "reconcile_first",
+              "never_repeat_without_approval"
+            ]
+          }
+        }
+      }
+    },
+    "context_manifest_updates": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "mode_state_update": {
+      "type": "object"
+    },
+    "terminal_evidence": {
+      "type": "object"
+    },
+    "final_status": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "result"
+      ],
+      "properties": {
+        "result": {
+          "type": "string",
+          "enum": [
+            "pass",
+            "pass_with_risks",
+            "needs_fix",
+            "blocked",
+            "stopped"
+          ]
+        },
+        "done": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "checked": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "residuals": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "blocking_remaining": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "accepted_risks": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "implementation_backlog": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "deferred_scope": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "stop_reason": {
+          "type": "string"
+        }
+      }
+    },
+    "recovery_lease_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "recovery_lease_holder": {
+      "type": "string",
+      "minLength": 1
+    },
+    "failure_reason": {
+      "type": "string"
+    }
+  }
+}

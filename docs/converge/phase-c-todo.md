@@ -250,10 +250,11 @@ runs should be added there instead of being left only in chat or ledger logs.
 - Treat GoalFlow, Work Ledger orchestration, and verification-convergence skill
   paths as migration/retirement surfaces for Converge-owned workflows, not as
   performance baselines or default fallbacks.
-- Start with C7.0 command inventory and synthetic, live-route-free dry-run
-  adapter work. C7.0 must classify stale source-checkout or installed-copy
-  Slash/Ledger wording as non-canonical until those copies are explicitly
-  synchronized.
+- C7 has started with completed C7.0 command inventory and synthetic,
+  live-route-free dry-run adapter work. Remaining C7.1+ work must preserve that
+  route-free boundary and continue treating stale source-checkout or
+  installed-copy Slash/Ledger wording as non-canonical until those copies are
+  explicitly synchronized.
 - Keep Gateway restart, live slash routing replacement, external action, push,
   PR, release, and development-server apply outside C7 unless a later explicit
   owner-approved operational task is requested.
@@ -269,8 +270,9 @@ runs should be added there instead of being left only in chat or ledger logs.
 - Kept the adapter strictly route-free: it does not create workflows, observe
   live traffic, enable shadow routing, restart Gateway, perform external
   actions, delete legacy data, deploy, push, open PRs, or release.
-- Recorded the command ownership inventory in
-  `docs/converge/c7-entrypoint-inventory.md`.
-- Added smoke coverage proving command mapping, owner/session and
-  visible-delivery metadata preservation, no workflow state materialization, and
-  `/converge` deprecated-alias handling.
+- Recorded the command ownership inventory, including current/C7 owners, state
+  root, delivery behavior, rollback switch, transitional behavior, and final
+  behavior, in `docs/converge/c7-entrypoint-inventory.md`.
+- Added smoke coverage proving command mapping, owner/session,
+  visible-delivery, and state-root metadata preservation, no workflow state
+  materialization, and `/converge` deprecated-alias handling.

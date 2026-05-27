@@ -1295,7 +1295,7 @@ parallel UX or automatic fallback.
   workflow recovery.
 - Converge delivery reservation and proof commands become the source of truth
   for Converge-owned terminal reporting.
-- Legacy GoalFlow, Work Ledger, and verification-convergence paths must be
+- Legacy GoalFlow, retired Work Ledger records, and verification-convergence paths must be
   marked retiring or retired for Converge-owned workflows once replacement
   verification and the relevant live-routing operation pass.
 

@@ -152,12 +152,12 @@ def assert_c7_3_route_retirement_plan_contract(state_root: Path) -> None:
         "push/PR/release",
     ]
     expected_sources = {
-        "workspace/scripts/goalflow_start_goal.py": "requires-owner-approval",
-        "workspace/AGENTS.md and docs/context/goalflow.md exact /goal policy": "requires-owner-approval",
-        "workspace/skills/verification-convergence/SKILL.md": "still-active-for-non-Converge",
+        "workspace/scripts/goalflow_start_goal.py": "retired",
+        "workspace/AGENTS.md and docs/context/goalflow.md exact /goal policy": "retired",
+        "workspace/skills/verification-convergence/SKILL.md": "retired",
         "/converge legacy alias": "retired",
         "workspace/state/goalflow/*": "archived",
-        "workspace/state/work-ledger/*": "still-active-for-non-Converge",
+        "workspace/state/work-ledger/*": "retired",
         "verification-convergence artifacts and chat-derived records": "requires-owner-approval",
     }
     expected_authoritative = [
@@ -169,7 +169,7 @@ def assert_c7_3_route_retirement_plan_contract(state_root: Path) -> None:
     ]
     expected_non_authoritative = [
         "GoalFlow",
-        "Work Ledger",
+        "retired local Work Ledger layer",
         "chat memory",
         "verification-convergence artifacts",
     ]
@@ -248,7 +248,7 @@ def assert_c7_3_route_retirement_plan_contract(state_root: Path) -> None:
     assert_true(logging_proof["dry_run_packet_required"] is True, "C7.3 should require dry-run packet proof")
     assert_true("report-proof" in logging_proof["converge_source_of_truth"], "C7.3 should preserve report-proof authority")
     legacy_non_authoritative = logging_proof["legacy_sources_not_authoritative_for_converge_work"]
-    for legacy_source in ("GoalFlow", "Work Ledger", "chat memory", "verification-convergence artifacts"):
+    for legacy_source in ("GoalFlow", "retired local Work Ledger layer", "chat memory", "verification-convergence artifacts"):
         assert_true(
             legacy_source in legacy_non_authoritative,
             f"{legacy_source} should not remain authoritative for Converge-owned work",
@@ -295,7 +295,7 @@ def assert_c7_3_route_retirement_plan_contract(state_root: Path) -> None:
     )
     assert_true(
         cleanup_plan["classification_values"]
-        == ["retired", "archived", "still-active-for-non-Converge", "requires-owner-approval"],
+        == ["retired", "archived", "requires-owner-approval"],
         "C7.4 should fix exact cleanup classification values",
     )
     surfaces_by_name = {surface["surface"]: surface for surface in cleanup_plan["surfaces"]}
@@ -308,7 +308,7 @@ def assert_c7_3_route_retirement_plan_contract(state_root: Path) -> None:
     classifications = {surface["classification"] for surface in cleanup_plan["surfaces"]}
     assert_true("retired" in classifications, "C7.4 should include retired surfaces")
     assert_true("archived" in classifications, "C7.4 should include archived surfaces")
-    assert_true("still-active-for-non-Converge" in classifications, "C7.4 should include non-Converge active surfaces")
+    assert_true("retired" in classifications, "C7.4 should include retired legacy surfaces")
     assert_true("requires-owner-approval" in classifications, "C7.4 should include owner-approval surfaces")
     assert_true(
         surfaces_by_name["/converge legacy alias"]["classification"] == "retired",
@@ -467,7 +467,7 @@ def assert_c7_3_route_retirement_plan_contract(state_root: Path) -> None:
         retention["deletion_authorized_by_readiness"] is False,
         "live route readiness should not authorize legacy deletion",
     )
-    for source in ("GoalFlow state", "Work Ledger state", "verification-convergence artifacts", "chat-derived records"):
+    for source in ("GoalFlow state", "verification-convergence artifacts", "chat-derived records"):
         assert_true(source in retention["covered_sources"], f"retention decision should cover {source}")
     assert_true(
         readiness_plan["pre_change_readiness_smoke"]
@@ -736,7 +736,7 @@ def assert_c7_1_contract_validation_rejects_drift(state_root: Path) -> None:
     missing_legacy_source = json.loads(json.dumps(packet))
     missing_legacy_source["route_retirement_plan"]["logging_proof"][
         "legacy_sources_not_authoritative_for_converge_work"
-    ].remove("Work Ledger")
+    ].remove("retired local Work Ledger layer")
     try:
         validate_dry_run_packet(missing_legacy_source)
     except ValueError as exc:

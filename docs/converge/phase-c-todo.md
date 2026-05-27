@@ -79,7 +79,7 @@ C7.3 is now represented in `command-dry-run` output as
 
 Accepted C7.3 risks:
 
-- Active legacy GoalFlow, Work Ledger, or verification-convergence work may
+- Active legacy GoalFlow, retired Work Ledger records, or verification-convergence work may
   finish under its original owner.
 - Historical legacy records remain readable and are not deleted or replayed.
 - Structured rollback metadata and smoke validation are part of the C7.3 plan,
@@ -96,14 +96,15 @@ entry carries a classification, reason, and later-action boundary.
 The dry-run packet now includes
 `route_retirement_plan.cleanup_removal_plan` with:
 
-- exact classification values: `retired`, `archived`,
-  `still-active-for-non-Converge`, and `requires-owner-approval`
+- exact classification values: `retired`, `archived`, and
+  `requires-owner-approval`
 - exact legacy surfaces for GoalFlow intake, workspace policy docs,
   verification-convergence skill routing, `/converge` alias, GoalFlow state,
-  Work Ledger state, and verification-convergence/chat-derived artifacts
+  retired Work Ledger remnants, and verification-convergence/chat-derived
+  artifacts
 - C7.2/C7.3 source-of-truth boundary: Converge workflow state, checkpoint
   cursor, delivery reservation, `report-proof`, and `complete-reported` remain
-  authoritative for Converge work; GoalFlow, Work Ledger, chat memory, and
+  authoritative for Converge work; GoalFlow, retired Work Ledger records, chat memory, and
   verification-convergence artifacts do not
 - later execution requirements: separate explicit owner approval, exact surface
   list, retention decision, rollback switch with expiry/log path, and
@@ -144,7 +145,7 @@ readiness fields:
   `/Users/moon/.openclaw/state/converge/route-replacement/`, exact legacy route
   scope, activation/deactivation entries, and post-rollback smoke; rollback is
   never automatic fallback
-- retention decision for GoalFlow state, Work Ledger state,
+- retention decision for GoalFlow state, retired Work Ledger remnants,
   verification-convergence artifacts, chat-derived records, and `/converge`
   alias history; readiness does not authorize deletion, and delete remains only
   a later cleanup/removal decision
@@ -152,7 +153,7 @@ readiness fields:
 - post-change smoke evidence is required before the later operational task can
   be reported complete
 - duplicate visible report guard requiring exactly one route owner and no replay
-  from GoalFlow, Work Ledger, chat memory, or verification-convergence artifacts
+  from GoalFlow, retired Work Ledger records, chat memory, or verification-convergence artifacts
 
 Go/No-Go is `No-Go` if any approval record field, exact route scope,
 implementation inventory, rollback expiry/log path, retention decision, Gateway
@@ -403,7 +404,7 @@ values cannot be proven from the installed environment before any route change.
 - Make Converge the canonical backend for managed `/goal`, `/verify`, and
   `/conv` work after acceptance gates and a separately approved live-routing
   operation pass.
-- Treat GoalFlow, Work Ledger orchestration, and verification-convergence skill
+- Treat GoalFlow, retired Work Ledger orchestration, and verification-convergence skill
   paths as migration/retirement surfaces for Converge-owned workflows, not as
   performance baselines or default fallbacks.
 - C7 has started with completed C7.0 command inventory and synthetic,

@@ -40,7 +40,7 @@ Explicitly excluded:
 
 - `/converge`: legacy alias boundary only; do not promote, silently include, or
   remove it in this operation
-- `/plan`, `/cgoal`, `/cverify`, `/cconv`, and any unlisted slash command
+- `/plan`, retired `/c*` proposal commands, and any unlisted slash command
 - cleanup/removal routes or legacy archival/deletion actions
 
 ## Implementation Route Inventory
@@ -132,7 +132,7 @@ authorized by this operational route replacement plan.
 | Source | Decision for route replacement | Later boundary |
 | --- | --- | --- |
 | GoalFlow state | retain in place as historical, non-authoritative state | archive/delete only in separate cleanup/removal approval |
-| Work Ledger state | retain in place as outer coordination/history | archive/delete only in separate cleanup/removal approval |
+| retired Work Ledger remnants | remove only in separate cleanup/removal approval | no new recovery or completion proof use |
 | verification-convergence artifacts | retain in place as historical audit artifacts | exact path discovery required before later retention action |
 | chat-derived records | retain in place; never replay as completion proof | exact path discovery required before later retention action |
 | `/converge` alias history | retain in place; no route removal in this operation | route removal/rewording requires separate approval |
@@ -180,7 +180,7 @@ exists and passes:
 - `/conv` route packet reaches Converge only
 - `/converge` is not promoted to a primary route
 - legacy handlers are suppressed or rollback-only for the managed route scope
-- no duplicate visible report is emitted from GoalFlow, Work Ledger, chat
+- no duplicate visible report is emitted from GoalFlow, retired Work Ledger records, chat
   memory, or verification-convergence artifacts
 - Converge delivery reservation, `report-proof`, and `complete-reported`
   evidence exist for any completed Converge-owned workflow
@@ -307,7 +307,7 @@ Required execution values:
 | Field | Value for the later operation |
 | --- | --- |
 | `legacy_route_scope` | `/goal` workspace AGENTS exact trigger + GoalFlow draft intake; `/verify` verification-convergence audit trigger; `/conv` verification-convergence repair/improve trigger |
-| `excluded_route_scope` | `/converge` alias, `/plan`, `/cgoal`, `/cverify`, `/cconv`, all unlisted slash commands |
+| `excluded_route_scope` | `/converge` alias, `/plan`, retired `/c*` proposal commands, all unlisted slash commands |
 | `expires_at` | required, max 24h after route replacement activation |
 | `activation_entry` | timestamp, command, previous trigger/handler, Converge trigger/handler, operator session, approval ref |
 | `deactivation_entry` | timestamp, command, restored trigger/handler, operator session, rollback reason |
@@ -321,8 +321,8 @@ in place. Do not delete, move, archive, disable, or uninstall anything.
 | Source | Decision | Reason |
 | --- | --- | --- |
 | GoalFlow state | retain in place | historical records; not authoritative for new Converge-owned work after replacement |
-| Work Ledger state | retain in place | outer session recovery and non-Converge coordination remain valid |
-| verification-convergence skill/artifacts | retain in place | still useful for non-managed audits until a separate cleanup/removal approval |
+| retired Work Ledger remnants | delete after explicit cleanup approval | no longer valid for recovery or completion proof |
+| verification-convergence skill/artifacts | retain in place | legacy reference material only; not a product route owner or fallback |
 | chat-derived records | retain in place | context only; never authoritative completion proof |
 | `/converge` alias history | retain in place | alias promotion/removal is explicitly out of scope |
 

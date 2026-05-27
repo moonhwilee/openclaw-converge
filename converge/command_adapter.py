@@ -130,7 +130,7 @@ EXPECTED_CONVERGE_SOURCE_OF_TRUTH = [
 
 EXPECTED_LEGACY_NON_AUTHORITATIVE_SOURCES = [
     "GoalFlow",
-    "Work Ledger",
+    "retired local Work Ledger layer",
     "chat memory",
     "verification-convergence artifacts",
 ]
@@ -154,7 +154,7 @@ EXPECTED_BLOCKED_WITHOUT_APPROVAL = [
 
 EXPECTED_C7_4_ALLOWED_OUTPUTS = [
     "legacy scripts/docs/skills/aliases/state paths inventory",
-    "retired/archived/still-active-for-non-Converge/requires-owner-approval classification",
+    "retired/archived/requires-owner-approval classification",
     "cleanup/removal plan for later approved task",
     "verification criteria for later approved task",
 ]
@@ -179,7 +179,6 @@ EXPECTED_C7_4_PROHIBITED_ACTIONS = [
 EXPECTED_C7_4_CLEANUP_CLASSIFICATIONS = [
     "retired",
     "archived",
-    "still-active-for-non-Converge",
     "requires-owner-approval",
 ]
 
@@ -219,7 +218,7 @@ EXPECTED_LIVE_READINESS_APPROVAL_TEXT_TEMPLATE = (
 EXPECTED_LIVE_READINESS_ROUTE_SCOPE = {
     "managed_commands": ["/goal", "/verify", "/conv"],
     "legacy_aliases_excluded_from_primary_route": ["/converge"],
-    "forbidden_scope_expansion": ["/plan", "/cgoal", "/cverify", "/cconv", "unlisted slash commands"],
+    "forbidden_scope_expansion": ["/plan", "/cplan", "/cgoal", "/cverify", "/cconv", "unlisted slash commands"],
     "implementation_scope_required": True,
     "source_of_truth_after_gate": "converge.workflow",
 }
@@ -243,7 +242,6 @@ EXPECTED_LIVE_READINESS_RETENTION_DECISION = {
     "deletion_authorized_by_readiness": False,
     "covered_sources": [
         "GoalFlow state",
-        "Work Ledger state",
         "verification-convergence artifacts",
         "chat-derived records",
         "/converge alias history",
@@ -327,23 +325,23 @@ CLEANUP_REMOVAL_SURFACES: tuple[dict[str, Any], ...] = (
     {
         "category": "scripts",
         "surface": "workspace/scripts/goalflow_start_goal.py",
-        "classification": "requires-owner-approval",
-        "reason": "It remains the owner of exact /goal draft intake until a separate live-routing task replaces /goal with Converge.",
-        "later_action_boundary": "Retire or narrow the script only after owner-approved live route replacement and migration evidence.",
+        "classification": "retired",
+        "reason": "Exact /goal is Converge-managed. The helper remains only for explicit historical inspection or migration/debug work.",
+        "later_action_boundary": "Do not use as an active /goal route owner.",
     },
     {
         "category": "docs",
         "surface": "workspace/AGENTS.md and docs/context/goalflow.md exact /goal policy",
-        "classification": "requires-owner-approval",
-        "reason": "Workspace policy still defines the active /goal intake contract and cannot be rewritten by a plan-only cleanup slice.",
-        "later_action_boundary": "Update policy only in the separately approved route replacement operation that actually changes the live owner.",
+        "classification": "retired",
+        "reason": "Workspace policy now routes exact /goal to Converge.",
+        "later_action_boundary": "Keep docs aligned with Converge ownership.",
     },
     {
         "category": "skills",
         "surface": "workspace/skills/verification-convergence/SKILL.md",
-        "classification": "still-active-for-non-Converge",
-        "reason": "The skill may remain useful for non-Converge audits while managed /verify and /conv route ownership is migrated.",
-        "later_action_boundary": "Remove managed-command ownership only after Converge handles live /verify and /conv with owner-approved routing proof.",
+        "classification": "retired",
+        "reason": "Exact /verify and /conv are Converge-managed. The skill remains only as legacy reference material unless explicitly invoked for historical review.",
+        "later_action_boundary": "Do not use as active /verify or /conv route owner.",
     },
     {
         "category": "aliases",
@@ -362,9 +360,9 @@ CLEANUP_REMOVAL_SURFACES: tuple[dict[str, Any], ...] = (
     {
         "category": "state paths",
         "surface": "workspace/state/work-ledger/*",
-        "classification": "still-active-for-non-Converge",
-        "reason": "Work Ledger remains valid for outer session recovery and non-Converge work, but not as Converge workflow source of truth.",
-        "later_action_boundary": "Do not remove or narrow until non-Converge ledger use is separately inventoried and approved.",
+        "classification": "retired",
+        "reason": "Work Ledger was locally retired and is not valid for new recovery or completion proof.",
+        "later_action_boundary": "Remove leftover local state after explicit cleanup approval.",
     },
     {
         "category": "state paths",

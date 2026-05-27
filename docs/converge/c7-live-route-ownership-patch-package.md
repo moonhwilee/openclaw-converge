@@ -33,7 +33,7 @@ In scope:
 Out of scope:
 
 - `/converge` promotion or removal.
-- `/plan`, `/cgoal`, `/cverify`, `/cconv`, or any other slash command.
+- `/plan`, retired `/c*` proposal commands, or any other slash command.
 - Gateway restart/reload unless separately approved after fresh preflight.
 - cleanup/removal, legacy deletion, movement, archive, disable, deploy, install,
   external action, push, PR, or release.
@@ -192,7 +192,7 @@ Excluded route scope:
 Retain everything in place during live route replacement:
 
 - GoalFlow state: retain for historical records.
-- Work Ledger state: retain for outer recovery and non-Converge coordination.
+- Retired Work Ledger remnants: remove only under the separate cleanup approval.
 - verification-convergence skill/artifacts: retain as legacy/reference material.
 - chat-derived records: retain as context only, not authoritative proof.
 - `/converge` alias history: retain; no promotion or removal in this operation.

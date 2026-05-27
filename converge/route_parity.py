@@ -162,6 +162,17 @@ def validate_phase6_route_parity_evidence(evidence: dict[str, Any], *, expected_
         "ok": True,
         "phase": "phase6_production_route_parity",
         "proof_level": "fresh_route_evidence_bundle",
+        "verified_scope": "evidence_bundle_shape_and_internal_binding",
         "managed_commands": MANAGED_COMMANDS,
-        "production_route_parity_proven": True,
+        "fresh_route_evidence_bundle_valid": True,
+        "production_route_parity_proven": False,
+        "completion_gate": {
+            "ready_for_live_replacement_completion": False,
+            "blocked_until": [
+                "approval-gated exact /goal fresh-route smoke",
+                "approval-gated exact /verify fresh-route smoke",
+                "approval-gated exact /conv fresh-route smoke",
+                "real delivery-channel report-proof and complete-reported proof",
+            ],
+        },
     }

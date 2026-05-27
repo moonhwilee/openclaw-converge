@@ -13,6 +13,7 @@ def attach_phase5a_evidence_contract(
     workflow: dict[str, Any],
     state: dict[str, Any],
     terminal_evidence: dict[str, Any] | None,
+    terminal_status_override: str | None = None,
 ) -> dict[str, Any]:
     state = dict(state)
     evidence_entries = [item for item in state.get("evidence") or [] if isinstance(item, dict)]
@@ -23,7 +24,7 @@ def attach_phase5a_evidence_contract(
     accepted_changes = _accepted_change_ids(state)
     state["required_evidence_contract"] = {
         "contract_id": f"{kind}-phase5a-terminal-contract",
-        "terminal_status": _terminal_status(kind, state, workflow=workflow),
+        "terminal_status": terminal_status_override or _terminal_status(kind, state, workflow=workflow),
         "required": required,
     }
     state["evidence_map"] = evidence_map

@@ -16,12 +16,47 @@ MAX_TARGETS = 5
 ABSOLUTE_PATH_RE = re.compile(r"/[^\s'\"`<>]+")
 RELATIVE_PATH_RE = re.compile(r"(?:\.{1,2}/)?[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+")
 TRAILING_PUNCTUATION = ".,;:)］】}>\"'"
+MATERIAL_WORK_TERMS = (
+    "repair",
+    "fix",
+    "improve",
+    "implement",
+    "apply",
+    "modify",
+    "edit",
+    "change",
+    "patch",
+    "개선",
+    "구현",
+    "수정",
+    "고쳐",
+    "적용",
+)
+READ_ONLY_TERMS = (
+    "read-only",
+    "readonly",
+    "audit",
+    "inspect",
+    "review",
+    "검토",
+    "점검",
+    "감사",
+)
 
 
 def run_conv_round_execution(text: str, *, source_root: Path) -> dict[str, Any]:
     """Inspect concrete local targets and record a minimal real conv round."""
 
     started_at = now_iso()
+    if _requires_material_runner(text):
+        completed_at = now_iso()
+        return {
+            "runner_ref": CONV_LOCAL_RUNNER_REF,
+            "execution_started_at": started_at,
+            "execution_completed_at": completed_at,
+            "rounds": [],
+            "summary": "Material repair/improve convergence requires specialist or fix-runner evidence, not local file inspection only.",
+        }
     target_checks = []
     for path in _referenced_files(text, source_root=source_root):
         stat = path.stat()
@@ -127,6 +162,13 @@ def _path_tokens(text: str) -> list[str]:
     for pattern in (ABSOLUTE_PATH_RE, RELATIVE_PATH_RE):
         tokens.extend(match.group(0).rstrip(TRAILING_PUNCTUATION) for match in pattern.finditer(text or ""))
     return [token for token in tokens if token]
+
+
+def _requires_material_runner(text: str) -> bool:
+    normalized = (text or "").casefold()
+    if any(term in normalized for term in READ_ONLY_TERMS):
+        return False
+    return any(term in normalized for term in MATERIAL_WORK_TERMS)
 
 
 def _resolve_candidate(token: str, *, source_root: Path) -> Path | None:

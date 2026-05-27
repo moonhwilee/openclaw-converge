@@ -113,8 +113,20 @@ def main() -> None:
         result = route_parity_verify(state_root, evidence_file)
         assert_true(result["ok"] is True, "valid fresh-route evidence should pass")
         assert_true(
-            result["production_route_parity_proven"] is True,
-            "fresh-route evidence bundle should be allowed to prove Phase 6 parity",
+            result["fresh_route_evidence_bundle_valid"] is True,
+            "fresh-route evidence bundle should validate shape and internal binding",
+        )
+        assert_true(
+            result["production_route_parity_proven"] is False,
+            "evidence-file validation alone must not claim live production route parity",
+        )
+        assert_true(
+            result["verified_scope"] == "evidence_bundle_shape_and_internal_binding",
+            "route parity verifier should label its bounded proof scope",
+        )
+        assert_true(
+            result["completion_gate"]["ready_for_live_replacement_completion"] is False,
+            "route parity evidence bundle should still block live replacement completion",
         )
 
         cli_only = deepcopy(evidence)

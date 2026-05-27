@@ -161,7 +161,6 @@ class ConvHandler(ModeHandler):
                 else "blocked_specialist_follow_up_required"
             )
             state["stop_condition"] = specialist_block_reason
-            state["stop_reason"] = specialist_block_reason
             state["evidence_sufficient"] = False
             state["final_report_summary"] = (
                 "Convergence is blocked by high-severity specialist findings."
@@ -219,6 +218,7 @@ class ConvHandler(ModeHandler):
             workflow=self.load_workflow(workflow_id),
             state=state,
             terminal_evidence=evidence,
+            terminal_status_override="blocked" if block_reason else None,
         )
         checkpoint = self.record_outcome(
             workflow_id,

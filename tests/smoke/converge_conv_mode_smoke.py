@@ -162,7 +162,7 @@ def assert_execution_required_conv_records_real_round_evidence(state_root: Path)
     wf = run(
         "conv",
         "--text",
-        f"Improve execution-required target {target}",
+        f"Read-only audit execution-required target {target}",
         "--workflow-id",
         "conv-execution-required-real-round",
         "--owner-session-key",
@@ -207,6 +207,32 @@ def assert_execution_required_conv_records_real_round_evidence(state_root: Path)
     assert_phase5a_freshness_rejected(state_root, "conv-execution-required-real-round", "conv_state")
     assert_phase5a_terminal_status_rejected(state_root, "conv-execution-required-real-round", "conv_state")
     assert_phase5a_accepted_change_stale_rejected(state_root, "conv-execution-required-real-round", "conv_state")
+
+    material_request = run(
+        "conv",
+        "--text",
+        f"Improve execution-required target {target}",
+        "--workflow-id",
+        "conv-execution-required-material-blocked",
+        "--owner-session-key",
+        "session:test",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        state_root=state_root,
+    )["workflow"]
+    assert_true(
+        material_request["status"] == "failed_unreported",
+        "material conv request should block when only local inspection evidence is available",
+    )
+    assert_true(
+        material_request["final_status"]["stop_reason"] == "blocked_no_execution_evidence",
+        "material conv request should require specialist/fix-runner evidence",
+    )
+    assert_true(
+        material_request["conv_state"]["execution_performed"] is False,
+        "material conv request should not mark local file inspection as execution proof",
+    )
+    run("validate", "--workflow-id", "conv-execution-required-material-blocked", state_root=state_root)
 
     missing_round_summary = json.loads(json.dumps(wf))
     write_workflow(state_root, "conv-execution-required-real-round", missing_round_summary)
@@ -678,6 +704,11 @@ def assert_conv_records_structured_specialist_findings(state_root: Path) -> None
     assert_true(blocked["status"] == "failed_unreported", "blocking specialist findings should fail closed")
     assert_true(blocked["final_status"]["result"] == "blocked", "blocking specialist findings should not pass with risks")
     assert_true(blocked["conv_state"]["stop_condition"] == "blocked_specialist_findings", "blocking specialist findings should bind stop condition")
+    assert_true(
+        blocked["conv_state"]["required_evidence_contract"]["terminal_status"] == "blocked",
+        "blocking specialist findings should bind Phase 5A contract to blocked terminal status",
+    )
+    run("validate", "--workflow-id", "conv-block-specialist-findings", state_root=state_root)
 
     fix_packet = specialist_packet()
     fix_packet["findings"][0]["severity"] = "p2"
@@ -704,6 +735,11 @@ def assert_conv_records_structured_specialist_findings(state_root: Path) -> None
         needs_follow_up["conv_state"]["stop_condition"] == "blocked_specialist_follow_up_required",
         "accepted specialist fixes should bind follow-up stop condition",
     )
+    assert_true(
+        needs_follow_up["conv_state"]["required_evidence_contract"]["terminal_status"] == "blocked",
+        "accepted specialist fixes should bind Phase 5A contract to blocked terminal status",
+    )
+    run("validate", "--workflow-id", "conv-fix-specialist-findings", state_root=state_root)
 
 
 def main() -> int:

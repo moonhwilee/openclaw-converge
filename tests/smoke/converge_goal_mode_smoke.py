@@ -235,7 +235,7 @@ def assert_execution_required_goal_collects_child_evidence(state_root: Path) -> 
     wf = run(
         "goal",
         "--text",
-        f"Implement execution-required goal workflow for {target}",
+        f"Read-only audit execution-required goal workflow for {target}",
         "--workflow-id",
         "goal-execution-required-real-children",
         "--owner-session-key",
@@ -603,13 +603,62 @@ def assert_execution_required_goal_collects_child_evidence(state_root: Path) -> 
     assert_true("parent_summary_only child must not be separately reported" in result["error"], "Phase 5B should detect forced child report drift")
 
 
+def assert_material_goal_blocks_without_fix_runner_child(state_root: Path) -> None:
+    target = state_root / "phase5-material-goal-target.txt"
+    target.write_text("phase 5 material goal target\n", encoding="utf-8")
+    wf = run(
+        "goal",
+        "--text",
+        f"Implement execution-required goal workflow for {target}",
+        "--workflow-id",
+        "goal-execution-required-material-child-blocked",
+        "--owner-session-key",
+        "session:test",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        state_root=state_root,
+    )["workflow"]
+    goal_state = wf["goal_state"]
+    assert_true(wf["status"] == "failed_unreported", "material goal should fail closed without fix-runner child evidence")
+    assert_true(wf["final_status"]["result"] == "blocked", "material goal should be blocked")
+    assert_true(
+        wf["final_status"]["stop_reason"] == "blocked_child_workflow_failed",
+        "material goal should block when a required child cannot prove execution",
+    )
+    assert_true(
+        goal_state["execution_required"] is True and goal_state["execution_performed"] is True,
+        "material goal should record child workflow execution truth markers",
+    )
+    assert_true(
+        {item["kind"] for item in goal_state["child_workflow_refs"]} == {"verify", "conv"},
+        "material goal should still create verify and conv children",
+    )
+    assert_true(
+        any(item["status"] == "blocked" and item["kind"] == "conv" for item in goal_state["child_workflow_refs"]),
+        "material goal should record the blocked conv child",
+    )
+    conv_child_id = next(
+        item["workflow_id"]
+        for item in goal_state["child_workflow_refs"]
+        if item["kind"] == "conv"
+    )
+    conv_child = workflow(state_root, conv_child_id)
+    assert_true(conv_child["status"] == "failed_unreported", "material conv child should fail closed")
+    assert_true(
+        conv_child["final_status"]["stop_reason"] == "blocked_no_execution_evidence",
+        "material conv child should require specialist or fix-runner evidence",
+    )
+    run("validate", "--workflow-id", "goal-execution-required-material-child-blocked", state_root=state_root)
+    assert_phase5a_contract(wf, "goal_state")
+
+
 def assert_phase5b_visible_child_mode_positive_path(state_root: Path) -> None:
     target = state_root / "phase5b-visible-child-target.txt"
     target.write_text("phase 5b visible child delivery target\n", encoding="utf-8")
     wf = run(
         "goal",
         "--text",
-        f"Implement execution-required goal workflow for {target}",
+        f"Read-only audit execution-required goal workflow for {target}",
         "--workflow-id",
         "goal-phase5b-visible-child",
         "--owner-session-key",
@@ -702,7 +751,7 @@ def assert_phase5b_waived_child_mode_requires_owner_proof(state_root: Path) -> N
     wf = run(
         "goal",
         "--text",
-        f"Implement execution-required goal workflow for {target}",
+        f"Read-only audit execution-required goal workflow for {target}",
         "--workflow-id",
         "goal-phase5b-waived-child",
         "--owner-session-key",
@@ -830,7 +879,7 @@ def assert_goal_child_ids_handle_long_parent_ids(state_root: Path) -> None:
     wf = run(
         "goal",
         "--text",
-        f"Implement execution-required long parent goal for {target}",
+        f"Read-only audit execution-required long parent goal for {target}",
         "--workflow-id",
         workflow_id,
         "--owner-session-key",
@@ -1201,6 +1250,7 @@ def main() -> int:
         assert_default_goal_contract(state_root)
         assert_execution_required_goal_blocks_planned_children(state_root)
         assert_execution_required_goal_collects_child_evidence(state_root)
+        assert_material_goal_blocks_without_fix_runner_child(state_root)
         assert_phase5b_visible_child_mode_positive_path(state_root)
         assert_phase5b_waived_child_mode_requires_owner_proof(state_root)
         assert_goal_child_ids_handle_long_parent_ids(state_root)

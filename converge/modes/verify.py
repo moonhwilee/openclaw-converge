@@ -417,6 +417,12 @@ def _record_specialist_events(handler: ModeHandler, workflow_id: str, *, mode: s
                     "mode": mode,
                     "finding_count": len(review["state"]["agent_finding_refs"]),
                     "arbitration_count": len(review["state"]["finding_arbitration"]),
+                    "request_ids": [item["request_id"] for item in review["state"]["agent_request_refs"]],
+                    "result_ids": [item["result_id"] for item in review["state"]["agent_result_refs"]],
+                    "idempotency_keys": review["state"]["agent_result_idempotency_keys"],
+                    "collection_status": review["state"]["agent_result_collection_status"]["status"],
+                    "collection_cursor": review["state"]["agent_result_collection_status"]["collection_cursor"],
+                    "recovery_resume_cursor": review["state"]["recovery_resume_cursor"],
                 },
             },
         )
@@ -485,6 +491,11 @@ def _specialist_state_from_verify(state: dict[str, Any]) -> dict[str, Any]:
         "stop_reason",
         "owner_stop_ref",
         "round_stop_proof",
+        "agent_request_refs",
+        "agent_result_refs",
+        "agent_result_idempotency_keys",
+        "agent_result_collection_status",
+        "recovery_resume_cursor",
     )}
 
 

@@ -2284,6 +2284,19 @@ def _validate_specialist_execution_evidence(
             raise ValueError(f"{mode} specialist event finding_count must match state")
         if payload.get("arbitration_count") != len(specialist_state["finding_arbitration"]):
             raise ValueError(f"{mode} specialist event arbitration_count must match state")
+        if payload.get("request_ids") != [item["request_id"] for item in specialist_state["agent_request_refs"]]:
+            raise ValueError(f"{mode} specialist event request_ids must match state")
+        if payload.get("result_ids") != [item["result_id"] for item in specialist_state["agent_result_refs"]]:
+            raise ValueError(f"{mode} specialist event result_ids must match state")
+        if payload.get("idempotency_keys") != specialist_state["agent_result_idempotency_keys"]:
+            raise ValueError(f"{mode} specialist event idempotency_keys must match state")
+        collection_status = specialist_state["agent_result_collection_status"]
+        if payload.get("collection_status") != collection_status["status"]:
+            raise ValueError(f"{mode} specialist event collection_status must match state")
+        if payload.get("collection_cursor") != collection_status["collection_cursor"]:
+            raise ValueError(f"{mode} specialist event collection_cursor must match state")
+        if payload.get("recovery_resume_cursor") != specialist_state["recovery_resume_cursor"]:
+            raise ValueError(f"{mode} specialist event recovery_resume_cursor must match state")
 
 
 def _specialist_state_from_mode_state(state: dict[str, Any]) -> dict[str, Any]:
@@ -2303,6 +2316,11 @@ def _specialist_state_from_mode_state(state: dict[str, Any]) -> dict[str, Any]:
         "stop_reason",
         "owner_stop_ref",
         "round_stop_proof",
+        "agent_request_refs",
+        "agent_result_refs",
+        "agent_result_idempotency_keys",
+        "agent_result_collection_status",
+        "recovery_resume_cursor",
     )}
 
 

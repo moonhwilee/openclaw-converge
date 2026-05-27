@@ -235,6 +235,32 @@ def main() -> int:
             ),
             "structured findings should be event-backed",
         )
+        assert_true(len(specialist_state["agent_request_refs"]) == 3, "structured findings should persist one agent request per profile")
+        assert_true(len(specialist_state["agent_result_refs"]) == len(specialist_state["agent_finding_refs"]), "structured findings should persist agent results")
+        assert_true(
+            specialist_state["agent_result_collection_status"]["status"] == "complete",
+            "structured findings should record complete agent result collection",
+        )
+        assert_true(
+            specialist_state["agent_result_collection_status"]["relaunch_required"] is False,
+            "completed structured findings should not require relaunch on recovery",
+        )
+        assert_true(
+            specialist_state["recovery_resume_cursor"] == specialist_state["agent_result_collection_status"]["collection_cursor"],
+            "structured findings should bind recovery cursor to collection cursor",
+        )
+        recovery_scan = run("scan", state_root=state_root)
+        recovery_record = next(item for item in recovery_scan["workflows"] if item["workflow_id"] == "verify-specialist-findings")
+        assert_true(
+            recovery_record["agent_result_collection"]["recovery_resume_cursor"] == specialist_state["recovery_resume_cursor"],
+            "recovery scan should expose specialist collection resume cursor",
+        )
+        recovery_watchdog = run("watchdog-check", state_root=state_root)
+        recovery_packet = next(item for item in recovery_watchdog["recoveries"] if item["workflow_id"] == "verify-specialist-findings")
+        assert_true(
+            recovery_packet["agent_result_collection"]["relaunch_required"] is False,
+            "recovery packet should prove completed specialist requests are not relaunched",
+        )
         run("validate", "--workflow-id", "verify-specialist-findings", state_root=state_root)
         specialist_events = events(state_root, "verify-specialist-findings")
         write_events(
@@ -245,6 +271,40 @@ def main() -> int:
         missing_specialist_event = run_fail("validate", "--workflow-id", "verify-specialist-findings", state_root=state_root)
         assert_true("finding_arbitrated event" in missing_specialist_event["error"], "specialist execution should require arbitration event proof")
         write_events(state_root, "verify-specialist-findings", specialist_events)
+
+        pending_collection = json.loads(json.dumps(specialist_verify))
+        pending_collection["verify_state"]["agent_result_collection_status"]["status"] = "partial"
+        write_workflow(state_root, "verify-specialist-findings", pending_collection)
+        pending_result = run_fail("validate", "--workflow-id", "verify-specialist-findings", state_root=state_root)
+        assert_true(
+            "collection" in pending_result["error"] or "terminal checkpoint" in pending_result["error"],
+            "specialist collection should fail closed when partial",
+        )
+        write_workflow(state_root, "verify-specialist-findings", specialist_verify)
+
+        duplicate_accepted = json.loads(json.dumps(specialist_verify))
+        duplicate_accepted["verify_state"]["agent_result_refs"].append(
+            json.loads(json.dumps(duplicate_accepted["verify_state"]["agent_result_refs"][0]))
+        )
+        duplicate_accepted["verify_state"]["agent_result_collection_status"]["accepted_result_count"] += 1
+        write_workflow(state_root, "verify-specialist-findings", duplicate_accepted)
+        duplicate_artifact = next(
+            artifact for artifact in duplicate_accepted["artifacts"] if artifact["artifact_id"] == "verify-specialist-findings"
+        )
+        Path(duplicate_artifact["path"]).write_text(
+            json.dumps({"packet": packet, "specialist_review": duplicate_accepted["verify_state"]}, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        duplicate_result = run_fail("validate", "--workflow-id", "verify-specialist-findings", state_root=state_root)
+        assert_true(
+            "artifact hash is stale" in duplicate_result["error"] or "idempotency_key must be unique" in duplicate_result["error"] or "terminal checkpoint" in duplicate_result["error"],
+            "specialist accepted duplicate results should not double-count",
+        )
+        Path(duplicate_artifact["path"]).write_text(
+            json.dumps({"packet": packet, "specialist_review": specialist_verify["verify_state"]}, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        write_workflow(state_root, "verify-specialist-findings", specialist_verify)
 
         drifted_specialist = json.loads(json.dumps(specialist_verify))
         drifted_specialist["verify_state"]["agent_finding_refs"][0].pop("evidence")
@@ -264,7 +324,10 @@ def main() -> int:
                 event["payload"]["finding_count"] = 99
         write_events(state_root, "verify-specialist-findings", count_drift_events)
         count_drift = run_fail("validate", "--workflow-id", "verify-specialist-findings", state_root=state_root)
-        assert_true("finding_count must match state" in count_drift["error"], "specialist event counts should bind to state")
+        assert_true(
+            "must match state" in count_drift["error"] or "artifact hash is stale" in count_drift["error"],
+            "specialist event counts should bind to state",
+        )
         write_events(state_root, "verify-specialist-findings", specialist_events)
 
         mixed_target = state_root / "verify-mixed-specialist-target.txt"

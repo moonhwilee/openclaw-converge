@@ -538,6 +538,20 @@ def assert_conv_records_structured_specialist_findings(state_root: Path) -> None
         conv_state["raw_finding_to_group_map"][0]["group_id"] == conv_state["raw_finding_to_group_map"][1]["group_id"],
         "conv should dedupe structured findings by failure mode",
     )
+    assert_true(len(conv_state["agent_request_refs"]) == 3, "conv should persist one agent request per profile")
+    assert_true(len(conv_state["agent_result_refs"]) == len(conv_state["agent_finding_refs"]), "conv should persist specialist result refs")
+    assert_true(
+        conv_state["agent_result_collection_status"]["status"] == "complete",
+        "conv should record complete specialist result collection",
+    )
+    assert_true(
+        conv_state["agent_result_collection_status"]["relaunch_required"] is False,
+        "conv recovered specialist collection should not relaunch completed requests",
+    )
+    assert_true(
+        conv_state["recovery_resume_cursor"] == conv_state["agent_result_collection_status"]["collection_cursor"],
+        "conv should bind specialist recovery cursor",
+    )
     assert_true(
         {event["event_type"] for event in events(state_root, "conv-specialist-findings")}.issuperset(
             {"agent_panel_requested", "agent_findings_recorded", "finding_arbitrated"}
@@ -560,6 +574,35 @@ def assert_conv_records_structured_specialist_findings(state_root: Path) -> None
     )
     result = run_fail("validate", "--workflow-id", "conv-specialist-findings", state_root=state_root)
     assert_true("finding_arbitrated event" in result["error"], "conv should require specialist arbitration event proof")
+    events_path.write_text(
+        "\n".join(json.dumps(event, ensure_ascii=False, sort_keys=True) for event in original_events) + "\n",
+        encoding="utf-8",
+    )
+
+    wrong_context = json.loads(json.dumps(wf))
+    wrong_context["conv_state"]["agent_result_refs"][0]["context_hash"] = "wrong-context"
+    write_workflow(state_root, "conv-specialist-findings", wrong_context)
+    wrong_context_result = run_fail("validate", "--workflow-id", "conv-specialist-findings", state_root=state_root)
+    assert_true(
+        "context_hash" in wrong_context_result["error"] or "terminal checkpoint" in wrong_context_result["error"],
+        "conv should reject result/request context mismatch",
+    )
+    write_workflow(state_root, "conv-specialist-findings", wf)
+
+    event_drift = json.loads(json.dumps(original_events))
+    for event in event_drift:
+        if event["event_type"] == "agent_findings_recorded":
+            event["payload"]["collection_cursor"] = "stale-cursor"
+    events_path.write_text(
+        "\n".join(json.dumps(event, ensure_ascii=False, sort_keys=True) for event in event_drift) + "\n",
+        encoding="utf-8",
+    )
+    event_drift_result = run_fail("validate", "--workflow-id", "conv-specialist-findings", state_root=state_root)
+    assert_true("collection_cursor must match state" in event_drift_result["error"], "conv should bind event collection cursor to state")
+    events_path.write_text(
+        "\n".join(json.dumps(event, ensure_ascii=False, sort_keys=True) for event in original_events) + "\n",
+        encoding="utf-8",
+    )
 
     block_packet = specialist_packet()
     block_packet["findings"][0]["severity"] = "p1"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -76,6 +77,14 @@ def build_specialist_review(
         if item["decision"] == "fix"
     ]
     follow_up = bool(accepted_changes)
+    collection_state = _build_agent_collection_state(
+        mode=mode,
+        target=target,
+        artifact_id=artifact_id,
+        panel_id=_required_string(packet, "panel_id"),
+        profiles=profiles,
+        findings=findings,
+    )
     state = {
         "review_panel_spec": {
             "panel_id": _required_string(packet, "panel_id"),
@@ -110,6 +119,7 @@ def build_specialist_review(
             "Runner-provided specialist findings were validated, deduped by failure mode, "
             "and arbitrated without allowing specialists to mutate state or send visible reports."
         ),
+        **collection_state,
     }
     validate_specialist_state(state)
     return {
@@ -144,6 +154,11 @@ def validate_specialist_state(state: dict[str, Any]) -> None:
         "stop_reason",
         "owner_stop_ref",
         "round_stop_proof",
+        "agent_request_refs",
+        "agent_result_refs",
+        "agent_result_idempotency_keys",
+        "agent_result_collection_status",
+        "recovery_resume_cursor",
     }
     missing = sorted(required - set(state))
     if missing:
@@ -191,11 +206,221 @@ def validate_specialist_state(state: dict[str, Any]) -> None:
         raise ValueError("specialist max_rounds must be a positive integer")
     if state["round_index"] < 1:
         raise ValueError("specialist round_index must be positive")
+    _validate_agent_collection_state(state, profile_ids=profile_ids, findings=findings)
 
 
 def write_specialist_artifact(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _build_agent_collection_state(
+    *,
+    mode: str,
+    target: str,
+    artifact_id: str,
+    panel_id: str,
+    profiles: list[dict[str, Any]],
+    findings: list[dict[str, Any]],
+) -> dict[str, Any]:
+    findings_by_profile: dict[str, list[dict[str, Any]]] = {item["profile_id"]: [] for item in profiles}
+    for finding in findings:
+        findings_by_profile[finding["profile_id"]].append(finding)
+
+    request_refs = []
+    result_refs = []
+    for profile in profiles:
+        profile_ref = profile["profile_id"]
+        request_id = f"{mode}-agent-request-{profile_ref}"
+        context_hash = _stable_hash(
+            {
+                "artifact_id": artifact_id,
+                "mode": mode,
+                "panel_id": panel_id,
+                "profile_ref": profile_ref,
+                "target": target,
+            }
+        )
+        profile_findings = findings_by_profile[profile_ref]
+        result_ids = []
+        for finding in profile_findings:
+            result_id = f"{mode}-agent-result-{finding['finding_id']}"
+            result_ids.append(result_id)
+            result_refs.append(
+                {
+                    "result_id": result_id,
+                    "request_id": request_id,
+                    "profile_ref": profile_ref,
+                    "attempt": 1,
+                    "context_hash": context_hash,
+                    "idempotency_key": _stable_hash(
+                        {
+                            "finding_id": finding["finding_id"],
+                            "profile_ref": profile_ref,
+                            "request_id": request_id,
+                            "source_provenance": finding["source_provenance"],
+                        }
+                    ),
+                    "received_at": "runner_packet",
+                    "terminal_status": "accepted",
+                    "evidence_refs": [finding["evidence"], artifact_id],
+                    "acceptance_reason": "validated runner-provided structured specialist result",
+                    "rejection_reason": None,
+                }
+            )
+        request_refs.append(
+            {
+                "request_id": request_id,
+                "profile_ref": profile_ref,
+                "context_hash": context_hash,
+                "requested_at": "runner_packet",
+                "lease": {"status": "completed", "source": "runner_provided_packet"},
+                "status": "completed",
+                "expected_result_count": len(profile_findings),
+                "result_ids": result_ids,
+                "collection_cursor": f"{request_id}:complete:{len(profile_findings)}/{len(profile_findings)}",
+                "terminal_decision": "accepted" if profile_findings else "accepted_no_findings",
+            }
+        )
+
+    accepted_keys = [item["idempotency_key"] for item in result_refs]
+    collection_cursor = f"{mode}:{artifact_id}:complete:{len(result_refs)}/{len(result_refs)}"
+    return {
+        "agent_request_refs": request_refs,
+        "agent_result_refs": result_refs,
+        "agent_result_idempotency_keys": accepted_keys,
+        "agent_result_collection_status": {
+            "status": "complete",
+            "request_ids": [item["request_id"] for item in request_refs],
+            "expected_result_count": len(result_refs),
+            "accepted_result_count": len(result_refs),
+            "ignored_duplicate_result_count": 0,
+            "pending_request_ids": [],
+            "collection_cursor": collection_cursor,
+            "terminal_decision": "collection_complete",
+            "relaunch_required": False,
+            "replayed_side_effects": False,
+        },
+        "recovery_resume_cursor": collection_cursor,
+    }
+
+
+def _validate_agent_collection_state(
+    state: dict[str, Any],
+    *,
+    profile_ids: list[str],
+    findings: list[dict[str, Any]],
+) -> None:
+    requests = state["agent_request_refs"]
+    results = state["agent_result_refs"]
+    keys = state["agent_result_idempotency_keys"]
+    status = state["agent_result_collection_status"]
+    if not isinstance(requests, list) or len(requests) != len(profile_ids):
+        raise ValueError("specialist agent_request_refs must contain one request per profile")
+    if not isinstance(results, list):
+        raise ValueError("specialist agent_result_refs must be an array")
+    if not isinstance(keys, list) or any(not isinstance(item, str) or not item for item in keys):
+        raise ValueError("specialist agent_result_idempotency_keys must be non-empty strings")
+    if not isinstance(status, dict):
+        raise ValueError("specialist agent_result_collection_status must be an object")
+
+    finding_by_id = {item["finding_id"]: item for item in findings}
+    request_by_id = {}
+    expected_result_ids: set[str] = set()
+    for request in requests:
+        if not isinstance(request, dict):
+            raise ValueError("specialist agent_request_refs entries must be objects")
+        request_id = _required_string(request, "request_id")
+        profile_ref = _required_string(request, "profile_ref")
+        context_hash = _required_string(request, "context_hash")
+        if profile_ref not in profile_ids:
+            raise ValueError("specialist agent request profile_ref must reference a panel profile")
+        if request.get("status") != "completed":
+            raise ValueError("specialist completed structured packet must not leave agent requests pending")
+        lease = request.get("lease")
+        if not isinstance(lease, dict) or lease.get("status") != "completed":
+            raise ValueError("specialist agent request lease must be completed")
+        result_ids = request.get("result_ids")
+        if not isinstance(result_ids, list) or any(not isinstance(item, str) or not item for item in result_ids):
+            raise ValueError("specialist agent request result_ids must be a string array")
+        expected_count = request.get("expected_result_count")
+        if not isinstance(expected_count, int) or expected_count != len(result_ids):
+            raise ValueError("specialist agent request expected_result_count must match result_ids")
+        expected_cursor = f"{request_id}:complete:{len(result_ids)}/{len(result_ids)}"
+        if request.get("collection_cursor") != expected_cursor:
+            raise ValueError("specialist agent request collection_cursor must be complete and deterministic")
+        if request.get("terminal_decision") not in {"accepted", "accepted_no_findings"}:
+            raise ValueError("specialist agent request terminal_decision is invalid")
+        request_by_id[request_id] = {"profile_ref": profile_ref, "context_hash": context_hash}
+        expected_result_ids.update(result_ids)
+
+    accepted_results = []
+    ignored_duplicates = []
+    seen_accepted_keys: set[str] = set()
+    for result in results:
+        if not isinstance(result, dict):
+            raise ValueError("specialist agent_result_refs entries must be objects")
+        result_id = _required_string(result, "result_id")
+        request_id = _required_string(result, "request_id")
+        profile_ref = _required_string(result, "profile_ref")
+        context_hash = _required_string(result, "context_hash")
+        idempotency_key = _required_string(result, "idempotency_key")
+        terminal_status = _required_string(result, "terminal_status")
+        if request_id not in request_by_id:
+            raise ValueError("specialist agent result request_id must reference agent_request_refs")
+        request = request_by_id[request_id]
+        if request["profile_ref"] != profile_ref or request["context_hash"] != context_hash:
+            raise ValueError("specialist agent result must match request profile_ref and context_hash")
+        if not isinstance(result.get("attempt"), int) or result["attempt"] < 1:
+            raise ValueError("specialist agent result attempt must be positive")
+        evidence_refs = result.get("evidence_refs")
+        if not isinstance(evidence_refs, list) or not evidence_refs:
+            raise ValueError("specialist agent result evidence_refs must be non-empty")
+        if terminal_status == "accepted":
+            accepted_results.append(result)
+            if result_id not in expected_result_ids:
+                raise ValueError("specialist accepted agent result must be listed by its request")
+            finding_id = result_id.split("-agent-result-", 1)[-1]
+            finding = finding_by_id.get(finding_id)
+            if not finding or finding["profile_id"] != profile_ref:
+                raise ValueError("specialist accepted agent result must map to a persisted finding")
+            if idempotency_key in seen_accepted_keys:
+                raise ValueError("specialist accepted agent result idempotency_key must be unique")
+            seen_accepted_keys.add(idempotency_key)
+        elif terminal_status == "ignored_duplicate":
+            ignored_duplicates.append(result)
+            if idempotency_key not in seen_accepted_keys and idempotency_key not in keys:
+                raise ValueError("specialist ignored duplicate result must link to an accepted idempotency_key")
+            if not result.get("rejection_reason"):
+                raise ValueError("specialist ignored duplicate result must record a rejection_reason")
+        else:
+            raise ValueError("specialist agent result terminal_status is invalid")
+
+    accepted_ids = {item["result_id"] for item in accepted_results}
+    if accepted_ids != expected_result_ids:
+        raise ValueError("specialist accepted agent results must exactly match request result_ids")
+    accepted_keys = [item["idempotency_key"] for item in accepted_results]
+    if keys != accepted_keys:
+        raise ValueError("specialist agent_result_idempotency_keys must match accepted agent results")
+    if status.get("status") != "complete":
+        raise ValueError("specialist agent result collection status must be complete")
+    if status.get("request_ids") != [item["request_id"] for item in requests]:
+        raise ValueError("specialist agent result collection request_ids must match requests")
+    if status.get("expected_result_count") != len(expected_result_ids):
+        raise ValueError("specialist agent result collection expected_result_count must match requests")
+    if status.get("accepted_result_count") != len(accepted_results):
+        raise ValueError("specialist agent result collection accepted_result_count must match results")
+    if status.get("ignored_duplicate_result_count") != len(ignored_duplicates):
+        raise ValueError("specialist agent result collection ignored_duplicate_result_count must match results")
+    if status.get("pending_request_ids") != []:
+        raise ValueError("specialist agent result collection must not leave pending_request_ids")
+    if status.get("relaunch_required") is not False:
+        raise ValueError("specialist recovered collection must not require relaunch")
+    if status.get("replayed_side_effects") is not False:
+        raise ValueError("specialist recovered collection must not replay side effects")
+    cursor = f"{state['review_panel_spec']['mode']}:{specialist_artifact_id(state['review_panel_spec']['mode'])}:complete:{len(accepted_results)}/{len(expected_result_ids)}"
+    if status.get("collection_cursor") != cursor or state.get("recovery_resume_cursor") != cursor:
+        raise ValueError("specialist recovery_resume_cursor must match complete collection cursor")
 
 
 def _profiles(raw: Any) -> list[dict[str, Any]]:
@@ -362,3 +587,8 @@ def _require_unique(values: list[Any], label: str) -> None:
         raise ValueError(f"{label} must contain non-empty strings")
     if len(values) != len(set(values)):
         raise ValueError(f"{label} must be unique")
+
+
+def _stable_hash(payload: dict[str, Any]) -> str:
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()

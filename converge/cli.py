@@ -1840,6 +1840,8 @@ def _validate_verify_state_integrity(store: WorkflowStore, workflow: dict[str, A
             raise ValueError("verify_state evidence entries must be objects")
         validate_evidence_object(evidence)
         validate_evidence_artifact_refs(workflow, evidence, worklog_text=worklog_text)
+    if state.get("execution_performed") is True:
+        _validate_verify_execution_evidence(store, workflow, state, worklog_text=worklog_text)
     if terminal_verify:
         report_evidence = [
             evidence
@@ -1860,6 +1862,69 @@ def _validate_verify_state_integrity(store: WorkflowStore, workflow: dict[str, A
         )
         if Path(artifact["path"]).read_text(encoding="utf-8") != expected_report:
             raise ValueError("verify report artifact must match verify_state")
+
+
+def _validate_verify_execution_evidence(
+    store: WorkflowStore,
+    workflow: dict[str, Any],
+    state: dict[str, Any],
+    *,
+    worklog_text: str,
+) -> None:
+    refs = state.get("execution_evidence_refs")
+    if not isinstance(refs, list) or not refs:
+        raise ValueError("verify execution_performed=true requires execution_evidence_refs")
+    if "verify-deterministic-checks" not in refs:
+        raise ValueError("verify execution evidence refs must include verify-deterministic-checks")
+    if state.get("execution_capability") != "local_checks":
+        raise ValueError("verify execution_performed=true requires local_checks capability")
+    if state.get("synthetic_report") is not False:
+        raise ValueError("verify execution_performed=true requires synthetic_report=false")
+    deterministic_evidence = [
+        evidence
+        for evidence in state.get("evidence", [])
+        if isinstance(evidence, dict) and "verify-deterministic-checks" in (evidence.get("artifact_refs") or [])
+    ]
+    if not deterministic_evidence:
+        raise ValueError("verify execution_performed=true requires deterministic evidence record")
+    for evidence in deterministic_evidence:
+        validate_evidence_artifact_refs(workflow, evidence, worklog_text=worklog_text)
+    events = _read_workflow_events(store, workflow["workflow_id"])
+    deterministic_events = [
+        event
+        for event in events
+        if event.get("event_type") == "deterministic_check_recorded"
+        and (event.get("payload") or {}).get("artifact_id") == "verify-deterministic-checks"
+    ]
+    if not deterministic_events:
+        raise ValueError("verify execution_performed=true requires deterministic_check_recorded event")
+    if len(deterministic_events) != 1:
+        raise ValueError("verify execution_performed=true requires exactly one deterministic_check_recorded event")
+    payload = deterministic_events[0].get("payload") or {}
+    if payload.get("runner_ref") != "trusted-local-verify-file-inspection-v1":
+        raise ValueError("verify deterministic_check_recorded event has untrusted runner_ref")
+    if payload.get("status") != "pass":
+        raise ValueError("verify deterministic_check_recorded event must record pass status")
+    artifact = next(
+        (
+            item
+            for item in workflow.get("artifacts", [])
+            if isinstance(item, dict) and item.get("artifact_id") == "verify-deterministic-checks"
+        ),
+        None,
+    )
+    if not artifact or artifact.get("kind") != "evidence":
+        raise ValueError("verify execution evidence artifact must be registered as evidence")
+    artifact_payload = json.loads(Path(artifact["path"]).read_text(encoding="utf-8"))
+    if artifact_payload.get("runner_ref") != payload.get("runner_ref"):
+        raise ValueError("verify execution evidence artifact runner_ref must match event")
+    checks = artifact_payload.get("checks")
+    if not isinstance(checks, list) or not checks:
+        raise ValueError("verify execution evidence artifact must contain checks")
+    if payload.get("check_count") != len(checks):
+        raise ValueError("verify deterministic_check_recorded check_count must match evidence artifact")
+    if any(not isinstance(check, dict) or check.get("status") != "pass" for check in checks):
+        raise ValueError("verify deterministic evidence checks must all pass")
 
 
 def _validate_conv_state_integrity(store: WorkflowStore, workflow: dict[str, Any]) -> None:

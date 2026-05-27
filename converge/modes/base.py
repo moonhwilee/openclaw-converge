@@ -332,6 +332,8 @@ def _execution_gate_blockers(kind: str, state: dict[str, Any]) -> list[str]:
 
     if execution_required is True and execution_performed is not True:
         blockers.append("Execution is required but no trusted runner evidence set execution_performed=true.")
+    if execution_required is True and execution_performed is True and not state.get("execution_evidence_refs"):
+        blockers.append("Execution was marked performed without execution evidence refs.")
     if synthetic_report is True and execution_required is not False:
         blockers.append("Synthetic or scaffold report cannot complete an execution-required workflow.")
     if kind == "goal" and execution_required is True:

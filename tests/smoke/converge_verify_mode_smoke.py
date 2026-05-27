@@ -9,9 +9,9 @@ from pathlib import Path
 
 
 try:
-    from smoke_helpers import ROOT, assert_true, events, run, run_fail, workflow, write_workflow
+    from smoke_helpers import ROOT, assert_true, events, run, run_fail, workflow, write_events, write_workflow
 except ModuleNotFoundError:
-    from tests.smoke.smoke_helpers import ROOT, assert_true, events, run, run_fail, workflow, write_workflow
+    from tests.smoke.smoke_helpers import ROOT, assert_true, events, run, run_fail, workflow, write_events, write_workflow
 from converge.artifacts import sha256_file  # noqa: E402
 from converge.messages import format_final  # noqa: E402
 from converge.modes.verify import build_verify_record, render_verify_report  # noqa: E402
@@ -106,6 +106,86 @@ def main() -> int:
             "read-only/no-code-change wording must not downgrade verify to plan-only",
         )
         run("validate", "--workflow-id", "verify-read-only-still-execution-required", state_root=state_root)
+
+        target_file = state_root / "fixture-target.txt"
+        target_file.write_text("phase 1 deterministic evidence fixture\n", encoding="utf-8")
+        deterministic_verify = run(
+            "verify",
+            "--text",
+            f"Verify deterministic evidence for {target_file}",
+            "--workflow-id",
+            "verify-deterministic-file-evidence",
+            "--owner-session-key",
+            "session:test",
+            "--visible-delivery",
+            visible_delivery,
+            state_root=state_root,
+        )["workflow"]
+        deterministic_state = deterministic_verify["verify_state"]
+        assert_true(deterministic_verify["status"] == "completed_unreported", "deterministic evidence should allow verify completion")
+        assert_true(deterministic_verify["final_status"]["result"] == "pass_with_risks", "deterministic verify should keep accepted-risk verdict")
+        assert_true(
+            deterministic_state["execution_required"] is True
+            and deterministic_state["execution_performed"] is True
+            and deterministic_state["synthetic_report"] is False,
+            "trusted deterministic checks should earn execution truth markers",
+        )
+        assert_true(
+            deterministic_state["execution_capability"] == "local_checks",
+            "deterministic verify should record local_checks capability",
+        )
+        assert_true(
+            deterministic_state["execution_evidence_refs"] == ["verify-deterministic-checks"],
+            "deterministic verify should bind execution evidence refs",
+        )
+        assert_true(
+            any("file_inspection passed" in item for item in deterministic_state["deterministic_checks"]),
+            "deterministic check summary should be target-specific",
+        )
+        assert_true(
+            any(event["event_type"] == "deterministic_check_recorded" for event in events(state_root, "verify-deterministic-file-evidence")),
+            "deterministic check should be event-backed",
+        )
+        artifact_ids = {artifact["artifact_id"] for artifact in deterministic_verify["artifacts"]}
+        assert_true(
+            {"verify-deterministic-checks", "verify-final-report"}.issubset(artifact_ids),
+            "deterministic verify should register evidence and report artifacts",
+        )
+        run("validate", "--workflow-id", "verify-deterministic-file-evidence", state_root=state_root)
+        deterministic_events = events(state_root, "verify-deterministic-file-evidence")
+        write_events(
+            state_root,
+            "verify-deterministic-file-evidence",
+            [event for event in deterministic_events if event["event_type"] != "deterministic_check_recorded"],
+        )
+        missing_event = run_fail("validate", "--workflow-id", "verify-deterministic-file-evidence", state_root=state_root)
+        assert_true(
+            "deterministic_check_recorded event" in missing_event["error"],
+            "execution_performed=true should require trusted deterministic event proof",
+        )
+        write_events(state_root, "verify-deterministic-file-evidence", deterministic_events)
+        bad_runner_events = json.loads(json.dumps(deterministic_events))
+        for event in bad_runner_events:
+            if event["event_type"] == "deterministic_check_recorded":
+                event["payload"]["runner_ref"] = "untrusted-runner"
+        write_events(state_root, "verify-deterministic-file-evidence", bad_runner_events)
+        bad_runner = run_fail("validate", "--workflow-id", "verify-deterministic-file-evidence", state_root=state_root)
+        assert_true(
+            "untrusted runner_ref" in bad_runner["error"],
+            "execution_performed=true should reject untrusted runner refs",
+        )
+        duplicate_events = json.loads(json.dumps(deterministic_events))
+        deterministic_event = next(event for event in deterministic_events if event["event_type"] == "deterministic_check_recorded")
+        duplicate_event = json.loads(json.dumps(deterministic_event))
+        duplicate_event["event_id"] = "evt-deterministic-check-recorded-duplicate"
+        duplicate_events.append(duplicate_event)
+        write_events(state_root, "verify-deterministic-file-evidence", duplicate_events)
+        duplicate_runner = run_fail("validate", "--workflow-id", "verify-deterministic-file-evidence", state_root=state_root)
+        assert_true(
+            "exactly one deterministic_check_recorded event" in duplicate_runner["error"],
+            "execution_performed=true should reject duplicate deterministic runner events",
+        )
+        write_events(state_root, "verify-deterministic-file-evidence", deterministic_events)
 
         mismatched_status = run(
             "verify",

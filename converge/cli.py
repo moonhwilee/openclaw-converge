@@ -1751,7 +1751,7 @@ def _validate_goal_state_integrity(store: WorkflowStore, workflow: dict[str, Any
     events = _read_workflow_events(store, workflow["workflow_id"])
     if state.get("execution_performed") is True:
         _validate_goal_child_execution(store, workflow, state, events=events)
-        validate_phase5b_child_delivery_state(state, terminal=terminal_goal)
+        validate_phase5b_child_delivery_state(state, terminal=terminal_goal, parent_workflow_id=workflow["workflow_id"])
         _validate_phase5b_owner_waiver_events(state, events)
     if terminal_goal:
         validate_phase5a_evidence_contract("goal", workflow=workflow, state=state)

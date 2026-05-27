@@ -352,6 +352,37 @@ def assert_execution_required_goal_collects_child_evidence(state_root: Path) -> 
     assert_true("workflow_graph" in result["error"], "Phase 5 should reject missing workflow_graph")
     persist_goal_state(state_root, "goal-execution-required-real-children", wf)
 
+    wrong_graph_parent = json.loads(json.dumps(wf))
+    wrong_graph_parent["goal_state"]["workflow_graph"]["graph_id"] = "phase5-goal-child-graph:wrong-parent"
+    for node in wrong_graph_parent["goal_state"]["workflow_graph"]["nodes"]:
+        if node["role"] == "goal":
+            node["workflow_id"] = "wrong-parent"
+        else:
+            node["parent_id"] = "wrong-parent"
+    for edge in wrong_graph_parent["goal_state"]["workflow_graph"]["edges"]:
+        edge["parent_id"] = "wrong-parent"
+    persist_goal_state(state_root, "goal-execution-required-real-children", wrong_graph_parent)
+    result = run_fail("validate", "--workflow-id", "goal-execution-required-real-children", state_root=state_root)
+    assert_true("parent" in result["error"], "Phase 5 should bind workflow_graph parent to actual workflow id")
+    persist_goal_state(state_root, "goal-execution-required-real-children", wf)
+
+    wrong_graph_child = json.loads(json.dumps(wf))
+    child_graph_node = next(
+        node
+        for node in wrong_graph_child["goal_state"]["workflow_graph"]["nodes"]
+        if node["workflow_id"] == wf["child_workflow_ids"][0]
+    )
+    child_graph_node["owner_session"] = "session:evil"
+    child_graph_node["visible_delivery_policy"] = {"channel": "telegram", "target": "evil"}
+    child_graph_node["state_root"] = "other-state-root"
+    persist_goal_state(state_root, "goal-execution-required-real-children", wrong_graph_child)
+    result = run_fail("validate", "--workflow-id", "goal-execution-required-real-children", state_root=state_root)
+    assert_true(
+        "owner_session" in result["error"] or "state_root" in result["error"],
+        "Phase 5 should reject workflow_graph child metadata drift",
+    )
+    persist_goal_state(state_root, "goal-execution-required-real-children", wf)
+
     first_child_gate = f"child:{wf['child_workflow_ids'][0]}"
     assert_phase5a_missing_gate_rejected(
         state_root,
@@ -624,6 +655,15 @@ def assert_phase5b_visible_child_mode_positive_path(state_root: Path) -> None:
         item["to_mode"] = "visible_child_report_required"
         item["reason"] = "child visible report proof is required before parent reported completion"
         item["report_proof_ref"] = child["visible_delivery_state"]["report_proof"]
+    graph_nodes = {
+        item["workflow_id"]: item
+        for item in wf["goal_state"]["workflow_graph"]["nodes"]
+        if item["workflow_id"] in wf["child_workflow_ids"]
+    }
+    for child_ref in wf["goal_state"]["child_workflow_refs"]:
+        graph_node = graph_nodes[child_ref["workflow_id"]]
+        graph_node["terminal_status"] = child_ref["terminal_status"]
+        graph_node["report_proof_ref"] = child_ref["report_proof_ref"]
     wf["goal_state"]["duplicate_report_guard"]["child_report_proof_refs"] = sorted(proof_refs)
     persist_goal_state(state_root, wf["workflow_id"], wf)
     run("validate", "--workflow-id", wf["workflow_id"], state_root=state_root)

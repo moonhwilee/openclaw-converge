@@ -762,7 +762,12 @@ def phase5b_child_delivery_mode(state: dict[str, Any], child_id: str) -> str | N
     return None
 
 
-def validate_phase5b_child_delivery_state(state: dict[str, Any], *, terminal: bool) -> None:
+def validate_phase5b_child_delivery_state(
+    state: dict[str, Any],
+    *,
+    terminal: bool,
+    parent_workflow_id: str | None = None,
+) -> None:
     if state.get("execution_performed") is not True or state.get("execution_capability") != "child_workflows":
         return
     child_refs = state.get("child_workflow_refs") or []
@@ -836,10 +841,23 @@ def validate_phase5b_child_delivery_state(state: dict[str, Any], *, terminal: bo
         raise ValueError("goal Phase 5B duplicate child visible report attempts are blocked")
     if terminal and normalize_residuals(rollup.get("parent_residuals")) != normalize_residuals(state.get("residuals")):
         raise ValueError("goal Phase 5B child residual rollup parent residuals must match goal residuals")
-    _validate_phase5_workflow_graph(state, child_ids=child_ids, rollup_ids=rollup_ids)
+    _validate_phase5_workflow_graph(
+        state,
+        child_ids=child_ids,
+        rollup_ids=rollup_ids,
+        child_refs=child_refs,
+        parent_workflow_id=parent_workflow_id,
+    )
 
 
-def _validate_phase5_workflow_graph(state: dict[str, Any], *, child_ids: list[str], rollup_ids: list[str]) -> None:
+def _validate_phase5_workflow_graph(
+    state: dict[str, Any],
+    *,
+    child_ids: list[str],
+    rollup_ids: list[str],
+    child_refs: list[dict[str, Any]],
+    parent_workflow_id: str | None,
+) -> None:
     graph = state.get("workflow_graph")
     if not isinstance(graph, dict):
         raise ValueError("goal Phase 5 workflow_graph must be present")
@@ -858,6 +876,13 @@ def _validate_phase5_workflow_graph(state: dict[str, Any], *, child_ids: list[st
     if len(parent_nodes) != 1:
         raise ValueError("goal Phase 5 workflow_graph requires exactly one parent goal node")
     parent_id = parent_nodes[0]["workflow_id"]
+    expected_parent_id = parent_workflow_id or (state.get("plan_accepted") or {}).get("source_ref")
+    if not isinstance(expected_parent_id, str) or not expected_parent_id:
+        raise ValueError("goal Phase 5 workflow_graph requires parent workflow identity")
+    if parent_id != expected_parent_id:
+        raise ValueError("goal Phase 5 workflow_graph parent must match workflow id")
+    if graph.get("graph_id") != f"phase5-goal-child-graph:{expected_parent_id}":
+        raise ValueError("goal Phase 5 workflow_graph graph_id must match parent workflow id")
     expected_node_ids = sorted([parent_id, *child_ids])
     if sorted(node_ids) != expected_node_ids:
         raise ValueError("goal Phase 5 workflow_graph nodes must match parent and child refs")
@@ -865,9 +890,30 @@ def _validate_phase5_workflow_graph(state: dict[str, Any], *, child_ids: list[st
         raise ValueError("goal Phase 5 workflow_graph must be acyclic and state-root consistent")
     if graph.get("owner_session_consistent") is not True:
         raise ValueError("goal Phase 5 workflow_graph owner sessions must be consistent")
+    node_by_id = {node["workflow_id"]: node for node in nodes if isinstance(node, dict)}
+    if parent_nodes[0].get("required") is not True or parent_nodes[0].get("state_root") != "current_workflow_store":
+        raise ValueError("goal Phase 5 workflow_graph parent node is invalid")
+    child_ref_by_id = {item["workflow_id"]: item for item in child_refs if isinstance(item, dict)}
     edge_child_ids = [edge.get("child_id") for edge in edges if isinstance(edge, dict)]
     if sorted(edge_child_ids) != sorted(child_ids) or len(edge_child_ids) != len(set(edge_child_ids)):
         raise ValueError("goal Phase 5 workflow_graph edges must match child refs")
+    for child_id in child_ids:
+        node = node_by_id[child_id]
+        child = child_ref_by_id[child_id]
+        if node.get("parent_id") != expected_parent_id:
+            raise ValueError("goal Phase 5 workflow_graph child parent_id must match parent workflow id")
+        if node.get("role") != child.get("kind") or node.get("required") is not True:
+            raise ValueError("goal Phase 5 workflow_graph child node role/required must match child ref")
+        if node.get("state_root") != "current_workflow_store":
+            raise ValueError("goal Phase 5 workflow_graph child state_root must match workflow store")
+        if node.get("owner_session") != child.get("owner_session_key"):
+            raise ValueError("goal Phase 5 workflow_graph child owner_session must match child ref")
+        if node.get("visible_delivery_policy") != child.get("visible_delivery_policy"):
+            raise ValueError("goal Phase 5 workflow_graph child visible_delivery_policy must match child ref")
+        if node.get("terminal_status") != child.get("terminal_status"):
+            raise ValueError("goal Phase 5 workflow_graph child terminal_status must match child ref")
+        if node.get("report_proof_ref") != child.get("report_proof_ref"):
+            raise ValueError("goal Phase 5 workflow_graph child report_proof_ref must match child ref")
     for edge in edges:
         if not isinstance(edge, dict):
             raise ValueError("goal Phase 5 workflow_graph edge must be an object")
@@ -875,6 +921,9 @@ def _validate_phase5_workflow_graph(state: dict[str, Any], *, child_ids: list[st
             raise ValueError("goal Phase 5 workflow_graph edge parent must match goal node")
         if edge.get("child_id") not in child_ids or edge.get("child_id") == parent_id:
             raise ValueError("goal Phase 5 workflow_graph edge child must match a child node")
+        child = child_ref_by_id[edge["child_id"]]
+        if edge.get("role") != child.get("kind"):
+            raise ValueError("goal Phase 5 workflow_graph edge role must match child ref")
         if edge.get("required") is not True or edge.get("collection_status") != "collected":
             raise ValueError("goal Phase 5 workflow_graph edge must be required and collected")
     if sorted(edge_child_ids) != sorted(rollup_ids):
@@ -1083,7 +1132,11 @@ def validate_goal_state(
     residuals = normalize_residuals(state["residuals"])
     if final_status is not None and normalize_residuals(final_status.get("residuals")) != residuals:
         raise ValueError("goal_state residuals must match final_status.residuals")
-    validate_phase5b_child_delivery_state(state, terminal=terminal)
+    validate_phase5b_child_delivery_state(
+        state,
+        terminal=terminal,
+        parent_workflow_id=workflow.get("workflow_id") if workflow else None,
+    )
     return residuals
 
 

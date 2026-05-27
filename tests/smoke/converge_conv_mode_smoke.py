@@ -574,6 +574,10 @@ def assert_conv_records_structured_specialist_findings(state_root: Path) -> None
         "conv recovery packet should prove completed specialist requests are not relaunched",
     )
     assert_true(
+        recovery_packet["profile_registry"]["kinds"] == ["check", "reviewer", "runner"],
+        "conv recovery packet should expose specialist profile registry kinds",
+    )
+    assert_true(
         {event["event_type"] for event in events(state_root, "conv-specialist-findings")}.issuperset(
             {"agent_panel_requested", "agent_findings_recorded", "finding_arbitrated"}
         ),

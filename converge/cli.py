@@ -1468,6 +1468,8 @@ def _validate_workflow_integrity(store: WorkflowStore, workflow: dict[str, Any],
             expected_cursor = checkpoint_index[latest_checkpoint_id].get("cursor_after") or expected_cursor
         if next_cursor != expected_cursor:
             raise ValueError(f"next_safe_action cursor {next_cursor!r} does not match current cursor {expected_cursor!r}")
+    if workflow.get("kind") == "goal" and workflow.get("status") == "reported":
+        _validate_reported_goal_child_integrity(store, workflow)
     if validate_material:
         _validate_plan_state_integrity(workflow)
         _validate_goal_state_integrity(store, workflow)
@@ -1725,9 +1727,12 @@ def _validate_goal_state_integrity(store: WorkflowStore, workflow: dict[str, Any
         for ref in evidence.get("artifact_refs") or []
     ]:
         raise ValueError("terminal goal workflow evidence must reference final_plan_artifact_id")
+    events = _read_workflow_events(store, workflow["workflow_id"])
+    if state.get("execution_performed") is True:
+        _validate_goal_child_execution(store, workflow, state, events=events)
     plan_accepted_events = [
         event
-        for event in _read_workflow_events(store, workflow["workflow_id"])
+        for event in events
         if event.get("event_type") == "plan_accepted"
     ]
     matching_acceptance = [
@@ -1757,6 +1762,212 @@ def _validate_goal_state_integrity(store: WorkflowStore, workflow: dict[str, Any
     )
     if Path(artifact["path"]).read_text(encoding="utf-8") != expected_plan:
         raise ValueError("goal plan artifact must match goal_state")
+
+
+def _validate_goal_child_execution(
+    store: WorkflowStore,
+    workflow: dict[str, Any],
+    state: dict[str, Any],
+    *,
+    events: list[dict[str, Any]],
+) -> None:
+    refs = state.get("execution_evidence_refs")
+    if not isinstance(refs, list) or not refs:
+        raise ValueError("goal execution_performed=true requires execution_evidence_refs")
+    if state.get("execution_capability") != "child_workflows":
+        raise ValueError("goal execution_performed=true requires child_workflows capability")
+    if state.get("synthetic_report") is not False:
+        raise ValueError("goal execution_performed=true requires synthetic_report=false")
+    if state.get("runner_ref") != "trusted-goal-child-workflow-collector-v1":
+        raise ValueError("goal execution_performed=true has untrusted runner_ref")
+    child_refs = state.get("child_workflow_refs") or []
+    child_ids = [item.get("workflow_id") for item in child_refs if isinstance(item, dict)]
+    _require_unique_strings(refs, "goal execution_evidence_refs")
+    _require_unique_strings(child_ids, "goal child_workflow_refs workflow_id")
+    _require_unique_strings(workflow.get("child_workflow_ids") or [], "goal workflow child_workflow_ids")
+    if sorted(refs) != sorted(child_ids):
+        raise ValueError("goal execution evidence refs must match child_workflow_refs")
+    if sorted(workflow.get("child_workflow_ids") or []) != sorted(child_ids):
+        raise ValueError("goal workflow child_workflow_ids must match child_workflow_refs")
+    linked_child_ids = _workflow_ids_with_parent(store, workflow["workflow_id"])
+    if sorted(linked_child_ids) != sorted(child_ids):
+        raise ValueError("goal parent linked child workflows must match child_workflow_refs")
+    parent_child_event_ids = [
+        (event.get("payload") or {}).get("child_workflow_id")
+        for event in events
+        if event.get("event_type") in {"child_creation_intent", "child_workflow_created", "child_workflow_collected"}
+    ]
+    if any(not isinstance(value, str) or not value for value in parent_child_event_ids):
+        raise ValueError("goal parent child workflow event ids must contain non-empty strings")
+    if not set(parent_child_event_ids).issubset(set(child_ids)):
+        raise ValueError("goal parent child workflow events must match child_workflow_refs")
+    collection = state.get("child_collection_status")
+    if not isinstance(collection, dict) or collection.get("complete") is not True:
+        raise ValueError("goal execution_performed=true requires complete child_collection_status")
+    _require_unique_strings(collection.get("required_child_workflow_ids") or [], "goal child_collection_status required ids")
+    _require_unique_strings(collection.get("collected_child_workflow_ids") or [], "goal child_collection_status collected ids")
+    if sorted(collection.get("required_child_workflow_ids") or []) != sorted(child_ids):
+        raise ValueError("goal child_collection_status required ids must match child refs")
+    if sorted(collection.get("collected_child_workflow_ids") or []) != sorted(child_ids):
+        raise ValueError("goal child_collection_status collected ids must match child refs")
+    collection_children = collection.get("children") or []
+    collection_child_ids = [
+        item.get("workflow_id")
+        for item in collection_children
+        if isinstance(item, dict)
+    ]
+    _require_unique_strings(collection_child_ids, "goal child_collection_status children workflow_id")
+    if sorted(collection_child_ids) != sorted(child_ids):
+        raise ValueError("goal child_collection_status children must match child refs")
+    for child_ref in child_refs:
+        child_id = child_ref["workflow_id"]
+        child = store.load_workflow(child_id)
+        collection_child = next(
+            item
+            for item in collection_children
+            if isinstance(item, dict) and item.get("workflow_id") == child_id
+        )
+        if child.get("parent_workflow_id") != workflow["workflow_id"]:
+            raise ValueError("goal child workflow parent_workflow_id must point to parent")
+        if child.get("kind") != child_ref["kind"]:
+            raise ValueError("goal child workflow kind must match child_workflow_refs")
+        if child.get("owner_session_key") != (workflow.get("owner_session_key") or ""):
+            raise ValueError("goal child workflow owner_session_key must match parent")
+        if child.get("visible_delivery") != (workflow.get("visible_delivery") or {}):
+            raise ValueError("goal child workflow visible_delivery must match parent")
+        if child.get("source_request") != _expected_goal_child_request(workflow, role=child_ref["kind"]):
+            raise ValueError("goal child workflow source_request must match deterministic child request")
+        if child.get("status") not in {"completed_unreported", "failed_unreported", "reported"}:
+            raise ValueError("goal child workflow collection requires terminal child status")
+        terminal_status = child_ref.get("terminal_status")
+        if terminal_status not in {"completed_unreported", "failed_unreported", "reported"}:
+            raise ValueError("goal child workflow terminal_status must be terminal")
+        if child.get("status") != terminal_status and not (
+            child.get("status") == "reported"
+            and terminal_status in {"completed_unreported", "failed_unreported"}
+        ):
+            raise ValueError("goal child workflow terminal_status must match child workflow")
+        result = (child.get("final_status") or {}).get("result")
+        if result != child_ref.get("result"):
+            raise ValueError("goal child workflow result must match child_workflow_refs")
+        expected_status = "completed" if terminal_status in {"completed_unreported", "reported"} and result in {"pass", "pass_with_risks"} else "blocked"
+        if child_ref.get("status") != expected_status:
+            raise ValueError("goal child workflow ref status must match child terminal result")
+        if child_ref.get("final_status") != child.get("final_status"):
+            raise ValueError("goal child workflow ref final_status must match child workflow")
+        expected_evidence_refs = [
+            ref
+            for evidence in (child.get("verification") or {}).get("evidence") or []
+            if isinstance(evidence, dict)
+            for ref in evidence.get("artifact_refs") or []
+        ]
+        if child_ref.get("evidence_refs") != expected_evidence_refs:
+            raise ValueError("goal child workflow ref evidence_refs must match child workflow")
+        intent_events = [
+            event
+            for event in events
+            if event.get("event_type") == "child_creation_intent"
+            and (event.get("payload") or {}).get("child_workflow_id") == child_id
+        ]
+        created_events = [
+            event
+            for event in events
+            if event.get("event_type") == "child_workflow_created"
+            and (event.get("payload") or {}).get("child_workflow_id") == child_id
+        ]
+        collected_events = [
+            event
+            for event in events
+            if event.get("event_type") == "child_workflow_collected"
+            and (event.get("payload") or {}).get("child_workflow_id") == child_id
+        ]
+        if len(intent_events) != 1:
+            raise ValueError("goal requires exactly one child_creation_intent event per child")
+        if len(created_events) != 1:
+            raise ValueError("goal requires exactly one child_workflow_created event per child")
+        if len(collected_events) != 1:
+            raise ValueError("goal requires exactly one child_workflow_collected event per child")
+        event_ids = [event.get("event_id") for event in events]
+        if not (
+            event_ids.index(intent_events[0]["event_id"])
+            < event_ids.index(created_events[0]["event_id"])
+            < event_ids.index(collected_events[0]["event_id"])
+        ):
+            raise ValueError("goal child workflow events must be ordered intent -> created -> collected")
+        intent_payload = intent_events[0].get("payload") or {}
+        created_payload = created_events[0].get("payload") or {}
+        collected_payload = collected_events[0].get("payload") or {}
+        if intent_payload.get("child_role") != child_ref["kind"]:
+            raise ValueError("goal child_creation_intent child_role must match child ref")
+        if intent_payload.get("required_for_parent_completion") is not True:
+            raise ValueError("goal child_creation_intent must mark required_for_parent_completion=true")
+        if created_payload.get("child_role") != child_ref["kind"]:
+            raise ValueError("goal child_workflow_created child_role must match child ref")
+        if created_payload.get("required_for_parent_completion") is not True:
+            raise ValueError("goal child_workflow_created must mark required_for_parent_completion=true")
+        if collected_payload.get("child_role") != child_ref["kind"]:
+            raise ValueError("goal child_workflow_collected child_role must match child ref")
+        if collected_payload.get("terminal_status") != terminal_status:
+            raise ValueError("goal child_workflow_collected terminal_status must match child ref")
+        if collected_payload.get("result") != result:
+            raise ValueError("goal child_workflow_collected result must match child workflow")
+        if collection_child.get("kind") != child_ref["kind"]:
+            raise ValueError("goal child_collection_status child kind must match child ref")
+        if collection_child.get("terminal_status") != terminal_status:
+            raise ValueError("goal child_collection_status child terminal_status must match child ref")
+        if collection_child.get("result") != result:
+            raise ValueError("goal child_collection_status child result must match child workflow")
+        child_linked_events = [
+            event
+            for event in _read_workflow_events(store, child_id)
+            if event.get("event_type") == "parent_linked"
+            and (event.get("payload") or {}).get("parent_workflow_id") == workflow["workflow_id"]
+        ]
+        if len(child_linked_events) != 1:
+            raise ValueError("goal child workflow requires exactly one parent_linked event")
+        child_linked_payload = child_linked_events[0].get("payload") or {}
+        if child_linked_payload.get("child_role") != child_ref["kind"]:
+            raise ValueError("goal child parent_linked child_role must match child ref")
+        if child_linked_payload.get("required_for_parent_completion") is not True:
+            raise ValueError("goal child parent_linked must mark required_for_parent_completion=true")
+        if workflow.get("status") == "reported" and child.get("status") != "reported":
+            raise ValueError("reported goal cannot have unreported required child workflows")
+
+
+def _expected_goal_child_request(parent: dict[str, Any], *, role: str) -> str:
+    text = parent.get("source_request") or parent.get("objective") or ""
+    if role == "verify":
+        return f"Verify required goal child evidence for: {text}"
+    return f"Converge required goal child execution for: {text}"
+
+
+def _workflow_ids_with_parent(store: WorkflowStore, parent_id: str) -> list[str]:
+    workflows_dir = store.root / "workflows"
+    if not workflows_dir.exists():
+        return []
+    linked: list[str] = []
+    for path in workflows_dir.glob("*/workflow.json"):
+        try:
+            workflow = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        if workflow.get("parent_workflow_id") == parent_id:
+            linked.append(workflow.get("workflow_id"))
+    return linked
+
+
+def _require_unique_strings(values: list[Any], label: str) -> None:
+    if any(not isinstance(value, str) or not value for value in values):
+        raise ValueError(f"{label} must contain non-empty strings")
+    if len(values) != len(set(values)):
+        raise ValueError(f"{label} must be unique")
+
+
+def _validate_reported_goal_child_integrity(store: WorkflowStore, workflow: dict[str, Any]) -> None:
+    state = workflow.get("goal_state")
+    if not isinstance(state, dict) or state.get("execution_performed") is not True:
+        return
+    _validate_goal_child_execution(store, workflow, state, events=_read_workflow_events(store, workflow["workflow_id"]))
 
 
 def _read_workflow_events(store: WorkflowStore, workflow_id: str) -> list[dict[str, Any]]:

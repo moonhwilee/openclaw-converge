@@ -13,7 +13,8 @@ try:
     from smoke_helpers import VISIBLE_DELIVERY, assert_true, events, run, run_fail, workflow, write_workflow
 except ModuleNotFoundError:
     from tests.smoke.smoke_helpers import VISIBLE_DELIVERY, assert_true, events, run, run_fail, workflow, write_workflow
-from converge.modes.goal import build_goal_record, render_goal_plan, validate_goal_state  # noqa: E402
+from converge.modes.goal import GoalRecord, _child_workflow_id, build_goal_record, render_goal_plan, validate_goal_state  # noqa: E402
+from converge.artifacts import sha256_file  # noqa: E402
 
 
 def finalize_goal(state_root: Path, *, workflow_id: str, text: str) -> dict[str, Any]:
@@ -29,6 +30,36 @@ def finalize_goal(state_root: Path, *, workflow_id: str, text: str) -> dict[str,
         VISIBLE_DELIVERY,
         state_root=state_root,
     )["workflow"]
+
+
+def report_workflow(state_root: Path, workflow_id: str) -> dict[str, Any]:
+    wf = workflow(state_root, workflow_id)
+    reservation = run(
+        "reserve-delivery",
+        "--workflow-id",
+        workflow_id,
+        "--terminal-status",
+        "completed",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        "--summary",
+        f"reserve delivery for {workflow_id}",
+        "--final-status",
+        json.dumps(wf["final_status"]),
+        state_root=state_root,
+    )
+    return run(
+        "complete-reported",
+        "--workflow-id",
+        workflow_id,
+        "--reservation-id",
+        reservation["reservation_id"],
+        "--delivery-message-id",
+        f"telegram-message-{workflow_id}",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        state_root=state_root,
+    )
 
 
 def assert_default_goal_contract(state_root: Path) -> None:
@@ -141,22 +172,297 @@ def assert_execution_required_goal_blocks_planned_children(state_root: Path) -> 
     assert_true(wf["status"] == "failed_unreported", "execution-required goal should fail closed")
     assert_true(wf["final_status"]["result"] == "blocked", "execution-required goal should be blocked")
     assert_true(
-        wf["final_status"]["stop_reason"] == "blocked_child_workflows_not_run",
-        "goal should block on planned child refs",
+        wf["final_status"]["stop_reason"] == "blocked_child_workflow_failed",
+        "goal should block when required child workflows fail",
     )
     assert_true(
-        wf["goal_state"]["execution_required"] is True and wf["goal_state"]["execution_performed"] is False,
-        "goal should record execution truth markers",
+        wf["goal_state"]["execution_required"] is True and wf["goal_state"]["execution_performed"] is True,
+        "goal should record child workflow execution truth markers",
     )
     assert_true(
-        wf["goal_state"]["execution_blocked"] is True,
-        "goal blocked state should record execution_blocked",
+        wf["goal_state"]["synthetic_report"] is False,
+        "goal child workflow collection should clear synthetic_report",
     )
     assert_true(
-        [event["event_type"] for event in events(state_root, "goal-execution-required-blocked")] == ["start", "artifact", "plan_accepted", "fail"],
+        {item["status"] for item in wf["goal_state"]["child_workflow_refs"]} == {"blocked"},
+        "goal should record blocked child workflow refs",
+    )
+    assert_true(
+        len(wf["child_workflow_ids"]) == 2,
+        "goal should create real child workflows instead of planned refs",
+    )
+    goal_events = [event["event_type"] for event in events(state_root, "goal-execution-required-blocked")]
+    assert_true(
+        goal_events.count("child_creation_intent") == 2,
+        "execution-required goal should record child creation intent events",
+    )
+    assert_true(
+        goal_events.count("child_workflow_created") == 2 and goal_events.count("child_workflow_collected") == 2,
+        "execution-required goal should record child creation and collection events",
+    )
+    assert_true(
+        goal_events[-3:] == ["artifact", "plan_accepted", "fail"],
         "execution-required goal should fail terminally instead of completing",
     )
     run("validate", "--workflow-id", "goal-execution-required-blocked", state_root=state_root)
+
+
+def assert_execution_required_goal_collects_child_evidence(state_root: Path) -> None:
+    target = state_root / "phase3-goal-target.txt"
+    target.write_text("phase 3 goal child evidence target\n", encoding="utf-8")
+    wf = run(
+        "goal",
+        "--text",
+        f"Implement execution-required goal workflow for {target}",
+        "--workflow-id",
+        "goal-execution-required-real-children",
+        "--owner-session-key",
+        "session:test",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        state_root=state_root,
+    )["workflow"]
+    goal_state = wf["goal_state"]
+    assert_true(wf["status"] == "completed_unreported", "goal should complete after collecting passing children")
+    assert_true(wf["final_status"]["result"] == "pass_with_risks", "Phase 3 goal should carry scoped child-report residuals")
+    assert_true(goal_state["execution_required"] is True, "goal should remain execution-required")
+    assert_true(goal_state["execution_performed"] is True, "goal should mark execution performed from collected children")
+    assert_true(goal_state["synthetic_report"] is False, "goal child evidence should clear synthetic_report")
+    assert_true(goal_state["execution_capability"] == "child_workflows", "goal should record child_workflows capability")
+    assert_true(sorted(goal_state["execution_evidence_refs"]) == sorted(wf["child_workflow_ids"]), "goal evidence refs should match real child ids")
+    assert_true({item["status"] for item in goal_state["child_workflow_refs"]} == {"completed"}, "child refs should be completed")
+    assert_true({item["kind"] for item in goal_state["child_workflow_refs"]} == {"verify", "conv"}, "goal should create verify and conv children")
+    for child_id in wf["child_workflow_ids"]:
+        child = workflow(state_root, child_id)
+        assert_true(child["parent_workflow_id"] == wf["workflow_id"], "child should point back to parent")
+        assert_true(child["status"] == "completed_unreported", "child should reach terminal unreported")
+        assert_true(child["final_status"]["result"] in {"pass", "pass_with_risks"}, "child terminal result should pass")
+    goal_events = [event["event_type"] for event in events(state_root, "goal-execution-required-real-children")]
+    assert_true(goal_events.count("child_creation_intent") == 2, "goal should record two child intent events")
+    assert_true(goal_events.count("child_workflow_created") == 2, "goal should record two child creation events")
+    assert_true(goal_events.count("child_workflow_collected") == 2, "goal should record two child collection events")
+    assert_true(goal_events[-3:] == ["artifact", "plan_accepted", "complete"], "goal should complete after artifact and acceptance")
+    assert_true(Path(goal_state["final_plan_artifact_path"]).read_text(encoding="utf-8") == render_goal_plan(_goal_record_from_state(goal_state)), "goal artifact should render from collected child state")
+    run("validate", "--workflow-id", "goal-execution-required-real-children", state_root=state_root)
+
+    missing_created = json.loads(json.dumps(wf))
+    events_path = state_root / "workflows" / "goal-execution-required-real-children" / "events.jsonl"
+    original_events = events_path.read_text(encoding="utf-8")
+    without_created = "\n".join(
+        line
+        for line in original_events.splitlines()
+        if not line.strip() or json.loads(line).get("event_type") != "child_workflow_created"
+    )
+    events_path.write_text(without_created + "\n", encoding="utf-8")
+    write_workflow(state_root, "goal-execution-required-real-children", missing_created)
+    result = run_fail("validate", "--workflow-id", "goal-execution-required-real-children", state_root=state_root)
+    assert_true("child_workflow_created event" in result["error"], "goal should reject missing child creation evidence")
+    events_path.write_text(original_events, encoding="utf-8")
+
+    drifted_created = json.loads(json.dumps(wf))
+    for event in events(state_root, "goal-execution-required-real-children"):
+        if event["event_type"] == "child_workflow_created":
+            event["payload"]["child_role"] = "conv" if event["payload"]["child_role"] == "verify" else "verify"
+            lines = []
+            for line in original_events.splitlines():
+                parsed = json.loads(line)
+                if parsed["event_id"] == event["event_id"]:
+                    parsed = event
+                lines.append(json.dumps(parsed, ensure_ascii=False, sort_keys=True))
+            events_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            break
+    write_workflow(state_root, "goal-execution-required-real-children", drifted_created)
+    result = run_fail("validate", "--workflow-id", "goal-execution-required-real-children", state_root=state_root)
+    assert_true("child_workflow_created child_role" in result["error"], "goal should reject child creation role drift")
+    events_path.write_text(original_events, encoding="utf-8")
+
+    child = workflow(state_root, wf["child_workflow_ids"][0])
+    child["parent_workflow_id"] = "different-parent"
+    write_workflow(state_root, child["workflow_id"], child)
+    result = run_fail("validate", "--workflow-id", "goal-execution-required-real-children", state_root=state_root)
+    assert_true(
+        "parent_workflow_id" in result["error"] or "linked child workflows" in result["error"],
+        "goal should reject child parent drift",
+    )
+    child["parent_workflow_id"] = wf["workflow_id"]
+    write_workflow(state_root, child["workflow_id"], child)
+
+    child["owner_session_key"] = "session:other"
+    write_workflow(state_root, child["workflow_id"], child)
+    result = run_fail("validate", "--workflow-id", "goal-execution-required-real-children", state_root=state_root)
+    assert_true("owner_session_key" in result["error"], "goal should reject child owner/session drift")
+    child["owner_session_key"] = wf["owner_session_key"]
+    write_workflow(state_root, child["workflow_id"], child)
+
+    child_events_path = state_root / "workflows" / child["workflow_id"] / "events.jsonl"
+    original_child_events = child_events_path.read_text(encoding="utf-8")
+    without_parent_linked = "\n".join(
+        line
+        for line in original_child_events.splitlines()
+        if not line.strip() or json.loads(line).get("event_type") != "parent_linked"
+    )
+    child_events_path.write_text(without_parent_linked + "\n", encoding="utf-8")
+    result = run_fail("validate", "--workflow-id", "goal-execution-required-real-children", state_root=state_root)
+    assert_true("parent_linked" in result["error"], "goal should reject missing child-side parent_linked evidence")
+    child_events_path.write_text(original_child_events, encoding="utf-8")
+
+    run(
+        "start",
+        "--kind",
+        "verify",
+        "--text",
+        "extra omitted child",
+        "--workflow-id",
+        "goal-extra-omitted-child",
+        "--owner-session-key",
+        "session:test",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        state_root=state_root,
+    )
+    extra_child = workflow(state_root, "goal-extra-omitted-child")
+    extra_child["parent_workflow_id"] = wf["workflow_id"]
+    write_workflow(state_root, "goal-extra-omitted-child", extra_child)
+    result = run_fail("validate", "--workflow-id", "goal-execution-required-real-children", state_root=state_root)
+    assert_true("linked child workflows" in result["error"], "goal should reject omitted linked child workflows")
+    extra_child["parent_workflow_id"] = None
+    write_workflow(state_root, "goal-extra-omitted-child", extra_child)
+
+    duplicate = workflow(state_root, "goal-execution-required-real-children")
+    first_ref = json.loads(json.dumps(duplicate["goal_state"]["child_workflow_refs"][0]))
+    duplicate["goal_state"]["child_workflow_refs"] = [first_ref, json.loads(json.dumps(first_ref))]
+    duplicate["goal_state"]["execution_evidence_refs"] = [first_ref["workflow_id"], first_ref["workflow_id"]]
+    duplicate["child_workflow_ids"] = [first_ref["workflow_id"], first_ref["workflow_id"]]
+    duplicate["goal_state"]["child_collection_status"]["required_child_workflow_ids"] = [first_ref["workflow_id"], first_ref["workflow_id"]]
+    duplicate["goal_state"]["child_collection_status"]["collected_child_workflow_ids"] = [first_ref["workflow_id"], first_ref["workflow_id"]]
+    duplicate["goal_state"]["child_collection_status"]["children"] = [
+        json.loads(json.dumps(duplicate["goal_state"]["child_collection_status"]["children"][0])),
+        json.loads(json.dumps(duplicate["goal_state"]["child_collection_status"]["children"][0])),
+    ]
+    duplicate_artifact_path = Path(duplicate["goal_state"]["final_plan_artifact_path"])
+    duplicate_artifact_path.write_text(
+        render_goal_plan(_goal_record_from_state(duplicate["goal_state"])),
+        encoding="utf-8",
+    )
+    duplicate_hash = sha256_file(duplicate_artifact_path)
+    duplicate["artifacts"][0]["sha256"] = duplicate_hash
+    duplicate["goal_state"]["plan_artifact_promotion"]["plan_artifact_hash"] = duplicate_hash
+    duplicate["goal_state"]["plan_accepted"]["plan_artifact_hash"] = duplicate_hash
+    duplicate_event_lines = []
+    for line in original_events.splitlines():
+        event = json.loads(line)
+        if event.get("event_type") == "complete":
+            event["payload"]["state_update"]["mode_state_update"] = duplicate["goal_state"]
+        duplicate_event_lines.append(json.dumps(event, ensure_ascii=False, sort_keys=True))
+    events_path.write_text("\n".join(duplicate_event_lines) + "\n", encoding="utf-8")
+    write_workflow(state_root, "goal-execution-required-real-children", duplicate)
+    result = run_fail("validate", "--workflow-id", "goal-execution-required-real-children", state_root=state_root)
+    assert_true("unique" in result["error"], "goal should reject duplicate child workflow ids")
+    events_path.write_text(original_events, encoding="utf-8")
+    write_workflow(state_root, "goal-execution-required-real-children", wf)
+    Path(goal_state["final_plan_artifact_path"]).write_text(render_goal_plan(_goal_record_from_state(goal_state)), encoding="utf-8")
+
+    reservation = run(
+        "reserve-delivery",
+        "--workflow-id",
+        "goal-execution-required-real-children",
+        "--terminal-status",
+        "completed",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        "--summary",
+        "reserve parent goal delivery",
+        "--final-status",
+        json.dumps(wf["final_status"]),
+        state_root=state_root,
+    )
+    result = run_fail(
+        "complete-reported",
+        "--workflow-id",
+        "goal-execution-required-real-children",
+        "--reservation-id",
+        reservation["reservation_id"],
+        "--delivery-message-id",
+        "telegram-message-parent-goal",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        state_root=state_root,
+    )
+    assert_true("reported goal cannot have unreported required child workflows" in result["error"], "reported parent should require reported children")
+
+    for child_id in wf["child_workflow_ids"]:
+        reported_child = report_workflow(state_root, child_id)
+        assert_true(reported_child["status"] == "reported", "child complete-reported should mark child reported")
+    reported_parent = run(
+        "complete-reported",
+        "--workflow-id",
+        "goal-execution-required-real-children",
+        "--reservation-id",
+        reservation["reservation_id"],
+        "--delivery-message-id",
+        "telegram-message-parent-goal",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        state_root=state_root,
+    )
+    assert_true(reported_parent["status"] == "reported", "reported parent should pass after required children are reported")
+
+
+def assert_goal_child_ids_handle_long_parent_ids(state_root: Path) -> None:
+    target = state_root / "long-parent-target.txt"
+    target.write_text("long parent deterministic goal target\n", encoding="utf-8")
+    workflow_id = "g" + ("a" * 89)
+    wf = run(
+        "goal",
+        "--text",
+        f"Implement execution-required long parent goal for {target}",
+        "--workflow-id",
+        workflow_id,
+        "--owner-session-key",
+        "session:test",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        state_root=state_root,
+    )["workflow"]
+    assert_true(wf["status"] == "completed_unreported", "long valid parent id should create valid child ids")
+    assert_true(all(child_id.startswith("goal-child-") for child_id in wf["child_workflow_ids"]), "child ids should use fixed safe prefix")
+    run("validate", "--workflow-id", workflow_id, state_root=state_root)
+
+
+def assert_goal_does_not_collect_nonterminal_existing_child(state_root: Path) -> None:
+    parent_id = "goal-nonterminal-child"
+    text = "Implement execution-required goal with preexisting nonterminal child"
+    child_id = _child_workflow_id(parent_id, role="verify", objective=text)
+    run(
+        "start",
+        "--kind",
+        "verify",
+        "--text",
+        f"Verify required goal child evidence for: {text}",
+        "--workflow-id",
+        child_id,
+        "--owner-session-key",
+        "session:test",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        state_root=state_root,
+    )
+    child = workflow(state_root, child_id)
+    child["status"] = "waiting_user"
+    write_workflow(state_root, child_id, child)
+    result = run_fail(
+        "goal",
+        "--text",
+        text,
+        "--workflow-id",
+        parent_id,
+        "--owner-session-key",
+        "session:test",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        state_root=state_root,
+    )
+    assert_true("required child workflow is not terminal" in result["error"], "goal should not collect nonterminal child workflows")
 
 
 def assert_completion_criteria_plan_only_wording_does_not_downgrade_goal(state_root: Path) -> None:
@@ -479,6 +785,9 @@ def main() -> int:
         state_root = Path(tmp)
         assert_default_goal_contract(state_root)
         assert_execution_required_goal_blocks_planned_children(state_root)
+        assert_execution_required_goal_collects_child_evidence(state_root)
+        assert_goal_child_ids_handle_long_parent_ids(state_root)
+        assert_goal_does_not_collect_nonterminal_existing_child(state_root)
         assert_completion_criteria_plan_only_wording_does_not_downgrade_goal(state_root)
         assert_plan_accepted_requires_objective(state_root)
         assert_goal_retry_reuses_existing_plan_accepted(state_root)
@@ -489,6 +798,23 @@ def main() -> int:
         assert_reserve_validates_goal_terminal_material_before_send(state_root)
         assert_terminal_goal_requires_valid_goal_state(state_root)
     return 0
+
+
+def _goal_record_from_state(state: dict[str, Any]) -> GoalRecord:
+    return GoalRecord(
+        objective=state["objective"],
+        non_goals=state["non_goals"],
+        success_criteria=state["success_criteria"],
+        assumptions=state["assumptions"],
+        approval_boundaries=state["approval_boundaries"],
+        slice_queue=state["slice_queue"],
+        plan_accepted=state["plan_accepted"],
+        evidence_completion_check=state["evidence_completion_check"],
+        plan_artifact_promotion=state["plan_artifact_promotion"],
+        child_workflow_refs=state["child_workflow_refs"],
+        residuals=state["residuals"],
+        final_report_summary=state["final_report_summary"],
+    )
 
 
 if __name__ == "__main__":

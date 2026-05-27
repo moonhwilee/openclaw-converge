@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -88,11 +89,18 @@ class GoalHandler(ModeHandler):
         workflow = self.load_workflow(workflow_id)
         existing_plan_accepted = _existing_plan_accepted_payload(self.store, workflow_id)
         record = build_goal_record(workflow, accepted_at=existing_plan_accepted.get("accepted_at") if existing_plan_accepted else None)
+        child_collection = _ensure_goal_children(self, workflow, record)
+        if child_collection is not None:
+            record = _record_with_child_collection(record, child_collection)
         artifact_path = (self.store.workflow_dir(workflow_id) / "artifacts" / "goal-plan.md").expanduser().resolve()
         artifact_ref = GOAL_PLAN_ARTIFACT_ID
         artifact_path_text = str(artifact_path)
         pre_state = record.as_state(artifact_id=artifact_ref, artifact_path=artifact_path_text, artifact_hash="pending")
+        if child_collection is not None:
+            pre_state.update(child_collection["execution_markers"])
+            pre_state["child_collection_status"] = child_collection["collection_status"]
         pre_state, residuals, block_reason = apply_execution_truth_block("goal", pre_state, residuals=record.residuals)
+        child_block_reason = _child_block_reason(child_collection)
         render_record = GoalRecord(
             objective=pre_state["objective"],
             non_goals=pre_state["non_goals"],
@@ -139,7 +147,11 @@ class GoalHandler(ModeHandler):
             final_report_summary=pre_state["final_report_summary"],
         )
         state = blocked_record.as_state(artifact_id=artifact_ref, artifact_path=artifact_path, artifact_hash=artifact["sha256"])
+        if child_collection is not None:
+            state.update(child_collection["execution_markers"])
+            state["child_collection_status"] = child_collection["collection_status"]
         state, residuals, block_reason = apply_execution_truth_block("goal", state, residuals=residuals)
+        child_block_reason = child_block_reason or _child_block_reason(child_collection)
         if existing_plan_accepted is not None and existing_plan_accepted != state["plan_accepted"]:
             raise ValueError("existing goal plan_accepted event payload does not match current accepted plan")
         validate_goal_state(state, workflow=workflow, terminal=True, final_status=None)
@@ -155,13 +167,13 @@ class GoalHandler(ModeHandler):
             ModeOutcome(
                 summary=(
                     "Goal terminal success blocked because execution evidence is missing."
-                    if block_reason
+                    if block_reason or child_block_reason
                     else "Goal slice queue and accepted plan are ready for visible delivery."
                 ),
-                status_after="failed_unreported" if block_reason else "completed_unreported",
+                status_after="failed_unreported" if block_reason or child_block_reason else "completed_unreported",
                 phase_after="terminal",
                 checkpoint_type="terminal",
-                event_type="fail" if block_reason else "complete",
+                event_type="fail" if block_reason or child_block_reason else "complete",
                 worklog_block_kind="terminal_summary",
                 step_result="terminal",
                 residuals=residuals,
@@ -172,6 +184,8 @@ class GoalHandler(ModeHandler):
                 final_status=(
                     execution_blocked_final_status("goal", block_reason, residuals)
                     if block_reason
+                    else _child_blocked_final_status(child_block_reason, residuals)
+                    if child_block_reason
                     else {
                         "result": "pass_with_risks" if any(record.residuals.values()) else "pass",
                         "done": [
@@ -179,7 +193,7 @@ class GoalHandler(ModeHandler):
                             "Represented goal slices in continuation_plan.steps",
                             "Validated the scoped plan_accepted payload",
                             "Promoted the goal plan artifact through the shared artifact path",
-                            "Recorded child workflow reference fields without creating child workflows",
+                            "Created and collected required child workflows",
                         ],
                         "checked": [
                             "Goal mode used shared artifact and checkpoint contracts",
@@ -189,7 +203,7 @@ class GoalHandler(ModeHandler):
                         "residuals": record.residuals,
                     }
                 ),
-                failure_reason=block_reason,
+                failure_reason=block_reason or child_block_reason,
             ),
         )
         return {"workflow_id": workflow_id, "artifact": artifact, "checkpoint": checkpoint, "goal": state}
@@ -350,6 +364,285 @@ def _validate_existing_plan_acceptance_scope(workflow: dict[str, Any], existing:
         raise ValueError("existing goal plan_accepted event payload does not reference the goal plan artifact")
     if existing.get("source_ref") != workflow.get("workflow_id", "goal-workflow"):
         raise ValueError("existing goal plan_accepted event payload does not match current accepted plan")
+
+
+def _ensure_goal_children(handler: GoalHandler, workflow: dict[str, Any], record: GoalRecord) -> dict[str, Any] | None:
+    markers = classify_execution_markers(record.objective, capability="planned_child_refs_only")
+    if markers.get("execution_required") is not True:
+        return None
+    from .conv import ConvHandler
+    from .verify import VerifyHandler
+
+    parent_id = workflow["workflow_id"]
+    child_refs: list[dict[str, Any]] = []
+    for role, child_handler in (("verify", VerifyHandler(handler.store)), ("conv", ConvHandler(handler.store))):
+        child_id = _child_workflow_id(parent_id, role=role, objective=record.objective)
+        child = _create_or_link_child(handler, workflow, child_id=child_id, role=role)
+        if child.get("status") == "running":
+            if role == "verify":
+                child_handler.finalize_verify(child_id)
+            else:
+                child_handler.finalize_conv(child_id)
+        child = handler.store.load_workflow(child_id)
+        if child.get("status") not in {"completed_unreported", "failed_unreported", "reported"}:
+            raise ValueError(f"required child workflow is not terminal: {child_id}")
+        _record_child_collected(handler, parent_id, child)
+        child_refs.append(_child_ref_from_workflow(child, role=role))
+    child_ids = [item["workflow_id"] for item in child_refs]
+    collection_status = {
+        "required_child_workflow_ids": child_ids,
+        "collected_child_workflow_ids": child_ids,
+        "children": [
+            {
+                "workflow_id": item["workflow_id"],
+                "kind": item["kind"],
+                "status": item["status"],
+                "terminal_status": item["terminal_status"],
+                "result": item["result"],
+                "stop_reason": (item.get("final_status") or {}).get("stop_reason"),
+                "residuals": (item.get("final_status") or {}).get("residuals"),
+                "evidence_refs": item.get("evidence_refs") or [],
+            }
+            for item in child_refs
+        ],
+        "complete": True,
+    }
+    return {
+        "child_workflow_refs": child_refs,
+        "collection_status": collection_status,
+        "execution_markers": {
+            "execution_required": True,
+            "execution_capability": "child_workflows",
+            "execution_performed": True,
+            "synthetic_report": False,
+            "runner_ref": "trusted-goal-child-workflow-collector-v1",
+            "execution_evidence_refs": child_ids,
+            "execution_started_at": min((item["created_at"] for item in child_refs if item.get("created_at")), default=now_iso()),
+            "execution_completed_at": now_iso(),
+            "execution_classification_reason": "goal parent created and collected required child workflows",
+        },
+    }
+
+
+def _create_or_link_child(handler: GoalHandler, parent: dict[str, Any], *, child_id: str, role: str) -> dict[str, Any]:
+    child_text = _child_request_text(parent, role=role)
+    _append_idempotent_event(
+        handler,
+        parent["workflow_id"],
+        event_type="child_creation_intent",
+        event_id=f"evt-child-intent-{child_id}",
+        note="goal child workflow deterministic id reserved",
+        payload={"child_workflow_id": child_id, "child_role": role, "required_for_parent_completion": True},
+    )
+    try:
+        child = handler.store.create_workflow(
+            kind=role,
+            text=child_text,
+            workflow_id=child_id,
+            owner_session_key=parent.get("owner_session_key") or "",
+            visible_delivery=parent.get("visible_delivery") or {},
+        )
+    except FileExistsError:
+        child = handler.store.load_workflow(child_id)
+        if child.get("kind") != role:
+            raise ValueError("existing child workflow kind does not match deterministic role")
+        if child.get("owner_session_key") != (parent.get("owner_session_key") or ""):
+            raise ValueError("existing child workflow owner_session_key does not match parent")
+        if child.get("visible_delivery") != (parent.get("visible_delivery") or {}):
+            raise ValueError("existing child workflow visible_delivery does not match parent")
+        if child.get("source_request") != child_text:
+            raise ValueError("existing child workflow source_request does not match deterministic child request")
+    if child.get("parent_workflow_id") not in {None, parent["workflow_id"]}:
+        raise ValueError("child workflow is already linked to a different parent")
+    if child.get("parent_workflow_id") != parent["workflow_id"]:
+        child["parent_workflow_id"] = parent["workflow_id"]
+        handler.store.save_workflow(child)
+    _append_idempotent_event(
+        handler,
+        child_id,
+        event_type="parent_linked",
+        event_id=f"evt-parent-linked-{child_id}",
+        note="child workflow linked to goal parent",
+        payload={"parent_workflow_id": parent["workflow_id"], "child_role": role, "required_for_parent_completion": True},
+    )
+    parent_workflow = handler.store.load_workflow(parent["workflow_id"])
+    child_ids = list(parent_workflow.get("child_workflow_ids") or [])
+    if child_id not in child_ids:
+        child_ids.append(child_id)
+        parent_workflow["child_workflow_ids"] = child_ids
+        handler.store.save_workflow(parent_workflow)
+    _append_idempotent_event(
+        handler,
+        parent["workflow_id"],
+        event_type="child_workflow_created",
+        event_id=f"evt-child-created-{child_id}",
+        note="goal child workflow created or linked",
+        payload={"child_workflow_id": child_id, "child_role": role, "required_for_parent_completion": True},
+    )
+    return handler.store.load_workflow(child_id)
+
+
+def _record_child_collected(handler: GoalHandler, parent_id: str, child: dict[str, Any]) -> None:
+    _append_idempotent_event(
+        handler,
+        parent_id,
+        event_type="child_workflow_collected",
+        event_id=f"evt-child-collected-{child['workflow_id']}",
+        note="goal child workflow terminal status collected",
+        payload={
+            "child_workflow_id": child["workflow_id"],
+            "child_role": child.get("kind"),
+            "terminal_status": child.get("status"),
+            "result": (child.get("final_status") or {}).get("result"),
+        },
+    )
+
+
+def _append_idempotent_event(
+    handler: GoalHandler,
+    workflow_id: str,
+    *,
+    event_type: str,
+    event_id: str,
+    note: str,
+    payload: dict[str, Any],
+) -> None:
+    events_path = handler.store.workflow_dir(workflow_id) / "events.jsonl"
+    if events_path.exists():
+        for line in events_path.read_text(encoding="utf-8").splitlines():
+            if line.strip() and json.loads(line).get("event_id") == event_id:
+                return
+    handler.store.append_event(
+        workflow_id,
+        {
+            "schema_version": 1,
+            "event_id": event_id,
+            "workflow_id": workflow_id,
+            "event_type": event_type,
+            "created_at": now_iso(),
+            "note": note,
+            "payload": payload,
+        },
+    )
+
+
+def _record_with_child_collection(record: GoalRecord, child_collection: dict[str, Any]) -> GoalRecord:
+    child_refs = child_collection["child_workflow_refs"]
+    child_blocked = any(item["status"] == "blocked" for item in child_refs)
+    child_risks = [
+        f"{item['workflow_id']}: {risk}"
+        for item in child_refs
+        for risk in ((item.get("final_status") or {}).get("residuals") or {}).get("accepted_risks", [])
+    ]
+    child_backlog = [
+        f"{item['workflow_id']}: {entry}"
+        for item in child_refs
+        for entry in ((item.get("final_status") or {}).get("residuals") or {}).get("implementation_backlog", [])
+    ]
+    child_deferred = [
+        f"{item['workflow_id']}: {entry}"
+        for item in child_refs
+        for entry in ((item.get("final_status") or {}).get("residuals") or {}).get("deferred_scope", [])
+    ]
+    residuals = {
+        "blocking_remaining": (
+            [
+                f"Required child workflow {item['workflow_id']} ended with {item['terminal_status']}"
+                f" ({(item.get('final_status') or {}).get('stop_reason') or 'no_stop_reason'})."
+            ]
+            for item in child_refs
+            if item["status"] == "blocked"
+        ),
+        "accepted_risks": [
+            "Phase 3 collects child workflow terminal status; child visible report proof remains gated before parent reported completion.",
+            *child_risks,
+        ],
+        "implementation_backlog": [
+            "Future phases add delegated specialist adapters and visible child report-proof collection.",
+            *child_backlog,
+        ],
+        "deferred_scope": child_deferred,
+    }
+    residuals["blocking_remaining"] = [item for group in residuals["blocking_remaining"] for item in group]
+    return GoalRecord(
+        objective=record.objective,
+        non_goals=record.non_goals,
+        success_criteria=record.success_criteria,
+        assumptions=record.assumptions,
+        approval_boundaries=record.approval_boundaries,
+        slice_queue=record.slice_queue,
+        plan_accepted=record.plan_accepted,
+        evidence_completion_check=record.evidence_completion_check,
+        plan_artifact_promotion=record.plan_artifact_promotion,
+        child_workflow_refs=child_refs,
+        residuals=residuals,
+        final_report_summary=(
+            "Goal child workflow collection blocked parent completion."
+            if child_blocked
+            else "Goal created and collected required verify/conv child workflows."
+        ),
+    )
+
+
+def _child_block_reason(child_collection: dict[str, Any] | None) -> str | None:
+    if child_collection is None:
+        return None
+    if any(item["status"] == "blocked" for item in child_collection["child_workflow_refs"]):
+        return "blocked_child_workflow_failed"
+    return None
+
+
+def _child_blocked_final_status(reason: str | None, residuals: dict[str, list[str]]) -> dict[str, Any] | None:
+    if reason is None:
+        return None
+    return {
+        "result": "blocked",
+        "stop_reason": reason,
+        "done": [
+            "Created required goal child workflows",
+            "Collected child workflow terminal states",
+        ],
+        "checked": [
+            "At least one required child workflow did not produce passing execution evidence",
+            "Visible delivery remains gated by reserve-delivery/report-proof/complete-reported",
+        ],
+        "residuals": residuals,
+    }
+
+
+def _child_ref_from_workflow(child: dict[str, Any], *, role: str) -> dict[str, Any]:
+    result = (child.get("final_status") or {}).get("result")
+    status = "completed" if child.get("status") in {"completed_unreported", "reported"} and result in {"pass", "pass_with_risks"} else "blocked"
+    return {
+        "workflow_id": child["workflow_id"],
+        "kind": role,
+        "purpose": f"required {role} child workflow execution evidence",
+        "status": status,
+        "terminal_status": child.get("status"),
+        "result": result,
+        "final_status": child.get("final_status"),
+        "evidence_refs": [
+            ref
+            for evidence in (child.get("verification") or {}).get("evidence") or []
+            if isinstance(evidence, dict)
+            for ref in evidence.get("artifact_refs") or []
+        ],
+        "report_proof_ref": (child.get("visible_delivery_state") or {}).get("report_proof"),
+        "created_at": child.get("created_at"),
+    }
+
+
+def _child_request_text(parent: dict[str, Any], *, role: str) -> str:
+    text = parent.get("source_request") or parent.get("objective") or ""
+    if role == "verify":
+        return f"Verify required goal child evidence for: {text}"
+    return f"Converge required goal child execution for: {text}"
+
+
+def _child_workflow_id(parent_id: str, *, role: str, objective: str) -> str:
+    scope = json.dumps({"parent": parent_id, "role": role, "objective": objective, "attempt": 0}, sort_keys=True)
+    digest = hashlib.sha256(scope.encode("utf-8")).hexdigest()[:12]
+    return f"goal-child-{role}-{digest}"
 
 
 def render_goal_plan(record: GoalRecord) -> str:

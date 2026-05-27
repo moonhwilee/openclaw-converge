@@ -217,8 +217,8 @@ def assert_c7_3_route_retirement_plan_contract(state_root: Path) -> None:
 
     classification = {item["command"]: item["classification"] for item in route_plan["route_classification"]}
     assert_true(
-        classification["/goal"] == "replace_default_after_owner_approved_live_routing",
-        "/goal should be planned for owner-approved default replacement",
+        classification["/goal"] == "active_converge_managed_route",
+        "/goal should be active under the Converge-managed route",
     )
     assert_true(
         classification["/converge"] == "retire_or_keep_explicit_alias_message_only",

@@ -159,6 +159,38 @@ def assert_execution_required_goal_blocks_planned_children(state_root: Path) -> 
     run("validate", "--workflow-id", "goal-execution-required-blocked", state_root=state_root)
 
 
+def assert_completion_criteria_plan_only_wording_does_not_downgrade_goal(state_root: Path) -> None:
+    wf = run(
+        "goal",
+        "--text",
+        (
+            "Converge execution parity Phase 1 구현-검증-수렴 진행해줘. "
+            "목표는 Phase 1만 완료하는 것이다. "
+            "완료 기준: plan-only 케이스는 execution_required=false로 유지된다."
+        ),
+        "--workflow-id",
+        "goal-plan-only-criteria-still-execution-required",
+        "--owner-session-key",
+        "session:test",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        state_root=state_root,
+    )["workflow"]
+    assert_true(
+        wf["status"] == "failed_unreported",
+        "goal mentioning a plan-only test case should still fail closed",
+    )
+    assert_true(
+        wf["goal_state"]["execution_required"] is True,
+        "plan-only wording in completion criteria must not downgrade the whole goal",
+    )
+    assert_true(
+        wf["final_status"]["result"] == "blocked",
+        "execution-required goal with only planned child refs should be blocked",
+    )
+    run("validate", "--workflow-id", "goal-plan-only-criteria-still-execution-required", state_root=state_root)
+
+
 def assert_plan_accepted_requires_objective(state_root: Path) -> None:
     run("start", "--kind", "goal", "--text", "Manual acceptance validation", "--workflow-id", "goal-acceptance-validation", state_root=state_root)
     payload = {
@@ -447,6 +479,7 @@ def main() -> int:
         state_root = Path(tmp)
         assert_default_goal_contract(state_root)
         assert_execution_required_goal_blocks_planned_children(state_root)
+        assert_completion_criteria_plan_only_wording_does_not_downgrade_goal(state_root)
         assert_plan_accepted_requires_objective(state_root)
         assert_goal_retry_reuses_existing_plan_accepted(state_root)
         assert_goal_rejects_duplicate_preterminal_acceptance(state_root)

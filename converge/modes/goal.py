@@ -17,6 +17,14 @@ from .execution_truth import classify_execution_markers
 
 
 GOAL_PLAN_ARTIFACT_ID = "goal-promoted-plan"
+PHASE5B_PARENT_SUMMARY_MODE = "parent_summary_only"
+PHASE5B_VISIBLE_CHILD_REPORT_MODE = "visible_child_report_required"
+PHASE5B_OWNER_WAIVER_MODE = "waived_with_owner_proof"
+PHASE5B_CHILD_DELIVERY_MODES = {
+    PHASE5B_PARENT_SUMMARY_MODE,
+    PHASE5B_VISIBLE_CHILD_REPORT_MODE,
+    PHASE5B_OWNER_WAIVER_MODE,
+}
 
 
 @dataclass(frozen=True)
@@ -152,6 +160,8 @@ class GoalHandler(ModeHandler):
             state.update(child_collection["execution_markers"])
             state["child_collection_status"] = child_collection["collection_status"]
         state, residuals, block_reason = apply_execution_truth_block("goal", state, residuals=residuals)
+        if child_collection is not None:
+            state = attach_phase5b_child_delivery_state(state, residuals=residuals)
         child_block_reason = child_block_reason or _child_block_reason(child_collection)
         if existing_plan_accepted is not None and existing_plan_accepted != state["plan_accepted"]:
             raise ValueError("existing goal plan_accepted event payload does not match current accepted plan")
@@ -591,6 +601,184 @@ def _record_with_child_collection(record: GoalRecord, child_collection: dict[str
     )
 
 
+def attach_phase5b_child_delivery_state(state: dict[str, Any], *, residuals: dict[str, list[str]]) -> dict[str, Any]:
+    """Attach Phase 5B child delivery bookkeeping without launching external agents."""
+    child_refs = [dict(item) for item in state.get("child_workflow_refs") or []]
+    if not child_refs:
+        return state
+    child_ids = [item["workflow_id"] for item in child_refs]
+    collection = state.get("child_collection_status") or {}
+    collection_children = collection.get("children") or []
+    child_collection_by_id = {
+        item.get("workflow_id"): item
+        for item in collection_children
+        if isinstance(item, dict) and isinstance(item.get("workflow_id"), str)
+    }
+    transitions = []
+    child_rollups = []
+    child_report_proof_refs: list[str] = []
+    for child in child_refs:
+        child_id = child["workflow_id"]
+        mode = child.get("delivery_mode") or PHASE5B_PARENT_SUMMARY_MODE
+        if mode not in PHASE5B_CHILD_DELIVERY_MODES:
+            mode = PHASE5B_PARENT_SUMMARY_MODE
+        child["delivery_mode"] = mode
+        child["delivery_mode_reason"] = (
+            "parent owns visible delivery while preserving child residual rollup"
+            if mode == PHASE5B_PARENT_SUMMARY_MODE
+            else "child visible report proof is required before parent reported completion"
+        )
+        proof_ref = child.get("report_proof_ref")
+        proof_ref_id = _report_proof_ref_id(proof_ref)
+        if proof_ref_id:
+            child_report_proof_refs.append(proof_ref_id)
+        collection_child = child_collection_by_id.get(child_id) or {}
+        child_rollups.append(
+            {
+                "workflow_id": child_id,
+                "kind": child.get("kind"),
+                "status": child.get("status"),
+                "terminal_status": child.get("terminal_status"),
+                "result": child.get("result"),
+                "stop_reason": (child.get("final_status") or {}).get("stop_reason") or collection_child.get("stop_reason"),
+                "residuals": normalize_residuals((child.get("final_status") or {}).get("residuals")),
+                "evidence_refs": child.get("evidence_refs") or [],
+                "delivery_mode": mode,
+                "report_proof_ref": proof_ref,
+            }
+        )
+        transitions.append(
+            {
+                "workflow_id": child_id,
+                "kind": child.get("kind"),
+                "from_mode": "unassigned",
+                "to_mode": mode,
+                "reason": child["delivery_mode_reason"],
+                "report_proof_ref": proof_ref,
+            }
+        )
+    updated = dict(state)
+    updated["child_workflow_refs"] = child_refs
+    updated["child_residual_rollup"] = {
+        "required_child_workflow_ids": child_ids,
+        "collected_child_workflow_ids": list(collection.get("collected_child_workflow_ids") or child_ids),
+        "children": child_rollups,
+        "parent_residuals": normalize_residuals(residuals),
+        "complete": collection.get("complete") is True,
+    }
+    updated["child_delivery_mode_transitions"] = transitions
+    updated["duplicate_report_guard"] = {
+        "guard_id": f"duplicate-child-visible-report-guard:{updated.get('final_plan_artifact_id')}",
+        "parent_owns_visible_delivery": True,
+        "parent_may_summarize_children": True,
+        "parent_must_not_duplicate_child_reports": True,
+        "child_workflow_ids": child_ids,
+        "child_report_proof_refs": child_report_proof_refs,
+        "duplicate_child_report_attempts": [],
+        "valid": True,
+    }
+    return updated
+
+
+def phase5b_child_delivery_mode(state: dict[str, Any], child_id: str) -> str | None:
+    for transition in state.get("child_delivery_mode_transitions") or []:
+        if isinstance(transition, dict) and transition.get("workflow_id") == child_id:
+            return transition.get("to_mode")
+    for child in state.get("child_workflow_refs") or []:
+        if isinstance(child, dict) and child.get("workflow_id") == child_id:
+            return child.get("delivery_mode")
+    return None
+
+
+def validate_phase5b_child_delivery_state(state: dict[str, Any], *, terminal: bool) -> None:
+    if state.get("execution_performed") is not True or state.get("execution_capability") != "child_workflows":
+        return
+    child_refs = state.get("child_workflow_refs") or []
+    child_ids = [item.get("workflow_id") for item in child_refs if isinstance(item, dict)]
+    if any(not isinstance(child_id, str) or not child_id for child_id in child_ids) or len(child_ids) != len(set(child_ids)):
+        raise ValueError("goal Phase 5B child workflow ids must be unique non-empty strings")
+    rollup = state.get("child_residual_rollup")
+    if not isinstance(rollup, dict) or rollup.get("complete") is not True:
+        raise ValueError("goal Phase 5B requires complete child_residual_rollup")
+    if sorted(rollup.get("required_child_workflow_ids") or []) != sorted(child_ids):
+        raise ValueError("goal Phase 5B child_residual_rollup required ids must match child refs")
+    if sorted(rollup.get("collected_child_workflow_ids") or []) != sorted(child_ids):
+        raise ValueError("goal Phase 5B child_residual_rollup collected ids must match child refs")
+    rollup_children = rollup.get("children") or []
+    rollup_ids = [item.get("workflow_id") for item in rollup_children if isinstance(item, dict)]
+    if sorted(rollup_ids) != sorted(child_ids):
+        raise ValueError("goal Phase 5B child_residual_rollup children must match child refs")
+    transitions = state.get("child_delivery_mode_transitions")
+    if not isinstance(transitions, list) or len(transitions) != len(child_ids):
+        raise ValueError("goal Phase 5B requires one child_delivery_mode transition per child")
+    transition_ids = [item.get("workflow_id") for item in transitions if isinstance(item, dict)]
+    if sorted(transition_ids) != sorted(child_ids) or len(transition_ids) != len(set(transition_ids)):
+        raise ValueError("goal Phase 5B child_delivery_mode transitions must match child refs uniquely")
+    transition_by_id = {item["workflow_id"]: item for item in transitions if isinstance(item, dict)}
+    rollup_by_id = {item["workflow_id"]: item for item in rollup_children if isinstance(item, dict) and item.get("workflow_id") in child_ids}
+    for child in child_refs:
+        child_id = child["workflow_id"]
+        transition = transition_by_id[child_id]
+        mode = transition.get("to_mode")
+        if mode not in PHASE5B_CHILD_DELIVERY_MODES:
+            raise ValueError("goal Phase 5B child delivery mode is invalid")
+        if transition.get("from_mode") != "unassigned":
+            raise ValueError("goal Phase 5B child delivery mode transition must record explicit from_mode")
+        if child.get("delivery_mode") != mode:
+            raise ValueError("goal Phase 5B child delivery mode transition must match child ref")
+        rollup_child = rollup_by_id[child_id]
+        if rollup_child.get("delivery_mode") != mode:
+            raise ValueError("goal Phase 5B child residual rollup delivery mode must match transition")
+        if normalize_residuals(rollup_child.get("residuals")) != normalize_residuals((child.get("final_status") or {}).get("residuals")):
+            raise ValueError("goal Phase 5B child residual rollup must preserve child residuals")
+        proof_ref = child.get("report_proof_ref")
+        proof_ref_id = _report_proof_ref_id(proof_ref)
+        if mode == PHASE5B_VISIBLE_CHILD_REPORT_MODE:
+            if child.get("terminal_status") != "reported" or not proof_ref_id:
+                raise ValueError("goal Phase 5B visible_child_report_required requires child reported proof")
+        elif mode == PHASE5B_PARENT_SUMMARY_MODE:
+            if proof_ref not in {None, ""}:
+                raise ValueError("goal Phase 5B parent_summary_only must not carry child report proof")
+        elif mode == PHASE5B_OWNER_WAIVER_MODE:
+            if not isinstance(transition.get("owner_waiver_ref"), str) or not transition["owner_waiver_ref"]:
+                raise ValueError("goal Phase 5B waived child delivery requires owner_waiver_ref")
+    guard = state.get("duplicate_report_guard")
+    if not isinstance(guard, dict) or guard.get("valid") is not True:
+        raise ValueError("goal Phase 5B requires valid duplicate_report_guard")
+    if sorted(guard.get("child_workflow_ids") or []) != sorted(child_ids):
+        raise ValueError("goal Phase 5B duplicate_report_guard child ids must match child refs")
+    if guard.get("parent_must_not_duplicate_child_reports") is not True:
+        raise ValueError("goal Phase 5B duplicate_report_guard must block child report duplication")
+    proof_refs = guard.get("child_report_proof_refs") or []
+    if any(not isinstance(ref, str) or not ref for ref in proof_refs) or len(proof_refs) != len(set(proof_refs)):
+        raise ValueError("goal Phase 5B duplicate_report_guard child report proofs must be unique")
+    expected_proof_refs = sorted(
+        _report_proof_ref_id(child.get("report_proof_ref"))
+        for child in child_refs
+        if _report_proof_ref_id(child.get("report_proof_ref"))
+    )
+    if sorted(proof_refs) != expected_proof_refs:
+        raise ValueError("goal Phase 5B duplicate_report_guard proof refs must match child refs")
+    duplicate_attempts = guard.get("duplicate_child_report_attempts")
+    if duplicate_attempts not in ([], None):
+        raise ValueError("goal Phase 5B duplicate child visible report attempts are blocked")
+    if terminal and normalize_residuals(rollup.get("parent_residuals")) != normalize_residuals(state.get("residuals")):
+        raise ValueError("goal Phase 5B child residual rollup parent residuals must match goal residuals")
+
+
+def _report_proof_ref_id(proof_ref: Any) -> str | None:
+    if isinstance(proof_ref, str) and proof_ref:
+        return proof_ref
+    if isinstance(proof_ref, dict):
+        event_id = proof_ref.get("event_id")
+        if isinstance(event_id, str) and event_id:
+            return event_id
+        delivery_message_id = proof_ref.get("delivery_message_id")
+        if isinstance(delivery_message_id, str) and delivery_message_id:
+            return delivery_message_id
+    return None
+
+
 def _child_block_reason(child_collection: dict[str, Any] | None) -> str | None:
     if child_collection is None:
         return None
@@ -777,6 +965,7 @@ def validate_goal_state(
     residuals = normalize_residuals(state["residuals"])
     if final_status is not None and normalize_residuals(final_status.get("residuals")) != residuals:
         raise ValueError("goal_state residuals must match final_status.residuals")
+    validate_phase5b_child_delivery_state(state, terminal=terminal)
     return residuals
 
 

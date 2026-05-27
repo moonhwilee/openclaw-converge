@@ -10,9 +10,9 @@ from typing import Any
 
 
 try:
-    from smoke_helpers import VISIBLE_DELIVERY, assert_phase5a_contract, assert_phase5a_accepted_change_stale_rejected, assert_phase5a_freshness_rejected, assert_phase5a_missing_gate_rejected, assert_phase5a_stale_hash_rejected, assert_phase5a_terminal_status_rejected, assert_true, events, run, run_fail, workflow, write_workflow
+    from smoke_helpers import VISIBLE_DELIVERY, assert_phase5a_contract, assert_phase5a_accepted_change_stale_rejected, assert_phase5a_freshness_rejected, assert_phase5a_missing_gate_rejected, assert_phase5a_stale_hash_rejected, assert_phase5a_terminal_status_rejected, assert_true, events, run, run_fail, workflow, write_events, write_workflow
 except ModuleNotFoundError:
-    from tests.smoke.smoke_helpers import VISIBLE_DELIVERY, assert_phase5a_contract, assert_phase5a_accepted_change_stale_rejected, assert_phase5a_freshness_rejected, assert_phase5a_missing_gate_rejected, assert_phase5a_stale_hash_rejected, assert_phase5a_terminal_status_rejected, assert_true, events, run, run_fail, workflow, write_workflow
+    from tests.smoke.smoke_helpers import VISIBLE_DELIVERY, assert_phase5a_contract, assert_phase5a_accepted_change_stale_rejected, assert_phase5a_freshness_rejected, assert_phase5a_missing_gate_rejected, assert_phase5a_stale_hash_rejected, assert_phase5a_terminal_status_rejected, assert_true, events, run, run_fail, workflow, write_events, write_workflow
 from converge.modes.goal import GoalRecord, _child_workflow_id, build_goal_record, render_goal_plan, validate_goal_state  # noqa: E402
 from converge.artifacts import sha256_file  # noqa: E402
 
@@ -60,6 +60,28 @@ def report_workflow(state_root: Path, workflow_id: str) -> dict[str, Any]:
         VISIBLE_DELIVERY,
         state_root=state_root,
     )
+
+
+def persist_goal_state(state_root: Path, workflow_id: str, wf: dict[str, Any]) -> None:
+    write_workflow(state_root, workflow_id, wf)
+    records = events(state_root, workflow_id)
+    for record in reversed(records):
+        payload = record.get("payload") or {}
+        state_update = payload.get("state_update") if isinstance(payload, dict) else None
+        if isinstance(state_update, dict) and isinstance(state_update.get("mode_state_update"), dict):
+            state_update["mode_state_update"] = wf["goal_state"]
+            write_events(state_root, workflow_id, records)
+            return
+    raise AssertionError("goal terminal state_update not found")
+
+
+def set_child_collected_event_status(state_root: Path, workflow_id: str, child_id: str, terminal_status: str) -> None:
+    records = events(state_root, workflow_id)
+    for record in records:
+        payload = record.get("payload") or {}
+        if record.get("event_type") == "child_workflow_collected" and payload.get("child_workflow_id") == child_id:
+            payload["terminal_status"] = terminal_status
+    write_events(state_root, workflow_id, records)
 
 
 def assert_default_goal_contract(state_root: Path) -> None:
@@ -232,6 +254,26 @@ def assert_execution_required_goal_collects_child_evidence(state_root: Path) -> 
     assert_true(sorted(goal_state["execution_evidence_refs"]) == sorted(wf["child_workflow_ids"]), "goal evidence refs should match real child ids")
     assert_true({item["status"] for item in goal_state["child_workflow_refs"]} == {"completed"}, "child refs should be completed")
     assert_true({item["kind"] for item in goal_state["child_workflow_refs"]} == {"verify", "conv"}, "goal should create verify and conv children")
+    assert_true(
+        sorted(goal_state["child_residual_rollup"]["required_child_workflow_ids"]) == sorted(wf["child_workflow_ids"]),
+        "Phase 5B should record required child residual rollup ids",
+    )
+    assert_true(
+        sorted(item["workflow_id"] for item in goal_state["child_residual_rollup"]["children"]) == sorted(wf["child_workflow_ids"]),
+        "Phase 5B should roll each child into parent state",
+    )
+    assert_true(
+        {item["to_mode"] for item in goal_state["child_delivery_mode_transitions"]} == {"parent_summary_only"},
+        "Phase 5B should make parent_summary_only delivery transitions explicit",
+    )
+    assert_true(
+        {item["delivery_mode"] for item in goal_state["child_workflow_refs"]} == {"parent_summary_only"},
+        "Phase 5B child refs should carry explicit delivery mode",
+    )
+    assert_true(
+        goal_state["duplicate_report_guard"]["parent_must_not_duplicate_child_reports"] is True,
+        "Phase 5B should attach duplicate child report guard",
+    )
     for child_id in wf["child_workflow_ids"]:
         child = workflow(state_root, child_id)
         assert_true(child["parent_workflow_id"] == wf["workflow_id"], "child should point back to parent")
@@ -245,6 +287,55 @@ def assert_execution_required_goal_collects_child_evidence(state_root: Path) -> 
     assert_true(Path(goal_state["final_plan_artifact_path"]).read_text(encoding="utf-8") == render_goal_plan(_goal_record_from_state(goal_state)), "goal artifact should render from collected child state")
     run("validate", "--workflow-id", "goal-execution-required-real-children", state_root=state_root)
     assert_phase5a_contract(wf, "goal_state")
+
+    missing_rollup = json.loads(json.dumps(wf))
+    del missing_rollup["goal_state"]["child_residual_rollup"]
+    persist_goal_state(state_root, "goal-execution-required-real-children", missing_rollup)
+    result = run_fail("validate", "--workflow-id", "goal-execution-required-real-children", state_root=state_root)
+    assert_true("child_residual_rollup" in result["error"], "Phase 5B should reject missing child residual rollup")
+    persist_goal_state(state_root, "goal-execution-required-real-children", wf)
+
+    missing_transition = json.loads(json.dumps(wf))
+    missing_transition["goal_state"]["child_delivery_mode_transitions"].pop()
+    persist_goal_state(state_root, "goal-execution-required-real-children", missing_transition)
+    result = run_fail("validate", "--workflow-id", "goal-execution-required-real-children", state_root=state_root)
+    assert_true("child_delivery_mode" in result["error"], "Phase 5B should reject missing delivery mode transition")
+    persist_goal_state(state_root, "goal-execution-required-real-children", wf)
+
+    visible_without_proof = json.loads(json.dumps(wf))
+    child_id = visible_without_proof["child_workflow_ids"][0]
+    for item in visible_without_proof["goal_state"]["child_workflow_refs"]:
+        if item["workflow_id"] == child_id:
+            item["delivery_mode"] = "visible_child_report_required"
+    for item in visible_without_proof["goal_state"]["child_delivery_mode_transitions"]:
+        if item["workflow_id"] == child_id:
+            item["to_mode"] = "visible_child_report_required"
+            item["reason"] = "child visible report proof is required before parent reported completion"
+    for item in visible_without_proof["goal_state"]["child_residual_rollup"]["children"]:
+        if item["workflow_id"] == child_id:
+            item["delivery_mode"] = "visible_child_report_required"
+    persist_goal_state(state_root, "goal-execution-required-real-children", visible_without_proof)
+    result = run_fail("validate", "--workflow-id", "goal-execution-required-real-children", state_root=state_root)
+    assert_true("visible_child_report_required" in result["error"], "Phase 5B should reject visible-child mode without child proof")
+    persist_goal_state(state_root, "goal-execution-required-real-children", wf)
+
+    parent_summary_with_child_proof = json.loads(json.dumps(wf))
+    parent_summary_with_child_proof["goal_state"]["child_workflow_refs"][0]["report_proof_ref"] = "child-proof-should-not-exist"
+    parent_summary_with_child_proof["goal_state"]["child_residual_rollup"]["children"][0]["report_proof_ref"] = "child-proof-should-not-exist"
+    persist_goal_state(state_root, "goal-execution-required-real-children", parent_summary_with_child_proof)
+    result = run_fail("validate", "--workflow-id", "goal-execution-required-real-children", state_root=state_root)
+    assert_true("parent_summary_only" in result["error"], "Phase 5B should reject child proof under parent_summary_only")
+    persist_goal_state(state_root, "goal-execution-required-real-children", wf)
+
+    duplicate_attempt = json.loads(json.dumps(wf))
+    duplicate_attempt["goal_state"]["duplicate_report_guard"]["duplicate_child_report_attempts"] = [
+        {"child_workflow_id": wf["child_workflow_ids"][0], "report_proof_ref": "duplicate-proof"}
+    ]
+    persist_goal_state(state_root, "goal-execution-required-real-children", duplicate_attempt)
+    result = run_fail("validate", "--workflow-id", "goal-execution-required-real-children", state_root=state_root)
+    assert_true("duplicate child visible report attempts" in result["error"], "Phase 5B should reject duplicate child report attempts")
+    persist_goal_state(state_root, "goal-execution-required-real-children", wf)
+
     first_child_gate = f"child:{wf['child_workflow_ids'][0]}"
     assert_phase5a_missing_gate_rejected(
         state_root,
@@ -393,23 +484,6 @@ def assert_execution_required_goal_collects_child_evidence(state_root: Path) -> 
         json.dumps(wf["final_status"]),
         state_root=state_root,
     )
-    result = run_fail(
-        "complete-reported",
-        "--workflow-id",
-        "goal-execution-required-real-children",
-        "--reservation-id",
-        reservation["reservation_id"],
-        "--delivery-message-id",
-        "telegram-message-parent-goal",
-        "--visible-delivery",
-        VISIBLE_DELIVERY,
-        state_root=state_root,
-    )
-    assert_true("reported goal cannot have unreported required child workflows" in result["error"], "reported parent should require reported children")
-
-    for child_id in wf["child_workflow_ids"]:
-        reported_child = report_workflow(state_root, child_id)
-        assert_true(reported_child["status"] == "reported", "child complete-reported should mark child reported")
     reported_parent = run(
         "complete-reported",
         "--workflow-id",
@@ -422,7 +496,211 @@ def assert_execution_required_goal_collects_child_evidence(state_root: Path) -> 
         VISIBLE_DELIVERY,
         state_root=state_root,
     )
-    assert_true(reported_parent["status"] == "reported", "reported parent should pass after required children are reported")
+    assert_true(
+        reported_parent["status"] == "reported",
+        "Phase 5B parent_summary_only should allow parent report while children remain terminal-unreported",
+    )
+    for child_id in wf["child_workflow_ids"]:
+        child = workflow(state_root, child_id)
+        assert_true(child["status"] == "completed_unreported", "parent_summary_only should not silently report children")
+    result = run(
+        "reserve-delivery",
+        "--workflow-id",
+        wf["child_workflow_ids"][0],
+        "--terminal-status",
+        "completed",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        "--summary",
+        "child report should be blocked after parent summary",
+        "--final-status",
+        json.dumps(workflow(state_root, wf["child_workflow_ids"][0])["final_status"]),
+        state_root=state_root,
+    )
+    assert_true(
+        result["send_authorized"] is False and result["reason"] == "duplicate_child_report_guard",
+        "Phase 5B should block child visible reports after parent_summary_only parent report",
+    )
+    child = workflow(state_root, wf["child_workflow_ids"][0])
+    child["status"] = "reported"
+    child["phase"] = "reported"
+    child.setdefault("visible_delivery_state", {})["reported"] = {
+        "reservation_id": "forced-child-reservation",
+        "delivery_message_id": "forced-child-message",
+        "visible_delivery": VISIBLE_DELIVERY,
+        "reported_at": "2026-01-01T00:00:00Z",
+        "report_authority": "test",
+        "source_of_truth": "test",
+    }
+    write_workflow(state_root, child["workflow_id"], child)
+    result = run_fail("validate", "--workflow-id", "goal-execution-required-real-children", state_root=state_root)
+    assert_true("parent_summary_only child must not be separately reported" in result["error"], "Phase 5B should detect forced child report drift")
+
+
+def assert_phase5b_visible_child_mode_positive_path(state_root: Path) -> None:
+    target = state_root / "phase5b-visible-child-target.txt"
+    target.write_text("phase 5b visible child delivery target\n", encoding="utf-8")
+    wf = run(
+        "goal",
+        "--text",
+        f"Implement execution-required goal workflow for {target}",
+        "--workflow-id",
+        "goal-phase5b-visible-child",
+        "--owner-session-key",
+        "session:test",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        state_root=state_root,
+    )["workflow"]
+    for child_id in wf["child_workflow_ids"]:
+        reported_child = report_workflow(state_root, child_id)
+        assert_true(reported_child["status"] == "reported", "visible_child_report_required setup should report child")
+    wf = workflow(state_root, "goal-phase5b-visible-child")
+    proof_refs = []
+    for child_ref in wf["goal_state"]["child_workflow_refs"]:
+        child = workflow(state_root, child_ref["workflow_id"])
+        proof = child["visible_delivery_state"]["report_proof"]
+        child_ref["terminal_status"] = "reported"
+        child_ref["delivery_mode"] = "visible_child_report_required"
+        child_ref["delivery_mode_reason"] = "child visible report proof is required before parent reported completion"
+        child_ref["report_proof_ref"] = proof
+        proof_refs.append(proof["delivery_message_id"])
+        set_child_collected_event_status(state_root, wf["workflow_id"], child_ref["workflow_id"], "reported")
+    for item in wf["goal_state"]["child_collection_status"]["children"]:
+        child = workflow(state_root, item["workflow_id"])
+        item["terminal_status"] = "reported"
+        item["report_proof_ref"] = child["visible_delivery_state"]["report_proof"]
+    for item in wf["goal_state"]["child_residual_rollup"]["children"]:
+        child = workflow(state_root, item["workflow_id"])
+        item["terminal_status"] = "reported"
+        item["delivery_mode"] = "visible_child_report_required"
+        item["report_proof_ref"] = child["visible_delivery_state"]["report_proof"]
+    for item in wf["goal_state"]["child_delivery_mode_transitions"]:
+        child = workflow(state_root, item["workflow_id"])
+        item["to_mode"] = "visible_child_report_required"
+        item["reason"] = "child visible report proof is required before parent reported completion"
+        item["report_proof_ref"] = child["visible_delivery_state"]["report_proof"]
+    wf["goal_state"]["duplicate_report_guard"]["child_report_proof_refs"] = sorted(proof_refs)
+    persist_goal_state(state_root, wf["workflow_id"], wf)
+    run("validate", "--workflow-id", wf["workflow_id"], state_root=state_root)
+    reservation = run(
+        "reserve-delivery",
+        "--workflow-id",
+        wf["workflow_id"],
+        "--terminal-status",
+        "completed",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        "--summary",
+        "reserve visible-child parent goal delivery",
+        "--final-status",
+        json.dumps(wf["final_status"]),
+        state_root=state_root,
+    )
+    reported = run(
+        "complete-reported",
+        "--workflow-id",
+        wf["workflow_id"],
+        "--reservation-id",
+        reservation["reservation_id"],
+        "--delivery-message-id",
+        "telegram-message-phase5b-visible-parent",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        state_root=state_root,
+    )
+    assert_true(reported["status"] == "reported", "visible_child_report_required should allow parent report after children report")
+
+
+def assert_phase5b_waived_child_mode_requires_owner_proof(state_root: Path) -> None:
+    target = state_root / "phase5b-waived-child-target.txt"
+    target.write_text("phase 5b waived child delivery target\n", encoding="utf-8")
+    wf = run(
+        "goal",
+        "--text",
+        f"Implement execution-required goal workflow for {target}",
+        "--workflow-id",
+        "goal-phase5b-waived-child",
+        "--owner-session-key",
+        "session:test",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        state_root=state_root,
+    )["workflow"]
+    waived = json.loads(json.dumps(wf))
+    child_id = waived["child_workflow_ids"][0]
+    for item in waived["goal_state"]["child_workflow_refs"]:
+        if item["workflow_id"] == child_id:
+            item["delivery_mode"] = "waived_with_owner_proof"
+            item["report_proof_ref"] = None
+    for item in waived["goal_state"]["child_residual_rollup"]["children"]:
+        if item["workflow_id"] == child_id:
+            item["delivery_mode"] = "waived_with_owner_proof"
+            item["report_proof_ref"] = None
+    for item in waived["goal_state"]["child_delivery_mode_transitions"]:
+        if item["workflow_id"] == child_id:
+            item["to_mode"] = "waived_with_owner_proof"
+            item["report_proof_ref"] = None
+            item["owner_waiver_ref"] = "evt-phase5b-child-waiver"
+    waived["goal_state"]["duplicate_report_guard"]["child_report_proof_refs"] = sorted(
+        proof["delivery_message_id"]
+        for proof in (
+            item.get("report_proof_ref")
+            for item in waived["goal_state"]["child_workflow_refs"]
+        )
+        if isinstance(proof, dict)
+    )
+    persist_goal_state(state_root, waived["workflow_id"], waived)
+    result = run_fail("validate", "--workflow-id", waived["workflow_id"], state_root=state_root)
+    assert_true("owner_decision" in result["error"], "waived_with_owner_proof should require durable owner waiver event")
+    waiver_events = events(state_root, waived["workflow_id"])
+    waiver_events.append(
+        {
+            "schema_version": 1,
+            "event_id": "evt-phase5b-child-waiver",
+            "workflow_id": waived["workflow_id"],
+            "event_type": "owner_decision",
+            "created_at": "2026-01-01T00:00:00Z",
+            "note": "Phase 5B child visible report waiver",
+            "payload": {
+                "decision": "waive_child_visible_report",
+                "child_workflow_id": child_id,
+                "reason": "owner accepted parent summary delivery",
+                "residual_handling": "parent child_residual_rollup preserves residuals",
+            },
+        }
+    )
+    write_events(state_root, waived["workflow_id"], waiver_events)
+    run("validate", "--workflow-id", waived["workflow_id"], state_root=state_root)
+    reservation = run(
+        "reserve-delivery",
+        "--workflow-id",
+        waived["workflow_id"],
+        "--terminal-status",
+        "completed",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        "--summary",
+        "reserve waived-child parent goal delivery",
+        "--final-status",
+        json.dumps(waived["final_status"]),
+        state_root=state_root,
+    )
+    reported = run(
+        "complete-reported",
+        "--workflow-id",
+        waived["workflow_id"],
+        "--reservation-id",
+        reservation["reservation_id"],
+        "--delivery-message-id",
+        "telegram-message-phase5b-waived-parent",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        state_root=state_root,
+    )
+    assert_true(reported["status"] == "reported", "waived_with_owner_proof should allow parent report with unreported child")
+    child = workflow(state_root, child_id)
+    assert_true(child["status"] == "completed_unreported", "waived_with_owner_proof should not silently report child")
 
 
 def assert_goal_child_ids_handle_long_parent_ids(state_root: Path) -> None:
@@ -803,6 +1081,8 @@ def main() -> int:
         assert_default_goal_contract(state_root)
         assert_execution_required_goal_blocks_planned_children(state_root)
         assert_execution_required_goal_collects_child_evidence(state_root)
+        assert_phase5b_visible_child_mode_positive_path(state_root)
+        assert_phase5b_waived_child_mode_requires_owner_proof(state_root)
         assert_goal_child_ids_handle_long_parent_ids(state_root)
         assert_goal_does_not_collect_nonterminal_existing_child(state_root)
         assert_completion_criteria_plan_only_wording_does_not_downgrade_goal(state_root)

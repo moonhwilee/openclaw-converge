@@ -19,7 +19,17 @@ from .messages import VALID_VERDICTS, lint_verdict_residuals, normalize_residual
 from .modes.conv import CONV_REPORT_ARTIFACT_ID, ConvHandler, ConvRecord, ConvRound, render_conv_report, validate_conv_state
 from .modes.conv_execution import CONV_LOCAL_RUNNER_REF, CONV_ROUND_EXECUTION_ARTIFACT_ID
 from .modes.evidence_contract import validate_phase5a_evidence_contract
-from .modes.goal import GOAL_PLAN_ARTIFACT_ID, GoalHandler, GoalRecord, render_goal_plan, validate_goal_state
+from .modes.goal import (
+    GOAL_PLAN_ARTIFACT_ID,
+    PHASE5B_PARENT_SUMMARY_MODE,
+    PHASE5B_OWNER_WAIVER_MODE,
+    GoalHandler,
+    GoalRecord,
+    phase5b_child_delivery_mode,
+    render_goal_plan,
+    validate_goal_state,
+    validate_phase5b_child_delivery_state,
+)
 from .modes.plan import PlanHandler
 from .modes.verify import VERIFY_REPORT_ARTIFACT_ID, VerifyHandler, VerifyRecord, render_verify_report
 from .modes.specialist_panel import SPECIALIST_REVIEW_RUNNER_REF, load_specialist_packet, specialist_artifact_id, validate_specialist_state
@@ -354,6 +364,10 @@ def cmd_reserve_delivery(args: argparse.Namespace) -> int:
     _validate_delivery_lease_seconds(args.lease_seconds)
     store = WorkflowStore(args.state_root)
     workflow = store.load_workflow(args.workflow_id)
+    child_report_block = _child_visible_report_block_reason(store, workflow)
+    if child_report_block:
+        print_json(_delivery_no_send_payload(args, reason="duplicate_child_report_guard", terminal_status=workflow.get("status"), error=child_report_block))
+        return 0
     route_mismatch = _delivery_route_mismatch(workflow, args.visible_delivery)
     if route_mismatch:
         print_json(_delivery_no_send_payload(args, reason="visible_delivery_mismatch", error=route_mismatch))
@@ -1089,6 +1103,9 @@ def _record_report_proof(
     recorded_at = now_iso()
     with store.lock(workflow_id):
         workflow = store.load_workflow(workflow_id)
+        child_report_block = _child_visible_report_block_reason(store, workflow)
+        if child_report_block:
+            raise ValueError(child_report_block)
         existing = workflow.setdefault("visible_delivery_state", {}).get("report_proof")
         if existing:
             events = _workflow_events(store, workflow_id)
@@ -1734,6 +1751,8 @@ def _validate_goal_state_integrity(store: WorkflowStore, workflow: dict[str, Any
     events = _read_workflow_events(store, workflow["workflow_id"])
     if state.get("execution_performed") is True:
         _validate_goal_child_execution(store, workflow, state, events=events)
+        validate_phase5b_child_delivery_state(state, terminal=terminal_goal)
+        _validate_phase5b_owner_waiver_events(state, events)
     if terminal_goal:
         validate_phase5a_evidence_contract("goal", workflow=workflow, state=state)
     plan_accepted_events = [
@@ -1936,8 +1955,16 @@ def _validate_goal_child_execution(
             raise ValueError("goal child parent_linked child_role must match child ref")
         if child_linked_payload.get("required_for_parent_completion") is not True:
             raise ValueError("goal child parent_linked must mark required_for_parent_completion=true")
-        if workflow.get("status") == "reported" and child.get("status") != "reported":
-            raise ValueError("reported goal cannot have unreported required child workflows")
+        child_delivery_mode = phase5b_child_delivery_mode(state, child_id)
+        if workflow.get("status") == "reported":
+            if child_delivery_mode == PHASE5B_PARENT_SUMMARY_MODE:
+                if child.get("status") == "reported":
+                    raise ValueError("reported goal parent_summary_only child must not be separately reported")
+            elif child_delivery_mode == PHASE5B_OWNER_WAIVER_MODE:
+                if child.get("status") == "reported":
+                    raise ValueError("reported goal waived child must not be separately reported")
+            elif child.get("status") != "reported":
+                raise ValueError("reported goal cannot have unreported required child workflows")
 
 
 def _expected_goal_child_request(parent: dict[str, Any], *, role: str) -> str:
@@ -1974,6 +2001,59 @@ def _validate_reported_goal_child_integrity(store: WorkflowStore, workflow: dict
     if not isinstance(state, dict) or state.get("execution_performed") is not True:
         return
     _validate_goal_child_execution(store, workflow, state, events=_read_workflow_events(store, workflow["workflow_id"]))
+
+
+def _validate_phase5b_owner_waiver_events(state: dict[str, Any], events: list[dict[str, Any]]) -> None:
+    transitions = state.get("child_delivery_mode_transitions") or []
+    waiver_transitions = [
+        transition
+        for transition in transitions
+        if isinstance(transition, dict) and transition.get("to_mode") == "waived_with_owner_proof"
+    ]
+    if not waiver_transitions:
+        return
+    events_by_id = {
+        event.get("event_id"): event
+        for event in events
+        if isinstance(event, dict) and isinstance(event.get("event_id"), str)
+    }
+    for transition in waiver_transitions:
+        waiver_ref = transition.get("owner_waiver_ref")
+        event = events_by_id.get(waiver_ref)
+        if not isinstance(event, dict) or event.get("event_type") != "owner_decision":
+            raise ValueError("goal Phase 5B waived child delivery requires matching owner_decision event")
+        payload = event.get("payload") or {}
+        if payload.get("decision") != "waive_child_visible_report":
+            raise ValueError("goal Phase 5B owner waiver decision must waive child visible report")
+        if payload.get("child_workflow_id") != transition.get("workflow_id"):
+            raise ValueError("goal Phase 5B owner waiver child_workflow_id must match transition")
+        if not isinstance(payload.get("reason"), str) or not payload["reason"]:
+            raise ValueError("goal Phase 5B owner waiver requires reason")
+        if not isinstance(payload.get("residual_handling"), str) or not payload["residual_handling"]:
+            raise ValueError("goal Phase 5B owner waiver requires residual_handling")
+
+
+def _child_visible_report_block_reason(store: WorkflowStore, workflow: dict[str, Any]) -> str | None:
+    parent_id = workflow.get("parent_workflow_id")
+    if not isinstance(parent_id, str) or not parent_id:
+        return None
+    if workflow.get("status") not in {"completed_unreported", "failed_unreported"}:
+        return None
+    try:
+        parent = store.load_workflow(parent_id)
+    except FileNotFoundError:
+        return None
+    if parent.get("kind") != "goal" or parent.get("status") != "reported":
+        return None
+    state = parent.get("goal_state")
+    if not isinstance(state, dict):
+        return None
+    if phase5b_child_delivery_mode(state, workflow["workflow_id"]) != PHASE5B_PARENT_SUMMARY_MODE:
+        return None
+    guard = state.get("duplicate_report_guard")
+    if isinstance(guard, dict) and guard.get("parent_must_not_duplicate_child_reports") is True:
+        return "Phase 5B duplicate_report_guard blocks child visible report after parent_summary_only parent report"
+    return None
 
 
 def _read_workflow_events(store: WorkflowStore, workflow_id: str) -> list[dict[str, Any]]:

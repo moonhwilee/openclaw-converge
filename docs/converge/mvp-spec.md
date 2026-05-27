@@ -1,8 +1,9 @@
 # Converge MVP Spec
 
-This document defines the first implementable Converge system. It is a product
-spec for a new managed workflow layer, not a change to the current GoalFlow,
-`/verify`, or `/conv` behavior.
+This document defines the first implementable Converge system. It began as a
+new managed workflow layer beside the current GoalFlow, `/verify`, and `/conv`
+behavior. After C6, the C7 target is canonical command replacement and legacy
+retirement, not long-term coexistence.
 
 ## Decision
 
@@ -16,8 +17,8 @@ Build Converge as a new recoverable workflow runtime with typed modes:
 
 The existing GoalFlow plugin and current verification-convergence skill remain
 available during MVP development. Converge can reference their concepts and test
-cases, but it must not silently replace the current slash commands until the new
-runtime has recovery smoke tests.
+cases, but it must not silently replace the current slash commands. Replacement
+happens only through the C7 command-routing and retirement plan.
 
 ## Goals
 
@@ -39,9 +40,9 @@ runtime has recovery smoke tests.
 ## Non-Goals
 
 - Do not auto-recover arbitrary prompts that were not started through Converge.
-- Do not rewrite the current GoalFlow plugin in the first slice.
-- Do not replace the current `/verify` and `/conv` skill until Converge passes
-  its own recovery tests.
+- Do not rewrite the current GoalFlow plugin in the early slices.
+- Do not replace the current `/goal`, `/verify`, and `/conv` routes until
+  Converge passes its own recovery, delivery-proof, and command-routing gates.
 - Do not build a generic DSL, distributed job engine, database service, or
   multi-user workflow platform in the MVP.
 - Do not make Converge own Telegram or external message delivery. It records
@@ -65,15 +66,18 @@ slices remain inside the accepted objective, non-goals, success criteria, and
 approval boundaries. Slice boundaries are evidence and checkpoint boundaries,
 not user approval boundaries by default.
 
-Converge does not make Work Ledger obsolete in the MVP. The boundary is:
+Converge is distributed as the recovery/report-proof owner for managed
+Converge workflows. Earlier MVP notes allowed a separate Work Ledger layer
+during development, but that path is now retired locally and must not be
+presented as a product fallback. The current boundary is:
 
 - Converge owns mode semantics, workflow artifacts, round/slice context, and
-  mode-specific recovery instructions.
-- Work Ledger remains the current outer recovery/report-proof layer used by the
-  main session while Converge is being developed.
-- A later productized release may share or reuse Ledger internals, but the MVP
-  must expose a clean Converge CLI and state layout first so mode behavior can
-  be tested independently.
+  mode-specific recovery/report-proof instructions.
+- Work Ledger is not a product dependency, fallback, watchdog, recovery source,
+  or completion-proof authority for managed Converge workflows.
+- Historical records may remain readable only as non-authoritative context.
+- The MVP exposes a clean Converge CLI and state layout so mode behavior can be
+  tested independently.
 
 The runtime has four layers:
 
@@ -103,7 +107,11 @@ artifacts, and child workflow references. Phase C4.5 consolidated smoke helpers
 and documentation boundaries without changing production runtime behavior. Phase
 C5 added local recovery inspection, watchdog packet emission, and recovery lease
 acquisition. Phase C6 added local install wiring for the CLI and watchdog
-runner. The next implementation boundary is C7 Slash/Ledger Adapter Routing.
+runner. C7.0-C7.4 added command inventory, the route-free command dry-run
+adapter contract, recovery/report-proof takeover metadata, route retirement
+planning, and cleanup/removal planning. The next implementation boundary is a
+separately owner-approved live route replacement readiness plan; live route
+replacement and cleanup execution remain outside C7.4.
 
 ## Verdict And Closure Contract
 
@@ -808,8 +816,10 @@ real owner decision instead of guessing.
 
 Converge recovery packets should be safe for the current main session to use.
 They are instructions and context, not autonomous execution authority. The main
-session still performs visible reporting and still records Work Ledger proof
-until Converge has its own fully tested report-proof integration.
+session still performs visible reporting while Converge records delivery and
+report proof. After the C7.2 takeover gate, Converge-owned workflow delivery and
+recovery proof must be authoritative in Converge records, with no duplicate
+visible reports and no Work Ledger fallback.
 
 Recovery and report proof must be concurrency-safe:
 
@@ -1026,13 +1036,18 @@ Manual smoke tests:
     through the C6 install wiring slice: local CLI install, development/local
     deploy wrapper, plugin manifest copy, deterministic local watchdog runner,
     post-install verification commands, and install-path smoke coverage.
-12. Add slash/Ledger integration adapters only after the new runtime passes
-    smoke tests.
+12. Replace canonical managed `/goal`, `/verify`, and `/conv` routing with
+    Converge only after the new runtime passes smoke tests and a separate
+    owner-approved live route replacement readiness plan. C7.0-C7.4 are command
+    replacement and legacy retirement planning, not a long-term `/c*` adapter
+    family and not live routing execution.
 
 ## Open Questions
 
-- Final command prefix: use `converge` CLI now, then decide later whether slash
-  aliases should map to it.
+- Command replacement rollout: C7.0-C7.4 have fixed inventory, dry-run adapter,
+  recovery/report-proof authority, route retirement, and cleanup/removal
+  planning; live routes change only in a later explicit owner-approved
+  operational task.
 - Package home: independent package is cleaner for MVP; integration into Ledger
   or GoalFlow should wait until the runtime proves stable.
 - Subagent orchestration: MVP should record subagent ids/results, but not own a

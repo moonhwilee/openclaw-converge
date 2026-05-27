@@ -4,10 +4,16 @@ This register keeps non-blocking Converge cleanup items in one place. P0-P2
 items do not belong here unless they are explicitly outside the current phase
 and assigned to a later phase with a reason.
 
-Current baseline: latest local C6 Install Wiring implementation and convergence
-on `master`. C6 closes local CLI/watchdog install wiring while keeping
-adapter/slash routing, Gateway restart, external action, push, PR, and release
-work out of scope.
+Current baseline: latest local C7.4 cleanup/removal planning on `main`. C7.2
+keeps Converge-owned recovery, delivery reservation, report proof, and reported
+completion inside Converge workflow state. C7.3 remains plan-only route
+retirement/replacement work. Gateway restart, live traffic observation, shadow
+routing, live slash-route replacement/removal, deploy/apply/install, external
+action, deletion, movement, or archival of legacy files/data, legacy skill
+disable/uninstall, push, PR, and release remain out of scope. C7.4 keeps
+cleanup and removal execution out of scope while classifying legacy scripts,
+docs, skills, aliases, and state paths for a later owner-approved operational
+task.
 
 ## Maintenance Rule
 
@@ -38,9 +44,10 @@ work out of scope.
 
 - Status: Superseded by C4.5.
 - Source: C2.5 cleanup convergence at `4d3e3ba`.
-- C4.5 result: high-duplication internal mode/runtime smokes share common CLI
-  invocation, wrapper execution, workflow/event access, assertion helpers, and
-  visible-delivery fixtures.
+- C4.5 result: high-duplication mode/runtime smokes now share
+  `tests/smoke/smoke_helpers.py` for common CLI invocation, wrapper execution,
+  workflow/event access, assertion helpers, and visible-delivery fixtures.
+  Those smokes import the helpers instead of carrying local copies.
 - Remaining shape: deeper semantic decomposition of the broad runtime smoke is
   separate optional test organization work, not a C4.5 blocker.
 - Superseded by: `P3-C45-001`.
@@ -95,7 +102,7 @@ work out of scope.
 - Status: Closed.
 - Source: C4 goal mode implementation at `1fff45b`; closed by the C4 broad
   audit after `9d66a93`.
-- Current shape: internal runtime-foundation smoke now uses low-level
+- Current shape: `converge_runtime_foundation_smoke.py` now uses low-level
   `start --kind goal` fixtures for generic running workflow checks, while the
   real `goal` subcommand remains covered by focused C4 goal-mode smoke.
 - Why closed: the broad smoke failure was promoted from P3 test-maintenance debt
@@ -147,15 +154,15 @@ work out of scope.
   plan, verify, conv, and goal, plus terminal-unreported, waiting-user,
   context-manifest, side-effect-policy, checkpoint mismatch, and lease
   exclusivity cases.
-- Why closed: C5 made the fixture boundary executable in the internal recovery
-  smoke coverage.
+- Why closed: C5 made the fixture boundary executable in
+  `tests/smoke/converge_recovery_smoke.py`.
 
 ### P3-C45-001: Optional runtime smoke semantic split
 
 - Status: Open.
 - Source: C4.5 smoke helper/docs cleanup after
   `2465654 Consolidate C4.5 smoke helpers`.
-- Current shape: internal runtime-foundation smoke now reuses common smoke
+- Current shape: `converge_runtime_foundation_smoke.py` now reuses common smoke
   helpers, but it still intentionally covers a broad mix of runtime foundation,
   artifact, delivery, context manifest, and guardrail checks in one file.
 - Why deferred: splitting the file by semantic area would be test organization

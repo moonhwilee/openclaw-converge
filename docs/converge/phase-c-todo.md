@@ -1,15 +1,28 @@
 # Converge Phase C Todo
 
-This is the current execution checklist for the next `/goal` work. The source of
-truth for design detail remains `docs/converge/implementation-structure.md`.
+This is the current execution checklist for the next `/goal` work.
+`docs/converge/implementation-structure.md` remains the general Phase C design
+detail source. C7-specific planning is headed by
+`docs/converge/c7-canonical-command-replacement.md`.
 
-Current implementation baseline: C6 Install Wiring is complete on top of C5
-Recovery and C4.5 smoke helper/docs cleanup. The local implementation now
+Current implementation baseline: C7.4 cleanup/removal planning and the
+pre-execution C7 live route operational execution plan are complete on top of
+C7.0 command inventory and synthetic dry-run adapter. The local
+implementation now
 preserves the C0-C2.5 shared mode and terminal finalization contracts, the C3
 iterative mode invariants, the C4 durable accepted-plan slice queue, the C4.5
-shared smoke helper boundary, the C5 recovery commands, and the C6 local
-install/watchdog runner wiring. The next open phase is C7 Slash/Ledger Adapter
-Routing.
+shared smoke helper boundary, the C5 recovery commands, the C6 local
+install/watchdog runner wiring, and the C7.0 route-free command dry-run
+adapter plus the C7.1 adapter packet contract. C7.2 adds explicit Converge
+source-of-truth and authority metadata for recovery, delivery reservation,
+report proof, and reported completion. C7.3 adds a dry-run-verifiable route
+retirement/replacement plan, owner approval gate, rollback switch, and
+logging/proof requirements. C7.4 adds a dry-run-verifiable cleanup/removal plan
+with legacy surface inventory, classifications, reasons, later-action
+boundaries, source-of-truth boundaries, and later execution requirements. The
+C7 live route operational execution plan records the exact gate package needed
+before any later owner-approved live replacement of `/goal`, `/verify`, and
+`/conv`.
 
 Deferred non-blocking cleanup items are tracked in
 `docs/converge/p3-debt-register.md`. New P3 findings from future convergence
@@ -32,12 +45,160 @@ runs should be added there instead of being left only in chat or ledger logs.
 - [x] C4.5 / Slice 8.5: Smoke Helper Consolidation.
 - [x] C5 / Slice 9: Recovery.
 - [x] C6 / Slice 10: Install Wiring.
-- [ ] C7 / Slice 11: Slash/Ledger Adapter Routing.
+- [ ] C7 / Slice 11: Canonical Command Replacement + Legacy Retirement
+  (C7.0-C7.5 planning complete; owner-approved workspace trigger ownership
+  patch started; installed-copy sync and post-change smoke still gate
+  completion).
+  - [x] C7.0: Entrypoint inventory + synthetic dry-run adapter.
+  - [x] C7.1: Converge command adapter hardening.
+  - [x] C7.2: Converge recovery/report-proof takeover.
+  - [x] C7.3: Canonical route replacement / legacy route retirement plan.
+  - [x] C7.4: Cleanup and removal plan.
+  - [x] C7.5: Live route replacement operational execution plan.
 
-## Next Goal Command
+## C7.3 Output Boundary
+
+C7.3 is a plan-only route retirement slice. It should produce route
+classification, rollback gates, readiness checks, and accepted/deferred risks
+for moving managed `/goal`, `/verify`, and `/conv` defaults toward Converge.
+It must not execute live slash-route replacement, Gateway restart, shadow
+routing, deploy/apply/install, cleanup/removal execution, legacy deletion,
+legacy file deletion/movement/archival, legacy skill disable/uninstall,
+external action, push, PR, or release.
+
+C7.3 is now represented in `command-dry-run` output as
+`route_retirement_plan`. That packet fixes:
+
+- managed command scope: `/goal`, `/verify`, `/conv`
+- legacy alias scope: `/converge`
+- Converge workflow state as the source of truth after the approval gate
+- exact owner approval, approval reference, evidence, and stop conditions
+- rollback as explicit, logged, time-bounded, scoped, and never automatic
+- logging/proof requirements for dry-run packet, route plan, approval, rollback,
+  delivery reservation, report-proof, and complete-reported evidence
+
+Accepted C7.3 risks:
+
+- Active legacy GoalFlow, retired Work Ledger records, or verification-convergence work may
+  finish under its original owner.
+- Historical legacy records remain readable and are not deleted or replayed.
+- Structured rollback metadata and smoke validation are part of the C7.3 plan,
+  not authorization to activate live rollback.
+- Actual route replacement and cleanup/removal execution remain separate
+  owner-approved operational slices.
+
+## C7.4 Output Boundary
+
+C7.4 is a classification-only cleanup/removal planning slice. It fixes the
+legacy inventory for scripts, docs, skills, aliases, and state paths, and every
+entry carries a classification, reason, and later-action boundary.
+
+The dry-run packet now includes
+`route_retirement_plan.cleanup_removal_plan` with:
+
+- exact classification values: `retired`, `archived`, and
+  `requires-owner-approval`
+- exact legacy surfaces for GoalFlow intake, workspace policy docs,
+  verification-convergence skill routing, `/converge` alias, GoalFlow state,
+  retired Work Ledger remnants, and verification-convergence/chat-derived
+  artifacts
+- C7.2/C7.3 source-of-truth boundary: Converge workflow state, checkpoint
+  cursor, delivery reservation, `report-proof`, and `complete-reported` remain
+  authoritative for Converge work; GoalFlow, retired Work Ledger records, chat memory, and
+  verification-convergence artifacts do not
+- later execution requirements: separate explicit owner approval, exact surface
+  list, retention decision, rollback switch with expiry/log path, and
+  post-change smoke evidence
+
+C7.4 did not and must not execute cleanup/removal, live route replacement,
+live route removal, Gateway restart, shadow routing, deploy/apply/install,
+external action, legacy data deletion, legacy file deletion, file movement,
+file archival, skill disable/uninstall, push, PR, or release.
+
+## C7 Live Route Replacement Readiness Gate
+
+Live route replacement readiness is a validation gate, not operational approval.
+It may prove that `/goal`, `/verify`, and `/conv` can be moved to Converge in a
+later approved task, but it does not authorize Gateway restart, live/shadow
+routing, deploy/apply/install, cleanup/removal execution, legacy deletion,
+external action, push, PR, or release.
+
+The dry-run packet now includes
+`route_retirement_plan.live_route_replacement_readiness_plan` with the required
+readiness fields:
+
+- owner approval record schema with approver, timestamp, approval reference,
+  exact approval kind/text, exact route scope, explicit exclusions, rollback
+  expiry/log path, retention decision reference, smoke evidence, and
+  stop-condition acknowledgement
+- exact live route scope for `/goal`, `/verify`, and `/conv`; `/converge` stays
+  excluded from primary routing and must not be silently promoted
+- implementation route inventory requirement for the later operational task,
+  including exact files/config keys/handler IDs before approval can execute
+- Gateway restart preflight policy: readiness validation does not run preflight
+  or authorize restart; a later operational restart/config reload must run
+  `python3 /Users/moon/.openclaw/workspace/scripts/gateway_restart_preflight.py`
+  immediately before restart/reload, must see `Gateway restart preflight: OK`,
+  and must stop on missing explicit restart/reload approval
+- rollback record requirements: explicit approval, ISO-8601 UTC expiry, maximum
+  24 hour duration, exact log path template under
+  `/Users/moon/.openclaw/state/converge/route-replacement/`, exact legacy route
+  scope, activation/deactivation entries, and post-rollback smoke; rollback is
+  never automatic fallback
+- retention decision for GoalFlow state, retired Work Ledger remnants,
+  verification-convergence artifacts, chat-derived records, and `/converge`
+  alias history; readiness does not authorize deletion, and delete remains only
+  a later cleanup/removal decision
+- pre-change readiness smoke separate from post-change smoke plan
+- post-change smoke evidence is required before the later operational task can
+  be reported complete
+- duplicate visible report guard requiring exactly one route owner and no replay
+  from GoalFlow, retired Work Ledger records, chat memory, or verification-convergence artifacts
+
+Go/No-Go is `No-Go` if any approval record field, exact route scope,
+implementation inventory, rollback expiry/log path, retention decision, Gateway
+preflight decision, pre-change readiness smoke, post-change smoke plan/evidence,
+or duplicate-report guard is
+missing. It is also `No-Go` if the request tries to promote `/converge`, allow
+automatic fallback, execute cleanup/removal, delete/move/archive legacy state,
+restart Gateway, route live traffic, replace/remove live routes,
+deploy/apply/install, push, PR, or release.
+
+## C7 Live Route Operational Execution Plan
+
+The operational execution plan is recorded in
+`docs/converge/c7-live-route-operational-execution-plan.md`.
+
+It remains a pre-execution artifact. It does not perform or authorize Gateway
+restart, route config reload, live/shadow routing, live route replacement,
+cleanup/removal execution, legacy deletion/movement/archive, deploy/apply/install,
+external action, push, PR, or release.
+
+The plan fixes:
+
+- exact managed route scope: `/goal`, `/verify`, and `/conv` only
+- `/converge` as an excluded legacy alias boundary
+- the pinned `operational_live_route_replacement` approval kind and exact
+  approval text
+- exact rollback log path template under
+  `/Users/moon/.openclaw/state/converge/route-replacement/`
+- retention decisions that retain all legacy state/artifacts in place during
+  route replacement
+- pre-change smoke evidence requirements
+- Gateway restart/reload preflight decision and separate approval boundary
+- post-change smoke evidence required before completion reporting
+- abort conditions for ambiguous route inventory, missing approval, automatic
+  fallback, failed smoke, duplicate visible reports, cleanup/removal, deploy,
+  external action, push, PR, or release
+
+The plan intentionally leaves the installed live route config path/key/handler
+ID as a required pre-execution discovery gate. The operation must abort if those
+values cannot be proven from the installed environment before any route change.
+
+## Next Operational Command
 
 ```text
-/goal Converge Phase C7: Slash/Ledger Adapter Routing 설계 초안을 작성해줘. C0-C6 런타임, recovery, install wiring이 안정화된 현재 상태를 기준으로, 기존 /goal, /verify, /conv, Ledger 흐름과 Converge CLI를 어떻게 연결할지 구현 전 계획만 세워줘. Gateway restart, external action, push/PR/release, 실제 adapter 구현은 제외하고, 승인 경계와 검증 기준을 명확히 해줘.
+/conv Converge C7 live route replacement narrow correction을 수렴해줘. 목표는 owner-approved workspace trigger patch 이후 남은 installed Converge CLI sync, verification-convergence installed skill sync, --text/state-root command consistency, applied/not-applied docs drift, and post-change /goal /verify /conv smoke evidence를 좁게 보정하는 것이야. Gateway restart, cleanup/removal, legacy deletion/movement/archive, /converge promotion, external action, push/PR/release는 제외해줘.
 ```
 
 ## C0 Completed Scope
@@ -233,3 +394,58 @@ runs should be added there instead of being left only in chat or ledger logs.
   packets, plugin manifest `main` existence, and Python cache exclusion.
 - Kept C6 limited to install wiring: no adapter routing, slash routing, Gateway
   restart, external action, push, PR, or release.
+
+## C7 Planned Scope
+
+- Replace the older Slash/Ledger Adapter Routing concept with Canonical Command
+  Replacement + Legacy Retirement.
+- Use `docs/converge/c7-canonical-command-replacement.md` as the C7 design
+  target.
+- Make Converge the canonical backend for managed `/goal`, `/verify`, and
+  `/conv` work after acceptance gates and a separately approved live-routing
+  operation pass.
+- Treat GoalFlow, retired Work Ledger orchestration, and verification-convergence skill
+  paths as migration/retirement surfaces for Converge-owned workflows, not as
+  performance baselines or default fallbacks.
+- C7 has started with completed C7.0 command inventory and synthetic,
+  live-route-free dry-run adapter work. Remaining C7.1+ work must preserve that
+  route-free boundary and continue treating stale source-checkout or
+  installed-copy Slash/Ledger wording as non-canonical until those copies are
+  explicitly synchronized.
+- Keep Gateway restart, live slash routing replacement/removal, external action,
+  push, PR, release, and development-server apply outside C7 unless a later
+  explicit owner-approved operational task is requested.
+- Keep live traffic observation and shadow routing outside C7 by default unless
+  a later explicit owner-approved operational task enables them.
+- Keep legacy or historical data deletion, movement, archival, and legacy skill
+  disable/uninstall outside C7 entirely; they require a separate owner-approved
+  cleanup execution task.
+
+## C7.0 Completed Scope
+
+- Added `converge command-dry-run` as a synthetic adapter for `/goal`,
+  `/verify`, `/conv`, and the legacy `/converge` alias.
+- Kept the adapter strictly route-free: it does not create workflows, observe
+  live traffic, enable shadow routing, restart Gateway, perform external
+  actions, delete legacy data, deploy, push, open PRs, or release.
+- Recorded the command ownership inventory, including current/C7 owners, state
+  root, delivery behavior, rollback switch, transitional behavior, and final
+  behavior, in `docs/converge/c7-entrypoint-inventory.md`.
+- Added smoke coverage proving command mapping, owner/session,
+  visible-delivery, and state-root metadata preservation, no workflow state
+  materialization, and `/converge` deprecated-alias handling.
+
+## C7.1 Completed Scope
+
+- Hardened `converge command-dry-run` with a C7.1 adapter contract block that
+  fixes required packet fields, shared state-root/delivery/rollback field
+  locations, route-free flags, and command-specific metadata.
+- Added `/goal` draft/confirmation metadata, `/verify` audit intent metadata,
+  and `/conv` round/original-target/delta metadata to the dry-run packet without
+  creating workflows or changing live routes.
+- Kept C7.1 limited to existing adapter packet fields and validation: no new
+  artifact store, no routing layer, no mode semantics implementation, no
+  Gateway restart, no live or shadow routing, no deploy/apply/install, no
+  legacy deletion, no external action, no push, no PR, and no release.
+- Extended adapter smoke coverage for the C7.1 contract and command-specific
+  metadata while preserving the C7.0 route-free checks.

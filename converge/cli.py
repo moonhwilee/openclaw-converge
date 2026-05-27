@@ -13,6 +13,7 @@ from typing import Any
 
 from .acceptance import validate_acceptance_payload
 from .checkpoint import record_checkpoint, validate_evidence_artifact_refs, validate_evidence_object
+from .command_adapter import build_dry_run_packet
 from .continuation import TERMINAL_CONTINUATION_TARGETS, current_cursor, default_continuation_plan
 from .messages import VALID_VERDICTS, lint_verdict_residuals, normalize_residuals, progress_block
 from .modes.conv import CONV_REPORT_ARTIFACT_ID, ConvHandler, ConvRecord, ConvRound, render_conv_report, validate_conv_state
@@ -205,6 +206,21 @@ def cmd_goal(args: argparse.Namespace) -> int:
     )
     workflow = store.load_workflow(workflow["workflow_id"])
     print_json({"ok": True, "workflow": workflow, **goal})
+    return 0
+
+
+def cmd_command_dry_run(args: argparse.Namespace) -> int:
+    if args.visible_delivery:
+        _validate_visible_delivery_arg(args.visible_delivery)
+    print_json(
+        build_dry_run_packet(
+            raw_message=args.raw_message,
+            owner_session_key=args.owner_session_key or "",
+            visible_delivery=args.visible_delivery or {},
+            workflow_id=args.workflow_id,
+            state_root=args.state_root,
+        )
+    )
     return 0
 
 
@@ -463,6 +479,7 @@ def cmd_reserve_delivery(args: argparse.Namespace) -> int:
 
 
 def _active_delivery_reconcile_payload(args: argparse.Namespace, active_reservation: dict[str, Any]) -> dict[str, Any]:
+    _validate_delivery_authority(active_reservation, label="active_delivery_reservation")
     reason = "active_reservation_exists"
     if _is_expired(active_reservation.get("lease_expires_at")):
         reason = "expired_reservation_requires_reconcile"
@@ -477,6 +494,8 @@ def _active_delivery_reconcile_payload(args: argparse.Namespace, active_reservat
         "checkpoint_id": active_reservation["checkpoint_id"],
         "lease_expires_at": active_reservation["lease_expires_at"],
         "reason": reason,
+        "send_authority": "converge.reserve-delivery",
+        "source_of_truth": "converge.workflow",
     }
 
 
@@ -487,6 +506,7 @@ def _historical_delivery_reconcile_payload(
     reservation: dict[str, Any],
 ) -> dict[str, Any]:
     reservation_payload = reservation.get("payload") or {}
+    _validate_delivery_authority(reservation_payload, label="delivery_reserved")
     return {
         "ok": True,
         "workflow_id": args.workflow_id,
@@ -498,6 +518,8 @@ def _historical_delivery_reconcile_payload(
         "checkpoint_id": checkpoint_id,
         "lease_expires_at": None,
         "reason": "expired_reservation_requires_reconcile",
+        "send_authority": "converge.reserve-delivery",
+        "source_of_truth": "converge.workflow",
     }
 
 
@@ -518,6 +540,8 @@ def _delivery_reservation(
         "acquired_at": acquired_at,
         "lease_expires_at": lease_expires_at,
         "checkpoint_id": checkpoint_id,
+        "send_authority": "converge.reserve-delivery",
+        "source_of_truth": "converge.workflow",
     }
 
 
@@ -543,7 +567,12 @@ def _delivery_reserved_event(
         "phase_after": "terminal",
         "cursor_before": cursor,
         "cursor_after": cursor,
-        "payload": {"reservation_id": reservation_id, "visible_delivery": visible_delivery},
+        "payload": {
+            "reservation_id": reservation_id,
+            "visible_delivery": visible_delivery,
+            "send_authority": "converge.reserve-delivery",
+            "source_of_truth": "converge.workflow",
+        },
     }
 
 
@@ -570,6 +599,8 @@ def _delivery_authorized_payload(
         "lease_expires_at": lease_expires_at,
         "reason": None,
         "event_id": event_id,
+        "send_authority": "converge.reserve-delivery",
+        "source_of_truth": "converge.workflow",
     }
     if checkpoint is not None:
         payload["checkpoint"] = checkpoint
@@ -623,6 +654,8 @@ def _delivery_no_send_payload(args: argparse.Namespace, *, reason: str, terminal
         "checkpoint_id": None,
         "lease_expires_at": None,
         "reason": reason,
+        "send_authority": "converge.reserve-delivery",
+        "source_of_truth": "converge.workflow",
     }
     if error:
         payload["error"] = error
@@ -723,6 +756,8 @@ def cmd_complete_reported(args: argparse.Namespace) -> int:
             "delivery_message_id": args.delivery_message_id,
             "visible_delivery": args.visible_delivery,
             "reported_at": now_iso(),
+            "report_authority": "converge.complete-reported",
+            "source_of_truth": "converge.workflow",
         }
         _validate_report_payload(reported_payload, timestamp_key="reported_at", label="report_sent")
         _apply_reported_transition(workflow, reported_payload)
@@ -882,6 +917,7 @@ def _matching_reservation(workflow: dict[str, Any], reservation_id: str) -> dict
     reservation = workflow.get("active_delivery_reservation")
     if not isinstance(reservation, dict):
         raise ValueError("workflow has no active delivery reservation")
+    _validate_delivery_authority(reservation, label="active_delivery_reservation")
     if reservation.get("reservation_id") != reservation_id:
         raise ValueError("reservation_id does not match active delivery reservation")
     return reservation
@@ -970,6 +1006,7 @@ def _ensure_single_delivery_event(
         raise ValueError(missing_error)
     if len(matches) > 1:
         raise ValueError("duplicate matching delivery_reserved events")
+    _validate_delivery_authority(matches[0].get("payload") or {}, label="delivery_reserved")
     return matches[0]
 
 
@@ -1122,6 +1159,8 @@ def _record_report_proof(
             "delivery_message_id": delivery_message_id,
             "visible_delivery": visible_delivery,
             "recorded_at": recorded_at,
+            "proof_authority": "converge.report-proof",
+            "source_of_truth": "converge.workflow",
         }
         if manual_reconcile:
             proof["manual_reconcile"] = manual_reconcile
@@ -1345,6 +1384,7 @@ def _validate_workflow_integrity(store: WorkflowStore, workflow: dict[str, Any],
     if isinstance(active_delivery, dict):
         if workflow.get("status") not in {"completed_unreported", "failed_unreported"}:
             raise ValueError("active_delivery_reservation requires terminal unreported workflow status")
+        _validate_delivery_authority(active_delivery, label="active_delivery_reservation")
         checkpoint_id = active_delivery.get("checkpoint_id")
         if checkpoint_id not in checkpoint_index:
             raise ValueError(f"active_delivery_reservation checkpoint_id {checkpoint_id} missing from checkpoint_index")
@@ -1394,6 +1434,7 @@ def _validate_workflow_integrity(store: WorkflowStore, workflow: dict[str, Any],
     _validate_terminal_checkpoint_integrity(workflow, checkpoint_index, checkpoint_events)
     for event in delivery_reserved_events:
         checkpoint_id = event.get("checkpoint_id")
+        _validate_delivery_authority(event.get("payload") or {}, label="delivery_reserved")
         if checkpoint_id not in checkpoint_index:
             raise ValueError(f"delivery_reserved checkpoint_id {checkpoint_id} missing from checkpoint_index")
         if sum(1 for candidate in delivery_reserved_events if candidate.get("checkpoint_id") == checkpoint_id) > 1:
@@ -1960,12 +2001,27 @@ def _validate_report_payload(payload: dict[str, Any], *, timestamp_key: str, lab
     for key in ("reservation_id", "delivery_message_id", timestamp_key):
         if not isinstance(payload.get(key), str) or not payload.get(key):
             raise ValueError(f"{label} requires non-empty {key}")
+    if payload.get("source_of_truth") != "converge.workflow":
+        raise ValueError(f"{label} requires source_of_truth=converge.workflow")
+    if label == "report_proof":
+        if payload.get("proof_authority") != "converge.report-proof":
+            raise ValueError(f"{label} requires proof_authority=converge.report-proof")
+    elif label in {"report_sent", "reported"}:
+        if payload.get("report_authority") != "converge.complete-reported":
+            raise ValueError(f"{label} requires report_authority=converge.complete-reported")
     visible_delivery = payload.get("visible_delivery")
     if not isinstance(visible_delivery, dict) or not visible_delivery:
         raise ValueError(f"{label} requires visible_delivery")
     manual_reconcile = payload.get("manual_reconcile")
     if manual_reconcile is not None and (not isinstance(manual_reconcile, str) or not manual_reconcile):
         raise ValueError(f"{label} manual_reconcile must be non-empty when present")
+
+
+def _validate_delivery_authority(payload: dict[str, Any], *, label: str) -> None:
+    if payload.get("send_authority") != "converge.reserve-delivery":
+        raise ValueError(f"{label} requires send_authority=converge.reserve-delivery")
+    if payload.get("source_of_truth") != "converge.workflow":
+        raise ValueError(f"{label} requires source_of_truth=converge.workflow")
 
 
 def _validate_delivery_message_id(delivery_message_id: str) -> None:
@@ -2039,6 +2095,14 @@ def build_parser() -> argparse.ArgumentParser:
     conv.add_argument("--recovery-lease-holder")
     conv.add_argument("--json", action="store_true", help=json_help)
     conv.set_defaults(func=cmd_conv)
+
+    command_dry_run = sub.add_parser("command-dry-run")
+    command_dry_run.add_argument("--raw-message", required=True)
+    command_dry_run.add_argument("--workflow-id")
+    command_dry_run.add_argument("--owner-session-key")
+    command_dry_run.add_argument("--visible-delivery", type=parse_json)
+    command_dry_run.add_argument("--json", action="store_true", help=json_help)
+    command_dry_run.set_defaults(func=cmd_command_dry_run)
 
     status = sub.add_parser("status")
     status.add_argument("--workflow-id", required=True)

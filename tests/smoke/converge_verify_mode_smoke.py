@@ -14,6 +14,7 @@ except ModuleNotFoundError:
     from tests.smoke.smoke_helpers import ROOT, assert_phase5a_contract, assert_phase5a_accepted_change_stale_rejected, assert_phase5a_freshness_rejected, assert_phase5a_missing_gate_rejected, assert_phase5a_stale_hash_rejected, assert_phase5a_terminal_status_rejected, assert_true, events, run, run_fail, workflow, write_events, write_workflow
 from converge.artifacts import sha256_file  # noqa: E402
 from converge.messages import format_final  # noqa: E402
+from converge.modes.specialist_panel import _stable_hash, validate_specialist_state  # noqa: E402
 from converge.modes.verify import build_verify_record, render_verify_report  # noqa: E402
 
 
@@ -237,6 +238,50 @@ def main() -> int:
         )
         assert_true(len(specialist_state["agent_request_refs"]) == 3, "structured findings should persist one agent request per profile")
         assert_true(len(specialist_state["agent_result_refs"]) == len(specialist_state["agent_finding_refs"]), "structured findings should persist agent results")
+        assert_true(len(specialist_state["profile_registry_refs"]) == 5, "structured findings should persist reviewer/check/runner profile specs")
+        assert_true(
+            {item["kind"] for item in specialist_state["profile_registry_refs"]} == {"reviewer", "check", "runner"},
+            "structured findings should include reusable reviewer/check/runner profile kinds",
+        )
+        assert_true(
+            {request["profile_ref"] for request in specialist_state["agent_request_refs"]}.issubset(
+                {item["profile_id"] for item in specialist_state["profile_registry_refs"]}
+            ),
+            "structured findings should bind agent requests to profile registry",
+        )
+        profile_context_drift = json.loads(json.dumps(specialist_state))
+        profile_context_drift["profile_registry_refs"][0]["selection_reason"] = "changed reusable profile selection"
+        profile_context_drift["profile_registry_refs"][0]["context_hash"] = _stable_hash(
+            {key: value for key, value in profile_context_drift["profile_registry_refs"][0].items() if key != "context_hash"}
+        )
+        try:
+            validate_specialist_state(profile_context_drift)
+            raise AssertionError("profile registry context drift should fail validation")
+        except ValueError as exc:
+            assert_true("context_hash" in str(exc), "profile spec hash changes should invalidate agent request context")
+        forbidden_capability = json.loads(json.dumps(specialist_state))
+        forbidden_capability["profile_registry_refs"][0]["capabilities"].append("visible_messages")
+        forbidden_capability["profile_registry_refs"][0]["context_hash"] = _stable_hash(
+            {key: value for key, value in forbidden_capability["profile_registry_refs"][0].items() if key != "context_hash"}
+        )
+        try:
+            validate_specialist_state(forbidden_capability)
+            raise AssertionError("forbidden profile capability should fail validation")
+        except ValueError as exc:
+            assert_true(
+                "forbidden actions" in str(exc) or "capabilities" in str(exc),
+                "profile capabilities should not grant forbidden actions",
+            )
+        weak_schema = json.loads(json.dumps(specialist_state))
+        weak_schema["profile_registry_refs"][-1]["output_schema"]["required"] = ["profiles"]
+        weak_schema["profile_registry_refs"][-1]["context_hash"] = _stable_hash(
+            {key: value for key, value in weak_schema["profile_registry_refs"][-1].items() if key != "context_hash"}
+        )
+        try:
+            validate_specialist_state(weak_schema)
+            raise AssertionError("weak profile output schema should fail validation")
+        except ValueError as exc:
+            assert_true("output_schema" in str(exc), "profile output schema required fields should be exact")
         assert_true(
             specialist_state["agent_result_collection_status"]["status"] == "complete",
             "structured findings should record complete agent result collection",
@@ -254,6 +299,10 @@ def main() -> int:
         assert_true(
             recovery_record["agent_result_collection"]["recovery_resume_cursor"] == specialist_state["recovery_resume_cursor"],
             "recovery scan should expose specialist collection resume cursor",
+        )
+        assert_true(
+            recovery_record["profile_registry"]["kinds"] == ["check", "reviewer", "runner"],
+            "recovery scan should expose specialist profile registry kinds",
         )
         recovery_watchdog = run("watchdog-check", state_root=state_root)
         recovery_packet = next(item for item in recovery_watchdog["recoveries"] if item["workflow_id"] == "verify-specialist-findings")
@@ -303,6 +352,33 @@ def main() -> int:
         Path(duplicate_artifact["path"]).write_text(
             json.dumps({"packet": packet, "specialist_review": specialist_verify["verify_state"]}, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
+        )
+        write_workflow(state_root, "verify-specialist-findings", specialist_verify)
+
+        stale_profile = json.loads(json.dumps(specialist_verify))
+        stale_profile["verify_state"]["profile_registry_refs"][0]["capabilities"].append("silent-bypass")
+        write_workflow(state_root, "verify-specialist-findings", stale_profile)
+        stale_profile_result = run_fail("validate", "--workflow-id", "verify-specialist-findings", state_root=state_root)
+        assert_true(
+            "profile" in stale_profile_result["error"]
+            or "terminal checkpoint" in stale_profile_result["error"]
+            or "artifact hash is stale" in stale_profile_result["error"],
+            "specialist profile context hash drift should be rejected",
+        )
+        write_workflow(state_root, "verify-specialist-findings", specialist_verify)
+
+        missing_runner_profile = json.loads(json.dumps(specialist_verify))
+        runner_ref = missing_runner_profile["verify_state"]["review_panel_spec"]["runner_ref"]
+        missing_runner_profile["verify_state"]["profile_registry_refs"] = [
+            item for item in missing_runner_profile["verify_state"]["profile_registry_refs"] if item["profile_id"] != runner_ref
+        ]
+        write_workflow(state_root, "verify-specialist-findings", missing_runner_profile)
+        missing_runner_result = run_fail("validate", "--workflow-id", "verify-specialist-findings", state_root=state_root)
+        assert_true(
+            "profile" in missing_runner_result["error"]
+            or "terminal checkpoint" in missing_runner_result["error"]
+            or "artifact hash is stale" in missing_runner_result["error"],
+            "specialist runner profile must be present in profile registry",
         )
         write_workflow(state_root, "verify-specialist-findings", specialist_verify)
 

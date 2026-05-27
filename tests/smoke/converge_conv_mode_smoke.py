@@ -540,6 +540,11 @@ def assert_conv_records_structured_specialist_findings(state_root: Path) -> None
     )
     assert_true(len(conv_state["agent_request_refs"]) == 3, "conv should persist one agent request per profile")
     assert_true(len(conv_state["agent_result_refs"]) == len(conv_state["agent_finding_refs"]), "conv should persist specialist result refs")
+    assert_true(len(conv_state["profile_registry_refs"]) == 5, "conv should persist reviewer/check/runner profile specs")
+    assert_true(
+        {item["kind"] for item in conv_state["profile_registry_refs"]} == {"reviewer", "check", "runner"},
+        "conv should include reusable reviewer/check/runner profile kinds",
+    )
     assert_true(
         conv_state["agent_result_collection_status"]["status"] == "complete",
         "conv should record complete specialist result collection",
@@ -589,6 +594,16 @@ def assert_conv_records_structured_specialist_findings(state_root: Path) -> None
     )
     write_workflow(state_root, "conv-specialist-findings", wf)
 
+    bad_registry = json.loads(json.dumps(wf))
+    bad_registry["conv_state"]["profile_registry_refs"][0]["kind"] = "runner"
+    write_workflow(state_root, "conv-specialist-findings", bad_registry)
+    bad_registry_result = run_fail("validate", "--workflow-id", "conv-specialist-findings", state_root=state_root)
+    assert_true(
+        "profile" in bad_registry_result["error"] or "terminal checkpoint" in bad_registry_result["error"],
+        "conv should reject malformed reviewer profile registry entries",
+    )
+    write_workflow(state_root, "conv-specialist-findings", wf)
+
     event_drift = json.loads(json.dumps(original_events))
     for event in event_drift:
         if event["event_type"] == "agent_findings_recorded":
@@ -599,6 +614,24 @@ def assert_conv_records_structured_specialist_findings(state_root: Path) -> None
     )
     event_drift_result = run_fail("validate", "--workflow-id", "conv-specialist-findings", state_root=state_root)
     assert_true("collection_cursor must match state" in event_drift_result["error"], "conv should bind event collection cursor to state")
+    events_path.write_text(
+        "\n".join(json.dumps(event, ensure_ascii=False, sort_keys=True) for event in original_events) + "\n",
+        encoding="utf-8",
+    )
+
+    profile_event_drift = json.loads(json.dumps(original_events))
+    for event in profile_event_drift:
+        if event["event_type"] == "agent_panel_requested":
+            event["payload"]["profile_registry_hashes"] = []
+    events_path.write_text(
+        "\n".join(json.dumps(event, ensure_ascii=False, sort_keys=True) for event in profile_event_drift) + "\n",
+        encoding="utf-8",
+    )
+    profile_event_drift_result = run_fail("validate", "--workflow-id", "conv-specialist-findings", state_root=state_root)
+    assert_true(
+        "profile_registry_hashes must match state" in profile_event_drift_result["error"],
+        "conv should bind specialist profile registry hashes to event proof",
+    )
     events_path.write_text(
         "\n".join(json.dumps(event, ensure_ascii=False, sort_keys=True) for event in original_events) + "\n",
         encoding="utf-8",

@@ -333,6 +333,7 @@ def _classify_workflow(store: WorkflowStore, workflow: dict[str, Any], *, now: d
         "visible_delivery": workflow.get("visible_delivery") if isinstance(workflow.get("visible_delivery"), dict) else {},
         "source_of_truth": dict(CONVERGE_SOURCE_OF_TRUTH),
         "agent_result_collection": _agent_result_collection_snapshot(workflow),
+        "profile_registry": _profile_registry_snapshot(workflow),
     }
 
 
@@ -349,6 +350,24 @@ def _recovery_packet(record: dict[str, Any]) -> dict[str, Any]:
         "visible_delivery": record.get("visible_delivery"),
         "source_of_truth": record["source_of_truth"],
         "agent_result_collection": record.get("agent_result_collection"),
+        "profile_registry": record.get("profile_registry"),
+    }
+
+
+def _profile_registry_snapshot(workflow: dict[str, Any]) -> dict[str, Any] | None:
+    state = workflow.get("verify_state") if workflow.get("kind") == "verify" else workflow.get("conv_state")
+    if not isinstance(state, dict):
+        return None
+    registry = state.get("profile_registry_refs")
+    if not isinstance(registry, list) or not registry:
+        return None
+    profile_ids = [item.get("profile_id") for item in registry if isinstance(item, dict)]
+    kinds = sorted({item.get("kind") for item in registry if isinstance(item, dict)})
+    return {
+        "profile_ids": profile_ids,
+        "kinds": kinds,
+        "profile_count": len(profile_ids),
+        "runner_ref": (state.get("review_panel_spec") or {}).get("runner_ref"),
     }
 
 

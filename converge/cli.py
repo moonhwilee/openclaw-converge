@@ -2284,6 +2284,10 @@ def _validate_specialist_execution_evidence(
             raise ValueError(f"{mode} specialist event finding_count must match state")
         if payload.get("arbitration_count") != len(specialist_state["finding_arbitration"]):
             raise ValueError(f"{mode} specialist event arbitration_count must match state")
+        if payload.get("profile_registry_ids") != [item["profile_id"] for item in specialist_state["profile_registry_refs"]]:
+            raise ValueError(f"{mode} specialist event profile_registry_ids must match state")
+        if payload.get("profile_registry_hashes") != [item["context_hash"] for item in specialist_state["profile_registry_refs"]]:
+            raise ValueError(f"{mode} specialist event profile_registry_hashes must match state")
         if payload.get("request_ids") != [item["request_id"] for item in specialist_state["agent_request_refs"]]:
             raise ValueError(f"{mode} specialist event request_ids must match state")
         if payload.get("result_ids") != [item["result_id"] for item in specialist_state["agent_result_refs"]]:
@@ -2316,6 +2320,7 @@ def _specialist_state_from_mode_state(state: dict[str, Any]) -> dict[str, Any]:
         "stop_reason",
         "owner_stop_ref",
         "round_stop_proof",
+        "profile_registry_refs",
         "agent_request_refs",
         "agent_result_refs",
         "agent_result_idempotency_keys",

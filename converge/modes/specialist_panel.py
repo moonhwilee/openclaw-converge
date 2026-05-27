@@ -11,6 +11,18 @@ from typing import Any
 SPECIALIST_REVIEW_RUNNER_REF = "trusted-runner-provided-specialist-findings-v1"
 SEVERITIES = {"p0", "p1", "p2", "p3"}
 DECISIONS = {"block", "fix", "accept_risk", "defer", "reject"}
+PROFILE_KINDS = {"reviewer", "check", "runner"}
+PROFILE_VERSION = "1.0.0"
+SPECIALIST_CHECK_PROFILE_ID = "structured-specialist-finding-validator"
+BASELINE_PROHIBITED_ACTIONS = [
+    "visible_messages",
+    "external_actions",
+    "service_restart",
+    "push_or_pr",
+    "target_mutation",
+    "workflow_state_mutation",
+]
+FORBIDDEN_PROFILE_CAPABILITIES = set(BASELINE_PROHIBITED_ACTIONS)
 FORBIDDEN_SIDE_EFFECT_FIELDS = {
     "visible_message_sent",
     "external_action_performed",
@@ -63,6 +75,7 @@ def build_specialist_review(
         raise ValueError("specialist findings packet must not report side effects")
     profiles = _profiles(packet.get("profiles"))
     findings = _findings(packet.get("findings"), profiles=profiles)
+    risk_level = _optional_string(packet, "risk_level", default="medium")
     raw_map, groups = _dedupe_findings(findings)
     arbitration = [_arbitrate_group(group_id, items) for group_id, items in groups.items()]
     accepted_changes = [
@@ -77,6 +90,11 @@ def build_specialist_review(
         if item["decision"] == "fix"
     ]
     follow_up = bool(accepted_changes)
+    profile_registry_refs = _build_profile_registry_refs(
+        profiles=profiles,
+        mode=mode,
+        risk_level=risk_level,
+    )
     collection_state = _build_agent_collection_state(
         mode=mode,
         target=target,
@@ -84,13 +102,14 @@ def build_specialist_review(
         panel_id=_required_string(packet, "panel_id"),
         profiles=profiles,
         findings=findings,
+        profile_registry_refs=profile_registry_refs,
     )
     state = {
         "review_panel_spec": {
             "panel_id": _required_string(packet, "panel_id"),
             "mode": mode,
             "target": target,
-            "risk_level": _optional_string(packet, "risk_level", default="medium"),
+            "risk_level": risk_level,
             "profiles": profiles,
             "runner_ref": SPECIALIST_REVIEW_RUNNER_REF,
             "prohibited_actions": [
@@ -119,6 +138,7 @@ def build_specialist_review(
             "Runner-provided specialist findings were validated, deduped by failure mode, "
             "and arbitrated without allowing specialists to mutate state or send visible reports."
         ),
+        "profile_registry_refs": profile_registry_refs,
         **collection_state,
     }
     validate_specialist_state(state)
@@ -154,6 +174,7 @@ def validate_specialist_state(state: dict[str, Any]) -> None:
         "stop_reason",
         "owner_stop_ref",
         "round_stop_proof",
+        "profile_registry_refs",
         "agent_request_refs",
         "agent_result_refs",
         "agent_result_idempotency_keys",
@@ -206,12 +227,221 @@ def validate_specialist_state(state: dict[str, Any]) -> None:
         raise ValueError("specialist max_rounds must be a positive integer")
     if state["round_index"] < 1:
         raise ValueError("specialist round_index must be positive")
+    _validate_profile_registry_refs(state, profiles=profiles)
     _validate_agent_collection_state(state, profile_ids=profile_ids, findings=findings)
 
 
 def write_specialist_artifact(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _build_profile_registry_refs(
+    *,
+    profiles: list[dict[str, Any]],
+    mode: str,
+    risk_level: str,
+) -> list[dict[str, Any]]:
+    registry = [
+        _profile_spec(
+            profile_id=profile["profile_id"],
+            kind="reviewer",
+            capabilities=profile["expertise"],
+            artifact_types=["verify_report", "conv_round", "goal_child_summary"],
+            risk_levels=[risk_level],
+            required_context=["target", "artifact_id", "mode", "evidence_refs"],
+            prohibited_actions=sorted(set(BASELINE_PROHIBITED_ACTIONS) | set(profile["prohibited_actions"])),
+            output_schema={
+                "schema_ref": "structured_specialist_finding.v1",
+                "required": [
+                    "finding_id",
+                    "profile_id",
+                    "finding",
+                    "severity",
+                    "evidence",
+                    "why_it_matters",
+                    "minimal_fix_or_test",
+                    "scope_risk",
+                    "confidence",
+                    "failure_mode",
+                    "source_provenance",
+                ],
+            },
+            selection_reason=(
+                f"Reviewer profile selected for {mode} structured specialist panel; "
+                f"likely failure modes: {', '.join(profile['likely_failure_modes'])}."
+            ),
+        )
+        for profile in profiles
+    ]
+    registry.append(
+        _profile_spec(
+            profile_id=SPECIALIST_CHECK_PROFILE_ID,
+            kind="check",
+            capabilities=["schema_validation", "dedupe", "arbitration", "evidence_anchor_validation"],
+            artifact_types=["specialist_findings_packet"],
+            risk_levels=[risk_level],
+            required_context=["profiles", "findings", "side_effects_performed"],
+            prohibited_actions=BASELINE_PROHIBITED_ACTIONS,
+            output_schema={
+                "schema_ref": "validated_specialist_review_state.v1",
+                "required": [
+                    "agent_finding_refs",
+                    "raw_finding_to_group_map",
+                    "finding_arbitration",
+                    "accepted_change_refs",
+                ],
+            },
+            selection_reason="Validator profile reused to normalize runner-provided specialist findings into bounded Converge state.",
+        )
+    )
+    registry.append(
+        _profile_spec(
+            profile_id=SPECIALIST_REVIEW_RUNNER_REF,
+            kind="runner",
+            capabilities=["runner_packet_ingest", "request_result_correlation", "idempotency_binding"],
+            artifact_types=["specialist_findings_artifact"],
+            risk_levels=[risk_level],
+            required_context=["panel_id", "mode", "target", "artifact_id"],
+            prohibited_actions=BASELINE_PROHIBITED_ACTIONS,
+            output_schema={
+                "schema_ref": "runner_provided_specialist_findings.v1",
+                "required": ["profiles", "findings", "deterministic_check_results"],
+            },
+            selection_reason="Trusted runner profile reused for adapter-safe structured specialist finding ingestion.",
+        )
+    )
+    return registry
+
+
+def _profile_spec(
+    *,
+    profile_id: str,
+    kind: str,
+    capabilities: list[str],
+    artifact_types: list[str],
+    risk_levels: list[str],
+    required_context: list[str],
+    prohibited_actions: list[str],
+    output_schema: dict[str, Any],
+    selection_reason: str,
+) -> dict[str, Any]:
+    spec = {
+        "profile_id": profile_id,
+        "version": PROFILE_VERSION,
+        "kind": kind,
+        "capabilities": capabilities,
+        "artifact_types": artifact_types,
+        "risk_levels": risk_levels,
+        "required_context": required_context,
+        "prohibited_actions": prohibited_actions,
+        "output_schema": output_schema,
+        "selection_reason": selection_reason,
+    }
+    spec["context_hash"] = _stable_hash(spec)
+    return spec
+
+
+def _validate_profile_registry_refs(state: dict[str, Any], *, profiles: list[dict[str, Any]]) -> None:
+    registry = state["profile_registry_refs"]
+    if not isinstance(registry, list) or not registry:
+        raise ValueError("specialist profile_registry_refs must be a non-empty array")
+    registry_ids = [item.get("profile_id") for item in registry if isinstance(item, dict)]
+    _require_unique(registry_ids, "specialist profile registry ids")
+    registry_by_id = {item["profile_id"]: item for item in registry if isinstance(item, dict)}
+    profile_ids = [item["profile_id"] for item in profiles]
+    missing_reviewers = sorted(set(profile_ids) - set(registry_by_id))
+    if missing_reviewers:
+        raise ValueError(f"specialist profile_registry_refs missing reviewer profiles: {missing_reviewers!r}")
+    if SPECIALIST_CHECK_PROFILE_ID not in registry_by_id:
+        raise ValueError("specialist profile_registry_refs must include check profile")
+    runner_ref = state["review_panel_spec"].get("runner_ref")
+    if runner_ref not in registry_by_id:
+        raise ValueError("specialist profile_registry_refs must include runner profile")
+    if registry_by_id[runner_ref].get("kind") != "runner":
+        raise ValueError("specialist runner profile kind must be runner")
+    if registry_by_id[SPECIALIST_CHECK_PROFILE_ID].get("kind") != "check":
+        raise ValueError("specialist check profile kind must be check")
+    for profile_id in profile_ids:
+        if registry_by_id[profile_id].get("kind") != "reviewer":
+            raise ValueError("specialist reviewer profile kind must be reviewer")
+    profiles_by_id = {item["profile_id"]: item for item in profiles}
+    for item in registry:
+        _validate_profile_spec(item)
+        if item["kind"] == "reviewer":
+            panel_profile = profiles_by_id[item["profile_id"]]
+            if item["capabilities"] != panel_profile["expertise"]:
+                raise ValueError("specialist reviewer profile capabilities must match panel expertise")
+            if not set(panel_profile["prohibited_actions"]).issubset(set(item["prohibited_actions"])):
+                raise ValueError("specialist reviewer profile prohibited_actions must include panel prohibitions")
+        if not set(BASELINE_PROHIBITED_ACTIONS).issubset(set(item["prohibited_actions"])):
+            raise ValueError("specialist profile prohibited_actions must include baseline forbidden actions")
+        if set(item["capabilities"]) & FORBIDDEN_PROFILE_CAPABILITIES:
+            raise ValueError("specialist profile capabilities must not include forbidden actions")
+    allowed_refs = set(registry_by_id)
+    for request in state["agent_request_refs"]:
+        if request.get("profile_ref") not in allowed_refs:
+            raise ValueError("specialist agent request profile_ref must reference profile_registry_refs")
+    for result in state["agent_result_refs"]:
+        if result.get("profile_ref") not in allowed_refs:
+            raise ValueError("specialist agent result profile_ref must reference profile_registry_refs")
+
+
+def _validate_profile_spec(item: Any) -> None:
+    if not isinstance(item, dict):
+        raise ValueError("specialist profile registry entry must be an object")
+    profile_id = _required_string(item, "profile_id")
+    version = _required_string(item, "version")
+    kind = _required_string(item, "kind")
+    if version != PROFILE_VERSION:
+        raise ValueError("specialist profile version is invalid")
+    if kind not in PROFILE_KINDS:
+        raise ValueError("specialist profile kind is invalid")
+    for key in ("capabilities", "artifact_types", "risk_levels", "required_context", "prohibited_actions"):
+        values = item.get(key)
+        if not isinstance(values, list) or not values or any(not isinstance(value, str) or not value for value in values):
+            raise ValueError(f"specialist profile {key} must be a non-empty string array")
+    if not isinstance(item.get("output_schema"), dict) or not item["output_schema"].get("schema_ref"):
+        raise ValueError("specialist profile output_schema must include schema_ref")
+    required_fields = item["output_schema"].get("required")
+    if not isinstance(required_fields, list) or any(not isinstance(value, str) or not value for value in required_fields):
+        raise ValueError("specialist profile output_schema must include required fields")
+    expected_schema_refs = {
+        "reviewer": "structured_specialist_finding.v1",
+        "check": "validated_specialist_review_state.v1",
+        "runner": "runner_provided_specialist_findings.v1",
+    }
+    expected_required = {
+        "reviewer": {
+            "finding_id",
+            "profile_id",
+            "finding",
+            "severity",
+            "evidence",
+            "why_it_matters",
+            "minimal_fix_or_test",
+            "scope_risk",
+            "confidence",
+            "failure_mode",
+            "source_provenance",
+        },
+        "check": {
+            "agent_finding_refs",
+            "raw_finding_to_group_map",
+            "finding_arbitration",
+            "accepted_change_refs",
+        },
+        "runner": {"profiles", "findings", "deterministic_check_results"},
+    }
+    if item["output_schema"]["schema_ref"] != expected_schema_refs[kind]:
+        raise ValueError("specialist profile output_schema schema_ref is invalid")
+    if set(required_fields) != expected_required[kind]:
+        raise ValueError("specialist profile output_schema required fields are invalid")
+    _required_string(item, "selection_reason")
+    context_hash = _required_string(item, "context_hash")
+    comparable = {key: value for key, value in item.items() if key != "context_hash"}
+    if context_hash != _stable_hash(comparable):
+        raise ValueError(f"specialist profile context_hash is stale for {profile_id}")
 
 
 def _build_agent_collection_state(
@@ -222,10 +452,12 @@ def _build_agent_collection_state(
     panel_id: str,
     profiles: list[dict[str, Any]],
     findings: list[dict[str, Any]],
+    profile_registry_refs: list[dict[str, Any]],
 ) -> dict[str, Any]:
     findings_by_profile: dict[str, list[dict[str, Any]]] = {item["profile_id"]: [] for item in profiles}
     for finding in findings:
         findings_by_profile[finding["profile_id"]].append(finding)
+    profile_registry_by_id = {item["profile_id"]: item for item in profile_registry_refs}
 
     request_refs = []
     result_refs = []
@@ -238,6 +470,7 @@ def _build_agent_collection_state(
                 "mode": mode,
                 "panel_id": panel_id,
                 "profile_ref": profile_ref,
+                "profile_spec_hash": profile_registry_by_id[profile_ref]["context_hash"],
                 "target": target,
             }
         )
@@ -315,6 +548,7 @@ def _validate_agent_collection_state(
     results = state["agent_result_refs"]
     keys = state["agent_result_idempotency_keys"]
     status = state["agent_result_collection_status"]
+    registry_by_id = {item["profile_id"]: item for item in state["profile_registry_refs"] if isinstance(item, dict)}
     if not isinstance(requests, list) or len(requests) != len(profile_ids):
         raise ValueError("specialist agent_request_refs must contain one request per profile")
     if not isinstance(results, list):
@@ -335,6 +569,18 @@ def _validate_agent_collection_state(
         context_hash = _required_string(request, "context_hash")
         if profile_ref not in profile_ids:
             raise ValueError("specialist agent request profile_ref must reference a panel profile")
+        expected_context_hash = _stable_hash(
+            {
+                "artifact_id": specialist_artifact_id(state["review_panel_spec"]["mode"]),
+                "mode": state["review_panel_spec"]["mode"],
+                "panel_id": state["review_panel_spec"]["panel_id"],
+                "profile_ref": profile_ref,
+                "profile_spec_hash": registry_by_id[profile_ref]["context_hash"],
+                "target": state["review_panel_spec"]["target"],
+            }
+        )
+        if context_hash != expected_context_hash:
+            raise ValueError("specialist agent request context_hash must include selected profile spec hash")
         if request.get("status") != "completed":
             raise ValueError("specialist completed structured packet must not leave agent requests pending")
         lease = request.get("lease")

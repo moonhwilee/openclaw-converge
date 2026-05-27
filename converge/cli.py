@@ -14,7 +14,7 @@ from typing import Any
 
 from .acceptance import validate_acceptance_payload
 from .checkpoint import record_checkpoint, validate_evidence_artifact_refs, validate_evidence_object
-from .command_adapter import build_dry_run_packet
+from .command_adapter import EXPECTED_PRODUCTION_ROUTE_PARITY, build_dry_run_packet
 from .continuation import TERMINAL_CONTINUATION_TARGETS, current_cursor, default_continuation_plan
 from .messages import VALID_VERDICTS, lint_verdict_residuals, normalize_residuals, progress_block
 from .modes.conv import CONV_REPORT_ARTIFACT_ID, ConvHandler, ConvRecord, ConvRound, render_conv_report, validate_conv_state
@@ -330,12 +330,22 @@ def _summarize_route_parity_packet(
         "visible_delivery": route.get("visible_delivery") == visible_delivery,
         "state_root": route.get("state_root") == str(state_root),
     }
+    production_route_parity = {
+        "non_proof_shape": packet.get("production_route_parity") == EXPECTED_PRODUCTION_ROUTE_PARITY,
+    }
     workflows_unchanged = workflows_before == workflows_after
-    ok = bool(packet.get("ok") is True and all(route_free.values()) and all(metadata.values()) and workflows_unchanged)
+    ok = bool(
+        packet.get("ok") is True
+        and all(route_free.values())
+        and all(metadata.values())
+        and all(production_route_parity.values())
+        and workflows_unchanged
+    )
     return {
         "ok": ok,
         "route_free": route_free,
         "metadata": metadata,
+        "production_route_parity": production_route_parity,
         "workflow_state_unchanged": workflows_unchanged,
         "new_workflow_ids": sorted(workflows_after - workflows_before),
     }
@@ -439,7 +449,7 @@ def cmd_route_parity_verify(args: argparse.Namespace) -> int:
         evidence = json.loads(Path(args.evidence_file).read_text(encoding="utf-8"))
         if not isinstance(evidence, dict):
             raise ValueError("route parity evidence file must contain a JSON object")
-        result = validate_phase6_route_parity_evidence(evidence)
+        result = validate_phase6_route_parity_evidence(evidence, expected_state_root=str(args.state_root))
     except Exception as exc:
         print_json({"ok": False, "error": str(exc)})
         return 1

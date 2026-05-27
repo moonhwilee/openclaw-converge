@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
 from pathlib import Path
 
@@ -35,6 +36,55 @@ def assert_managed_command(result: dict, command: str) -> None:
         assert_true(passed is True, f"{command} should keep route-free flag {field}")
     for field, passed in command_result["metadata"].items():
         assert_true(passed is True, f"{command} should preserve route metadata {field}")
+    for field, passed in command_result["production_route_parity"].items():
+        assert_true(passed is True, f"{command} should preserve non-proof production parity field {field}")
+
+
+def write_fake_converge_bin(path: Path, *, production_status: str) -> None:
+    path.write_text(
+        f"""#!/usr/bin/env python3
+import json
+import sys
+
+def arg(name):
+    return sys.argv[sys.argv.index(name) + 1]
+
+raw_message = arg("--raw-message")
+command = raw_message.split()[0]
+mode = {{"/goal": "goal", "/verify": "verify", "/conv": "conv", "/converge": "conv"}}[command]
+print(json.dumps({{
+    "ok": True,
+    "dry_run": True,
+    "workflow_created": False,
+    "live_route_changed": False,
+    "live_traffic_observed": False,
+    "shadow_routing_enabled": False,
+    "external_action_performed": False,
+    "gateway_restart_required": False,
+    "legacy_data_deleted": False,
+    "route": {{
+        "current_command": command,
+        "converge_mode": mode,
+        "alias_status": "deprecated_alias" if command == "/converge" else "primary",
+        "owner_session_key": arg("--owner-session-key"),
+        "visible_delivery": json.loads(arg("--visible-delivery")),
+        "workflow_id": arg("--workflow-id"),
+        "state_root": arg("--state-root"),
+    }},
+    "production_route_parity": {{
+        "status": {production_status!r},
+        "cli_only_evidence_allowed": False,
+        "command_adapter_only_evidence_allowed": False,
+        "requires_installed_or_fresh_route_context": True,
+        "requires_visible_delivery_proof": True,
+        "requires_single_route_owner_proof": True,
+        "requires_no_duplicate_legacy_report_proof": True,
+    }},
+}}, ensure_ascii=False))
+""",
+        encoding="utf-8",
+    )
+    path.chmod(0o755)
 
 
 def assert_phase6_gate_is_bounded(result: dict) -> None:
@@ -88,6 +138,27 @@ def main() -> None:
         assert_true(
             "owner_session_key" in missing_owner["error"],
             "Phase 6 route parity gate should require owner session",
+        )
+
+        fake_bin = Path(tmp) / "fake-converge"
+        write_fake_converge_bin(fake_bin, production_status="proven_by_dry_run")
+        production_overclaim = run_fail(
+            "route-parity-check",
+            "--owner-session-key",
+            OWNER_SESSION,
+            "--visible-delivery",
+            VISIBLE_DELIVERY,
+            "--converge-bin",
+            str(fake_bin),
+            state_root=state_root,
+        )
+        assert_true(
+            production_overclaim["ok"] is False,
+            "Phase 6 route parity gate should reject dry-run production parity overclaims",
+        )
+        assert_true(
+            production_overclaim["managed_commands"]["/goal"]["production_route_parity"]["non_proof_shape"] is False,
+            "Phase 6 route parity gate should require the command-adapter non-proof parity shape",
         )
 
 

@@ -204,6 +204,27 @@ def assert_c7_3_route_retirement_plan_contract(state_root: Path) -> None:
         "route_retirement_plan.live_route_replacement_readiness_plan" in required_packet_fields,
         "C7 live route readiness plan should be a required field",
     )
+    assert_true(
+        "production_route_parity.status" in required_packet_fields,
+        "Phase 6 production route parity non-proof status should be required",
+    )
+    production_route_parity = result["production_route_parity"]
+    assert_true(
+        production_route_parity["status"] == "not_proven_by_command_adapter",
+        "command-adapter evidence must not claim production route parity",
+    )
+    assert_true(
+        production_route_parity["cli_only_evidence_allowed"] is False,
+        "CLI-only evidence should be rejected for production route parity",
+    )
+    assert_true(
+        production_route_parity["command_adapter_only_evidence_allowed"] is False,
+        "command-adapter-only evidence should be rejected for production route parity",
+    )
+    assert_true(
+        production_route_parity["requires_installed_or_fresh_route_context"] is True,
+        "Phase 6 should require installed or fresh route context",
+    )
     assert_true(route_plan["scope"]["managed_commands"] == ["/goal", "/verify", "/conv"], "C7.3 should scope managed commands")
     assert_true(route_plan["scope"]["legacy_aliases"] == ["/converge"], "C7.3 should classify /converge as legacy alias")
     assert_true(
@@ -973,6 +994,24 @@ def assert_c7_1_contract_validation_rejects_drift(state_root: Path) -> None:
         assert_true("must not authorize live changes" in str(exc), "validator should reject live-change authorization")
     else:
         raise AssertionError("validator should reject live route authorization from readiness plan")
+
+    production_route_parity_drift = json.loads(json.dumps(packet))
+    production_route_parity_drift["production_route_parity"]["status"] = "proven"
+    try:
+        validate_dry_run_packet(production_route_parity_drift)
+    except ValueError as exc:
+        assert_true("production route parity" in str(exc), "validator should reject command-adapter route parity proof")
+    else:
+        raise AssertionError("validator should reject command-adapter route parity proof")
+
+    cli_evidence_drift = json.loads(json.dumps(packet))
+    cli_evidence_drift["production_route_parity"]["cli_only_evidence_allowed"] = True
+    try:
+        validate_dry_run_packet(cli_evidence_drift)
+    except ValueError as exc:
+        assert_true("production route parity" in str(exc), "validator should reject CLI-only route parity proof")
+    else:
+        raise AssertionError("validator should reject CLI-only route parity proof")
 
     readiness_scope_drift = json.loads(json.dumps(packet))
     readiness_scope_drift["route_retirement_plan"]["live_route_replacement_readiness_plan"]["exact_route_scope"][

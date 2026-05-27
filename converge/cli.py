@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -34,6 +35,7 @@ from .modes.plan import PlanHandler
 from .modes.verify import VERIFY_REPORT_ARTIFACT_ID, VerifyHandler, VerifyRecord, render_verify_report
 from .modes.specialist_panel import SPECIALIST_REVIEW_RUNNER_REF, load_specialist_packet, specialist_artifact_id, validate_specialist_state
 from .recovery import recover_workflow, scan_workflows, watchdog_check
+from .route_parity import validate_phase6_route_parity_evidence
 from .artifacts import now_iso, record_workflow_artifact, sha256_file, validate_manifest_entry
 from .schema import SchemaError, validate_bundled_schemas, validate_named, validate_next_safe_action
 from .store import WorkflowStore, structured_next_action
@@ -236,6 +238,212 @@ def cmd_command_dry_run(args: argparse.Namespace) -> int:
             state_root=args.state_root,
         )
     )
+    return 0
+
+
+def _workflow_ids(state_root: Path) -> set[str]:
+    workflows = state_root / "workflows"
+    if not workflows.exists():
+        return set()
+    return {path.name for path in workflows.iterdir() if path.is_dir()}
+
+
+def _run_route_parity_dry_run(
+    *,
+    converge_bin: str | None,
+    state_root: Path,
+    raw_message: str,
+    owner_session_key: str,
+    visible_delivery: dict[str, Any],
+    workflow_id: str,
+) -> dict[str, Any]:
+    if not converge_bin:
+        return build_dry_run_packet(
+            raw_message=raw_message,
+            owner_session_key=owner_session_key,
+            visible_delivery=visible_delivery,
+            workflow_id=workflow_id,
+            state_root=state_root,
+        )
+
+    result = subprocess.run(
+        [
+            converge_bin,
+            "--state-root",
+            str(state_root),
+            "command-dry-run",
+            "--raw-message",
+            raw_message,
+            "--workflow-id",
+            workflow_id,
+            "--owner-session-key",
+            owner_session_key,
+            "--visible-delivery",
+            json.dumps(visible_delivery, ensure_ascii=False, sort_keys=True),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise ValueError(
+            f"route parity dry-run failed for {raw_message!r}: "
+            f"returncode={result.returncode} stdout={result.stdout!r} stderr={result.stderr!r}"
+        )
+    try:
+        packet = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"route parity dry-run returned non-JSON output for {raw_message!r}") from exc
+    if not isinstance(packet, dict):
+        raise ValueError(f"route parity dry-run returned non-object JSON for {raw_message!r}")
+    return packet
+
+
+def _summarize_route_parity_packet(
+    *,
+    packet: dict[str, Any],
+    command: str,
+    expected_mode: str,
+    expected_alias_status: str,
+    owner_session_key: str,
+    visible_delivery: dict[str, Any],
+    state_root: Path,
+    workflows_before: set[str],
+    workflows_after: set[str],
+) -> dict[str, Any]:
+    route = packet.get("route") if isinstance(packet.get("route"), dict) else {}
+    route_free = {
+        "dry_run": packet.get("dry_run") is True,
+        "workflow_created": packet.get("workflow_created") is False,
+        "live_route_changed": packet.get("live_route_changed") is False,
+        "live_traffic_observed": packet.get("live_traffic_observed") is False,
+        "shadow_routing_enabled": packet.get("shadow_routing_enabled") is False,
+        "external_action_performed": packet.get("external_action_performed") is False,
+        "gateway_restart_required": packet.get("gateway_restart_required") is False,
+        "legacy_data_deleted": packet.get("legacy_data_deleted") is False,
+    }
+    metadata = {
+        "command": route.get("current_command") == command,
+        "mode": route.get("converge_mode") == expected_mode,
+        "alias_status": route.get("alias_status") == expected_alias_status,
+        "owner_session": route.get("owner_session_key") == owner_session_key,
+        "visible_delivery": route.get("visible_delivery") == visible_delivery,
+        "state_root": route.get("state_root") == str(state_root),
+    }
+    workflows_unchanged = workflows_before == workflows_after
+    ok = bool(packet.get("ok") is True and all(route_free.values()) and all(metadata.values()) and workflows_unchanged)
+    return {
+        "ok": ok,
+        "route_free": route_free,
+        "metadata": metadata,
+        "workflow_state_unchanged": workflows_unchanged,
+        "new_workflow_ids": sorted(workflows_after - workflows_before),
+    }
+
+
+def cmd_route_parity_check(args: argparse.Namespace) -> int:
+    if args.visible_delivery:
+        _validate_visible_delivery_arg(args.visible_delivery)
+    owner_session_key = args.owner_session_key or ""
+    if not owner_session_key:
+        print_json({"ok": False, "error": "route-parity-check requires non-empty owner_session_key"})
+        return 2
+    visible_delivery = args.visible_delivery or {}
+    commands = {
+        "/goal": ("goal", "primary", "/goal phase6 route parity smoke"),
+        "/verify": ("verify", "primary", "/verify phase6 route parity smoke"),
+        "/conv": ("conv", "primary", "/conv phase6 route parity smoke"),
+    }
+    alias = ("/converge", "conv", "deprecated_alias", "/converge phase6 alias boundary smoke")
+    results: dict[str, Any] = {}
+    before_all = _workflow_ids(args.state_root)
+    for command, (mode, alias_status, raw_message) in commands.items():
+        before = _workflow_ids(args.state_root)
+        packet = _run_route_parity_dry_run(
+            converge_bin=args.converge_bin,
+            state_root=args.state_root,
+            raw_message=raw_message,
+            owner_session_key=owner_session_key,
+            visible_delivery=visible_delivery,
+            workflow_id=f"phase6-{mode}-dry-run",
+        )
+        after = _workflow_ids(args.state_root)
+        results[command] = _summarize_route_parity_packet(
+            packet=packet,
+            command=command,
+            expected_mode=mode,
+            expected_alias_status=alias_status,
+            owner_session_key=owner_session_key,
+            visible_delivery=visible_delivery,
+            state_root=args.state_root,
+            workflows_before=before,
+            workflows_after=after,
+        )
+
+    alias_command, alias_mode, alias_status, alias_raw = alias
+    before = _workflow_ids(args.state_root)
+    alias_packet = _run_route_parity_dry_run(
+        converge_bin=args.converge_bin,
+        state_root=args.state_root,
+        raw_message=alias_raw,
+        owner_session_key=owner_session_key,
+        visible_delivery=visible_delivery,
+        workflow_id="phase6-converge-alias-dry-run",
+    )
+    after = _workflow_ids(args.state_root)
+    alias_result = _summarize_route_parity_packet(
+        packet=alias_packet,
+        command=alias_command,
+        expected_mode=alias_mode,
+        expected_alias_status=alias_status,
+        owner_session_key=owner_session_key,
+        visible_delivery=visible_delivery,
+        state_root=args.state_root,
+        workflows_before=before,
+        workflows_after=after,
+    )
+    workflows_after_all = _workflow_ids(args.state_root)
+    managed_ok = all(item["ok"] for item in results.values())
+    alias_ok = bool(alias_result["ok"])
+    no_state_creation = before_all == workflows_after_all
+    packet = {
+        "ok": managed_ok and alias_ok and no_state_creation,
+        "phase": "phase6_production_route_parity",
+        "proof_level": "route_dry_run_gate",
+        "production_route_parity_proven": False,
+        "route_change_performed": False,
+        "gateway_restart_performed": False,
+        "external_action_performed": False,
+        "cleanup_or_legacy_removal_performed": False,
+        "converge_bin": args.converge_bin or "current-python-module",
+        "state_root": str(args.state_root),
+        "managed_commands": results,
+        "legacy_alias_boundary": {alias_command: alias_result},
+        "completion_gate": {
+            "ready_for_live_replacement_completion": False,
+            "blocked_until": [
+                "fresh-session exact /goal visible route proof",
+                "fresh-session exact /verify visible route proof",
+                "fresh-session exact /conv visible route proof",
+                "single route owner proof with no duplicate legacy visible report",
+                "reserve-delivery/report-proof/complete-reported proof in the real delivery channel",
+            ],
+        },
+    }
+    print_json(packet)
+    return 0 if packet["ok"] else 1
+
+
+def cmd_route_parity_verify(args: argparse.Namespace) -> int:
+    try:
+        evidence = json.loads(Path(args.evidence_file).read_text(encoding="utf-8"))
+        if not isinstance(evidence, dict):
+            raise ValueError("route parity evidence file must contain a JSON object")
+        result = validate_phase6_route_parity_evidence(evidence)
+    except Exception as exc:
+        print_json({"ok": False, "error": str(exc)})
+        return 1
+    print_json(result)
     return 0
 
 
@@ -2681,6 +2889,18 @@ def build_parser() -> argparse.ArgumentParser:
     command_dry_run.add_argument("--visible-delivery", type=parse_json)
     command_dry_run.add_argument("--json", action="store_true", help=json_help)
     command_dry_run.set_defaults(func=cmd_command_dry_run)
+
+    route_parity_check = sub.add_parser("route-parity-check")
+    route_parity_check.add_argument("--converge-bin")
+    route_parity_check.add_argument("--owner-session-key")
+    route_parity_check.add_argument("--visible-delivery", type=parse_json)
+    route_parity_check.add_argument("--json", action="store_true", help=json_help)
+    route_parity_check.set_defaults(func=cmd_route_parity_check)
+
+    route_parity_verify = sub.add_parser("route-parity-verify")
+    route_parity_verify.add_argument("--evidence-file", required=True)
+    route_parity_verify.add_argument("--json", action="store_true", help=json_help)
+    route_parity_verify.set_defaults(func=cmd_route_parity_verify)
 
     status = sub.add_parser("status")
     status.add_argument("--workflow-id", required=True)

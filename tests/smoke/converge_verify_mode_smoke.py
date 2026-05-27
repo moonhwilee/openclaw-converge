@@ -187,6 +187,207 @@ def main() -> int:
         )
         write_events(state_root, "verify-deterministic-file-evidence", deterministic_events)
 
+        packet = specialist_packet()
+        packet_path = state_root / "verify-specialist-findings.json"
+        packet_path.write_text(json.dumps(packet), encoding="utf-8")
+        specialist_verify = run(
+            "verify",
+            "--text",
+            "Verify specialist structured findings without local file evidence",
+            "--workflow-id",
+            "verify-specialist-findings",
+            "--owner-session-key",
+            "session:test",
+            "--visible-delivery",
+            visible_delivery,
+            "--structured-findings-file",
+            str(packet_path),
+            state_root=state_root,
+        )["workflow"]
+        specialist_state = specialist_verify["verify_state"]
+        assert_true(specialist_verify["status"] == "completed_unreported", "structured findings should allow verify completion")
+        assert_true(specialist_state["execution_capability"] == "delegated_agents", "structured findings should use delegated_agents capability")
+        assert_true(specialist_state["execution_evidence_refs"] == ["verify-specialist-findings"], "structured findings should bind specialist evidence")
+        assert_true(len(specialist_state["review_panel_spec"]["profiles"]) == 3, "structured findings should preserve panel profiles")
+        assert_true(
+            specialist_state["raw_finding_to_group_map"][0]["group_id"] == specialist_state["raw_finding_to_group_map"][1]["group_id"],
+            "structured findings should dedupe by failure mode",
+        )
+        assert_true(
+            {item["event_type"] for item in events(state_root, "verify-specialist-findings")}.issuperset(
+                {"agent_panel_requested", "agent_findings_recorded", "finding_arbitrated"}
+            ),
+            "structured findings should be event-backed",
+        )
+        run("validate", "--workflow-id", "verify-specialist-findings", state_root=state_root)
+        specialist_events = events(state_root, "verify-specialist-findings")
+        write_events(
+            state_root,
+            "verify-specialist-findings",
+            [event for event in specialist_events if event["event_type"] != "finding_arbitrated"],
+        )
+        missing_specialist_event = run_fail("validate", "--workflow-id", "verify-specialist-findings", state_root=state_root)
+        assert_true("finding_arbitrated event" in missing_specialist_event["error"], "specialist execution should require arbitration event proof")
+        write_events(state_root, "verify-specialist-findings", specialist_events)
+
+        drifted_specialist = json.loads(json.dumps(specialist_verify))
+        drifted_specialist["verify_state"]["agent_finding_refs"][0].pop("evidence")
+        write_workflow(state_root, "verify-specialist-findings", drifted_specialist)
+        drifted_result = run_fail("validate", "--workflow-id", "verify-specialist-findings", state_root=state_root)
+        assert_true(
+            "specialist" in drifted_result["error"]
+            or "report artifact" in drifted_result["error"]
+            or "terminal checkpoint" in drifted_result["error"],
+            "stored specialist findings should remain fully validated",
+        )
+        write_workflow(state_root, "verify-specialist-findings", specialist_verify)
+
+        count_drift_events = json.loads(json.dumps(specialist_events))
+        for event in count_drift_events:
+            if event["event_type"] == "agent_findings_recorded":
+                event["payload"]["finding_count"] = 99
+        write_events(state_root, "verify-specialist-findings", count_drift_events)
+        count_drift = run_fail("validate", "--workflow-id", "verify-specialist-findings", state_root=state_root)
+        assert_true("finding_count must match state" in count_drift["error"], "specialist event counts should bind to state")
+        write_events(state_root, "verify-specialist-findings", specialist_events)
+
+        mixed_target = state_root / "verify-mixed-specialist-target.txt"
+        mixed_target.write_text("phase 4 mixed deterministic plus specialist target\n", encoding="utf-8")
+        mixed_verify = run(
+            "verify",
+            "--text",
+            f"Verify execution-required mixed target {mixed_target}",
+            "--workflow-id",
+            "verify-mixed-specialist-findings",
+            "--owner-session-key",
+            "session:test",
+            "--visible-delivery",
+            visible_delivery,
+            "--structured-findings-file",
+            str(packet_path),
+            state_root=state_root,
+        )["workflow"]
+        assert_true(mixed_verify["verify_state"]["execution_capability"] == "delegated_agents", "specialist proof should not be bypassed by deterministic evidence")
+        mixed_events = events(state_root, "verify-mixed-specialist-findings")
+        write_events(
+            state_root,
+            "verify-mixed-specialist-findings",
+            [event for event in mixed_events if event["event_type"] != "finding_arbitrated"],
+        )
+        mixed_missing_event = run_fail("validate", "--workflow-id", "verify-mixed-specialist-findings", state_root=state_root)
+        assert_true("finding_arbitrated event" in mixed_missing_event["error"], "mixed evidence should still require specialist proof")
+
+        bad_packet = json.loads(json.dumps(packet))
+        bad_packet["findings"][0].pop("evidence")
+        bad_packet_path = state_root / "verify-bad-specialist-findings.json"
+        bad_packet_path.write_text(json.dumps(bad_packet), encoding="utf-8")
+        bad_specialist = run_fail(
+            "verify",
+            "--text",
+            "Verify malformed specialist packet",
+            "--workflow-id",
+            "verify-bad-specialist-findings",
+            "--visible-delivery",
+            visible_delivery,
+            "--structured-findings-file",
+            str(bad_packet_path),
+            state_root=state_root,
+        )
+        assert_true("evidence" in bad_specialist["error"], "structured findings should require evidence anchors")
+
+        side_effect_packet = json.loads(json.dumps(packet))
+        side_effect_packet["side_effects_performed"] = ["visible_message_sent"]
+        side_effect_packet_path = state_root / "verify-side-effect-specialist-findings.json"
+        side_effect_packet_path.write_text(json.dumps(side_effect_packet), encoding="utf-8")
+        side_effect_specialist = run_fail(
+            "verify",
+            "--text",
+            "Verify side-effect specialist packet",
+            "--workflow-id",
+            "verify-side-effect-specialist-findings",
+            "--visible-delivery",
+            visible_delivery,
+            "--structured-findings-file",
+            str(side_effect_packet_path),
+            state_root=state_root,
+        )
+        assert_true("side effects" in side_effect_specialist["error"], "structured findings should reject specialist side effects")
+
+        unknown_field_packet = json.loads(json.dumps(packet))
+        unknown_field_packet["spawned_agents"] = ["agent-1"]
+        unknown_field_path = state_root / "verify-unknown-field-specialist-findings.json"
+        unknown_field_path.write_text(json.dumps(unknown_field_packet), encoding="utf-8")
+        unknown_field = run_fail(
+            "verify",
+            "--text",
+            "Verify unsupported specialist packet field",
+            "--workflow-id",
+            "verify-unknown-field-specialist-findings",
+            "--visible-delivery",
+            visible_delivery,
+            "--structured-findings-file",
+            str(unknown_field_path),
+            state_root=state_root,
+        )
+        assert_true("unsupported fields" in unknown_field["error"], "structured findings should reject unsupported live-action fields")
+
+        weak_evidence_packet = json.loads(json.dumps(packet))
+        weak_evidence_packet["findings"][0]["evidence"] = "missing-artifact.json"
+        weak_evidence_path = state_root / "verify-weak-evidence-specialist-findings.json"
+        weak_evidence_path.write_text(json.dumps(weak_evidence_packet), encoding="utf-8")
+        weak_evidence = run_fail(
+            "verify",
+            "--text",
+            "Verify weak specialist evidence anchor",
+            "--workflow-id",
+            "verify-weak-evidence-specialist-findings",
+            "--visible-delivery",
+            visible_delivery,
+            "--structured-findings-file",
+            str(weak_evidence_path),
+            state_root=state_root,
+        )
+        assert_true("evidence" in weak_evidence["error"], "structured findings should reject unbound evidence prose")
+
+        forbidden_flag_packet = json.loads(json.dumps(packet))
+        forbidden_flag_packet["visible_message_sent"] = True
+        forbidden_flag_path = state_root / "verify-forbidden-specialist-findings.json"
+        forbidden_flag_path.write_text(json.dumps(forbidden_flag_packet), encoding="utf-8")
+        forbidden_flag = run_fail(
+            "verify",
+            "--text",
+            "Verify forbidden specialist side-effect flag",
+            "--workflow-id",
+            "verify-forbidden-specialist-findings",
+            "--visible-delivery",
+            visible_delivery,
+            "--structured-findings-file",
+            str(forbidden_flag_path),
+            state_root=state_root,
+        )
+        assert_true(
+            "forbidden side effects" in forbidden_flag["error"] or "unsupported fields" in forbidden_flag["error"],
+            "structured findings should reject explicit forbidden side-effect flags",
+        )
+
+        manual_packet = json.loads(json.dumps(packet))
+        manual_packet["findings"][0]["source_provenance"] = "manual_note"
+        manual_path = state_root / "verify-manual-specialist-findings.json"
+        manual_path.write_text(json.dumps(manual_packet), encoding="utf-8")
+        manual_result = run_fail(
+            "verify",
+            "--text",
+            "Verify manual-provenance specialist packet",
+            "--workflow-id",
+            "verify-manual-specialist-findings",
+            "--visible-delivery",
+            visible_delivery,
+            "--structured-findings-file",
+            str(manual_path),
+            state_root=state_root,
+        )
+        assert_true("source_provenance" in manual_result["error"], "manual provenance should not become specialist execution proof")
+
         mismatched_status = run(
             "verify",
             "--text",
@@ -754,6 +955,65 @@ def main() -> int:
             )
             assert_true(relative_resumed["workflow"]["status"] == "completed_unreported", "relative state-root report retry should finalize")
     return 0
+
+
+def specialist_packet() -> dict:
+    return {
+        "panel_id": "panel-phase4-verify",
+        "risk_level": "medium",
+        "side_effects_performed": [],
+        "profiles": [
+            {
+                "profile_id": "reviewer-contracts",
+                "role": "contract reviewer",
+                "expertise": ["schema", "state"],
+                "likely_failure_modes": ["evidence binding"],
+                "prohibited_actions": ["visible_messages", "workflow_state_mutation"],
+            },
+            {
+                "profile_id": "reviewer-runtime",
+                "role": "runtime reviewer",
+                "expertise": ["runner", "events"],
+                "likely_failure_modes": ["evidence binding"],
+                "prohibited_actions": ["external_actions", "service_restart"],
+            },
+            {
+                "profile_id": "reviewer-risk",
+                "role": "risk reviewer",
+                "expertise": ["approval boundaries", "report proof"],
+                "likely_failure_modes": ["report proof drift"],
+                "prohibited_actions": ["push_or_pr", "target_mutation"],
+            },
+        ],
+        "findings": [
+            {
+                "finding_id": "finding-evidence-anchor-a",
+                "profile_id": "reviewer-contracts",
+                "finding": "Evidence binding must be validated before a pass verdict.",
+                "severity": "p3",
+                "evidence": "verify_state.execution_evidence_refs",
+                "why_it_matters": "A passing verdict without evidence refs would recreate false completion.",
+                "minimal_fix_or_test": "Assert specialist artifact and events are required by validate.",
+                "scope_risk": "state-contract",
+                "confidence": 0.82,
+                "failure_mode": "evidence binding",
+                "source_provenance": "runner_provided",
+            },
+            {
+                "finding_id": "finding-evidence-anchor-b",
+                "profile_id": "reviewer-runtime",
+                "finding": "Specialist event proof must survive validation.",
+                "severity": "p3",
+                "evidence": "events.jsonl finding_arbitrated",
+                "why_it_matters": "Event loss would make findings unverifiable after recovery.",
+                "minimal_fix_or_test": "Remove finding_arbitrated and expect validate failure.",
+                "scope_risk": "recovery",
+                "confidence": 0.76,
+                "failure_mode": "evidence binding",
+                "source_provenance": "runner_provided",
+            },
+        ],
+    }
 
 
 if __name__ == "__main__":

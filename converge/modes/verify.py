@@ -17,6 +17,13 @@ from .verify_execution import (
     run_verify_deterministic_checks,
     write_deterministic_check_artifact,
 )
+from .specialist_panel import (
+    SPECIALIST_REVIEW_RUNNER_REF,
+    build_specialist_review,
+    specialist_artifact_id,
+    validate_specialist_state,
+    write_specialist_artifact,
+)
 from ..artifacts import now_iso
 from ..messages import normalize_residuals
 
@@ -36,7 +43,7 @@ class VerifyRecord:
     residuals: dict[str, list[str]]
     final_report_summary: str
 
-    def as_state(self, *, artifact_id: str, artifact_path: str) -> dict[str, Any]:
+    def as_state(self, *, artifact_id: str, artifact_path: str, specialist_state: dict[str, Any] | None = None) -> dict[str, Any]:
         state = {
             "final_report_artifact_id": artifact_id,
             "final_report_artifact_path": artifact_path,
@@ -49,6 +56,8 @@ class VerifyRecord:
             "residuals": self.residuals,
             "final_report_summary": self.final_report_summary,
         }
+        if specialist_state:
+            state.update(specialist_state)
         state.update(classify_execution_markers(self.target, capability="report_scaffold_only"))
         return state
 
@@ -86,6 +95,8 @@ def validate_verify_state(
             raise ValueError(f"verify_state {key} must be an array")
     if terminal and not state["evidence"]:
         raise ValueError("terminal verify workflow requires evidence")
+    if "review_panel_spec" in state:
+        validate_specialist_state(_specialist_state_from_verify(state))
     for key in ("final_report_artifact_id", "final_report_artifact_path", "target", "verdict", "final_report_summary"):
         if not isinstance(state.get(key), str) or not state.get(key):
             raise ValueError(f"verify_state {key} must be a non-empty string")
@@ -109,6 +120,7 @@ class VerifyHandler(ModeHandler):
         self,
         workflow_id: str,
         *,
+        specialist_findings: dict[str, Any] | None = None,
         recovery_lease_id: str | None = None,
         recovery_lease_holder: str | None = None,
     ) -> dict[str, Any]:
@@ -138,22 +150,34 @@ class VerifyHandler(ModeHandler):
         evidence_records = [*record.evidence_records]
         if deterministic_evidence:
             evidence_records.append(deterministic_evidence)
+        specialist_review = _record_specialist_review(self, workflow_id, mode="verify", target=record.target, packet=specialist_findings)
+        specialist_state = None
+        if specialist_review:
+            specialist_state = specialist_review["state"]
+            evidence_records.append(specialist_review["evidence"])
         evidence_records.append(evidence)
         deterministic_checks = [*record.deterministic_checks, *deterministic_check_summaries(deterministic_result)]
         residuals = _verify_residuals(record.residuals, deterministic_result)
+        if specialist_state:
+            residuals = _verify_specialist_residuals(residuals, specialist_state)
+        verdict = record.verdict
+        if specialist_state and any(item["decision"] in {"block", "fix"} for item in specialist_state["finding_arbitration"]):
+            verdict = "needs_fix"
         state_record = VerifyRecord(
             target=record.target,
             check_plan=record.check_plan,
             deterministic_checks=deterministic_checks,
-            reviewer_findings=record.reviewer_findings,
-            verdict=record.verdict,
+            reviewer_findings=[*record.reviewer_findings, *(specialist_review or {}).get("reviewer_findings", [])],
+            verdict=verdict,
             evidence_records=evidence_records,
             residuals=residuals,
             final_report_summary=_verify_report_summary(record.final_report_summary, deterministic_result),
         )
-        state = state_record.as_state(artifact_id=artifact_ref, artifact_path=artifact_path_text)
-        if deterministic_artifact:
+        state = state_record.as_state(artifact_id=artifact_ref, artifact_path=artifact_path_text, specialist_state=specialist_state)
+        if deterministic_artifact and not specialist_state:
             state.update(deterministic_execution_markers(deterministic_result, artifact_id=deterministic_artifact["artifact_id"]))
+        if specialist_state:
+            state.update(_specialist_execution_markers(specialist_state, artifact_id=specialist_artifact_id("verify")))
         state, residuals, block_reason = apply_execution_truth_block("verify", state, residuals=state_record.residuals)
         report_evidence = [
             item
@@ -212,10 +236,11 @@ class VerifyHandler(ModeHandler):
                     else {
                         "result": state_record.verdict,
                         "done": [
-                            "Recorded a structured verification verdict",
-                            "Recorded trusted deterministic check evidence",
-                            "Registered the final verification report through the shared artifact path",
-                            "Stopped before adapters, recovery, or external actions",
+                        "Recorded a structured verification verdict",
+                        "Recorded trusted deterministic check evidence",
+                        "Bound structured specialist findings when provided",
+                        "Registered the final verification report through the shared artifact path",
+                        "Stopped before adapters, recovery, or external actions",
                         ],
                         "checked": [
                             "Verify mode used shared artifact and checkpoint contracts",
@@ -323,6 +348,137 @@ def _verify_report_summary(base: str, result: dict[str, Any]) -> str:
     if not result.get("checks"):
         return base
     return "Verification record is backed by trusted deterministic local check evidence."
+
+
+def _record_specialist_review(
+    handler: ModeHandler,
+    workflow_id: str,
+    *,
+    mode: str,
+    target: str,
+    packet: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if packet is None:
+        return None
+    artifact_id = specialist_artifact_id(mode)
+    review = build_specialist_review(packet, mode=mode, target=target, artifact_id=artifact_id)
+    artifact_path = handler.store.workflow_dir(workflow_id) / "artifacts" / f"{mode}-specialist-findings.json"
+    workflow = handler.load_workflow(workflow_id)
+    matches = [
+        artifact
+        for artifact in workflow.get("artifacts", [])
+        if isinstance(artifact, dict) and artifact.get("artifact_id") == artifact_id
+    ]
+    if matches:
+        if len(matches) > 1:
+            raise ValueError(f"duplicate specialist findings artifact id: {artifact_id}")
+        artifact = matches[0]
+        if artifact.get("kind") != "evidence":
+            raise ValueError("specialist findings artifact must use evidence kind")
+        if not Path(str(artifact.get("path", ""))).is_file():
+            raise ValueError("specialist findings artifact path is missing")
+    else:
+        write_specialist_artifact(artifact_path, {"packet": packet, "specialist_review": review["state"]})
+        artifact = handler.record_artifact(
+            workflow_id,
+            kind="evidence",
+            artifact_id=artifact_id,
+            path=artifact_path,
+            note="validated runner-provided specialist findings",
+        )["artifact"]
+    _record_specialist_events(handler, workflow_id, mode=mode, review=review, artifact_id=artifact["artifact_id"])
+    return review
+
+
+def _record_specialist_events(handler: ModeHandler, workflow_id: str, *, mode: str, review: dict[str, Any], artifact_id: str) -> None:
+    existing = _specialist_event_types(handler, workflow_id, artifact_id=artifact_id)
+    for event_type in ("agent_panel_requested", "agent_findings_recorded", "finding_arbitrated"):
+        if event_type in existing:
+            continue
+        handler.store.append_event(
+            workflow_id,
+            {
+                "schema_version": 1,
+                "event_id": f"evt-{mode}-{event_type}-{workflow_id}",
+                "workflow_id": workflow_id,
+                "event_type": event_type,
+                "created_at": now_iso(),
+                "note": "validated runner-provided specialist review evidence",
+                "payload": {
+                    "runner_ref": SPECIALIST_REVIEW_RUNNER_REF,
+                    "artifact_id": artifact_id,
+                    "mode": mode,
+                    "finding_count": len(review["state"]["agent_finding_refs"]),
+                    "arbitration_count": len(review["state"]["finding_arbitration"]),
+                },
+            },
+        )
+
+
+def _specialist_event_types(handler: ModeHandler, workflow_id: str, *, artifact_id: str) -> set[str]:
+    path = handler.store.workflow_dir(workflow_id) / "events.jsonl"
+    if not path.exists():
+        return set()
+    found = set()
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        event = json.loads(line)
+        payload = event.get("payload") or {}
+        if payload.get("artifact_id") == artifact_id:
+            found.add(event.get("event_type"))
+    return found
+
+
+def _specialist_execution_markers(state: dict[str, Any], *, artifact_id: str) -> dict[str, Any]:
+    return {
+        "execution_capability": "delegated_agents",
+        "execution_performed": True,
+        "synthetic_report": False,
+        "runner_ref": SPECIALIST_REVIEW_RUNNER_REF,
+        "execution_evidence_refs": [artifact_id],
+        "execution_started_at": now_iso(),
+        "execution_completed_at": now_iso(),
+        "execution_classification_reason": "trusted runner provided structured specialist findings",
+    }
+
+
+def _verify_specialist_residuals(base: dict[str, list[str]], state: dict[str, Any]) -> dict[str, list[str]]:
+    residuals = normalize_residuals(base)
+    if state["accepted_change_refs"]:
+        residuals["blocking_remaining"] = [
+            "Specialist findings require accepted fixes or explicit owner risk acceptance before pass.",
+        ]
+    residuals["accepted_risks"] = [
+        "Phase 4A accepts runner-provided structured findings; native agent launch is deferred.",
+    ]
+    residuals["implementation_backlog"] = [
+        "Phase 4B adds native Converge specialist panel launch and recovery-safe result collection.",
+    ]
+    residuals["deferred_scope"] = [
+        "Specialist agents cannot send visible messages, mutate workflow state, restart services, push, or open PRs.",
+    ]
+    return residuals
+
+
+def _specialist_state_from_verify(state: dict[str, Any]) -> dict[str, Any]:
+    return {key: state[key] for key in (
+        "review_panel_spec",
+        "deterministic_check_results",
+        "agent_finding_refs",
+        "raw_finding_to_group_map",
+        "finding_arbitration",
+        "accepted_change_refs",
+        "original_target_gate",
+        "delta_regression_gate",
+        "follow_up_round_required",
+        "max_rounds_default",
+        "max_rounds",
+        "round_index",
+        "stop_reason",
+        "owner_stop_ref",
+        "round_stop_proof",
+    )}
 
 
 def build_verify_record(text: str) -> VerifyRecord:

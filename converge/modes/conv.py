@@ -16,12 +16,26 @@ from .conv_execution import (
     write_conv_round_execution_artifact,
 )
 from .execution_truth import classify_execution_markers
+from .specialist_panel import (
+    SPECIALIST_REVIEW_RUNNER_REF,
+    build_specialist_review,
+    specialist_artifact_id,
+    validate_specialist_state,
+    write_specialist_artifact,
+)
 from ..artifacts import now_iso
 from ..messages import normalize_residuals
 
 
 CONV_REPORT_ARTIFACT_ID = "conv-final-report"
-CONV_STOP_CONDITIONS = {"evidence_sufficient", "max_round", "blocked_no_execution_evidence", "blocked_missing_execution_truth_markers"}
+CONV_STOP_CONDITIONS = {
+    "evidence_sufficient",
+    "max_round",
+    "blocked_no_execution_evidence",
+    "blocked_missing_execution_truth_markers",
+    "blocked_specialist_findings",
+    "blocked_specialist_follow_up_required",
+}
 CONV_NOVELTY = {"new", "repeated", "none"}
 CONV_SEVERITY = {"p0", "p1", "p2", "p3", "none"}
 CONV_OBJECTIVE_IMPACT = {"changes_objective", "preserves_objective", "none"}
@@ -66,7 +80,14 @@ class ConvRecord:
     residuals: dict[str, list[str]]
     final_report_summary: str
 
-    def as_state(self, *, artifact_id: str, artifact_path: str) -> dict[str, Any]:
+    def as_state(
+        self,
+        *,
+        artifact_id: str,
+        artifact_path: str,
+        specialist_state: dict[str, Any] | None = None,
+        specialist_evidence: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         state = {
             "final_report_artifact_id": artifact_id,
             "final_report_artifact_path": artifact_path,
@@ -83,6 +104,9 @@ class ConvRecord:
             "residuals": self.residuals,
             "final_report_summary": self.final_report_summary,
         }
+        if specialist_state:
+            state.update(specialist_state)
+            state["evidence"] = [specialist_evidence] if specialist_evidence else []
         state.update(classify_execution_markers(self.target, capability="synthetic_round_only"))
         return state
 
@@ -96,6 +120,7 @@ class ConvHandler(ModeHandler):
         self,
         workflow_id: str,
         *,
+        specialist_findings: dict[str, Any] | None = None,
         recovery_lease_id: str | None = None,
         recovery_lease_holder: str | None = None,
     ) -> dict[str, Any]:
@@ -107,15 +132,42 @@ class ConvHandler(ModeHandler):
         workflow = self.load_workflow(workflow_id)
         artifact_path = (self.store.workflow_dir(workflow_id) / "artifacts" / "conv-report.md").expanduser().resolve()
         text = workflow.get("source_request") or workflow.get("objective") or ""
-        execution_result = run_conv_round_execution(text, source_root=Path.cwd())
-        execution_artifact = _record_conv_round_execution_artifact(self, workflow_id, result=execution_result)
-        record = build_conv_record_from_execution(text, execution_result) if execution_artifact else build_conv_record(text)
+        specialist_review = _record_specialist_review(self, workflow_id, target=text, packet=specialist_findings)
+        specialist_state = specialist_review["state"] if specialist_review else None
+        execution_result = run_conv_round_execution(text, source_root=Path.cwd()) if not specialist_state else {}
+        execution_artifact = _record_conv_round_execution_artifact(self, workflow_id, result=execution_result) if not specialist_state else None
+        if specialist_state:
+            record = build_conv_record_from_specialist(text, specialist_state)
+        else:
+            record = build_conv_record_from_execution(text, execution_result) if execution_artifact else build_conv_record(text)
         artifact_ref = CONV_REPORT_ARTIFACT_ID
         artifact_path_text = str(artifact_path)
-        state = record.as_state(artifact_id=artifact_ref, artifact_path=artifact_path_text)
+        state = record.as_state(
+            artifact_id=artifact_ref,
+            artifact_path=artifact_path_text,
+            specialist_state=specialist_state,
+            specialist_evidence=(specialist_review or {}).get("evidence"),
+        )
         if execution_artifact:
             state.update(conv_execution_markers(execution_result, artifact_id=execution_artifact["artifact_id"]))
+        if specialist_state and not execution_artifact:
+            state.update(_specialist_execution_markers(artifact_id=specialist_artifact_id("conv")))
         state, residuals, block_reason = apply_execution_truth_block("conv", state, residuals=record.residuals)
+        if specialist_state and (residuals.get("blocking_remaining") or state.get("follow_up_required")):
+            specialist_block_reason = (
+                "blocked_specialist_findings"
+                if residuals.get("blocking_remaining")
+                else "blocked_specialist_follow_up_required"
+            )
+            state["stop_condition"] = specialist_block_reason
+            state["stop_reason"] = specialist_block_reason
+            state["evidence_sufficient"] = False
+            state["final_report_summary"] = (
+                "Convergence is blocked by high-severity specialist findings."
+                if residuals.get("blocking_remaining")
+                else "Convergence is blocked because accepted specialist fixes require a follow-up round."
+            )
+            block_reason = specialist_block_reason
         render_record = ConvRecord(
             target=state["target"],
             max_rounds=state["max_rounds"],
@@ -181,7 +233,9 @@ class ConvHandler(ModeHandler):
                 recovery_lease_id=recovery_lease_id,
                 recovery_lease_holder=recovery_lease_holder,
                 final_status=(
-                    execution_blocked_final_status("conv", block_reason, residuals)
+                    _specialist_blocked_final_status(residuals)
+                    if block_reason in {"blocked_specialist_findings", "blocked_specialist_follow_up_required"}
+                    else execution_blocked_final_status("conv", block_reason, residuals)
                     if block_reason
                     else {
                         "result": "pass_with_risks" if any(record.residuals.values()) else "pass",
@@ -189,6 +243,7 @@ class ConvHandler(ModeHandler):
                         "done": [
                             "Recorded bounded convergence round metadata",
                             "Classified findings through original-target and delta gates",
+                            "Bound structured specialist findings when provided",
                             "Stopped through evidence sufficiency or max-round proof",
                         ],
                         "checked": [
@@ -246,6 +301,57 @@ def build_conv_record_from_execution(text: str, result: dict[str, Any]) -> ConvR
         explicit_stop_proof="Trusted local conv runner recorded original-target evidence and no accepted material delta.",
         residuals=residuals,
         final_report_summary="Convergence stopped on trusted deterministic round evidence with no material follow-up required.",
+    )
+
+
+def build_conv_record_from_specialist(text: str, specialist_state: dict[str, Any]) -> ConvRecord:
+    target = _compact(text) or "Converge on the supplied target with bounded specialist evidence."
+    validate_specialist_state(specialist_state)
+    findings = [_conv_finding_from_arbitration(item) for item in specialist_state["finding_arbitration"]]
+    material_changes = any(item["material_change_required"] for item in findings)
+    follow_up_required = bool(specialist_state["follow_up_round_required"])
+    residuals = {
+        "blocking_remaining": [
+            item["reason"]
+            for item in specialist_state["finding_arbitration"]
+            if item["decision"] == "block"
+        ],
+        "accepted_risks": [
+            item["reason"]
+            for item in specialist_state["finding_arbitration"]
+            if item["decision"] == "accept_risk"
+        ],
+        "implementation_backlog": [
+            item["reason"]
+            for item in specialist_state["finding_arbitration"]
+            if item["decision"] in {"fix", "defer"}
+        ],
+        "deferred_scope": [
+            "Phase 4A binds runner-provided structured findings; native specialist launch and fix-runner application remain later slices.",
+        ],
+    }
+    evidence_sufficient = not residuals["blocking_remaining"] and not follow_up_required
+    return ConvRecord(
+        target=target,
+        max_rounds=specialist_state["max_rounds"],
+        rounds=[
+            ConvRound(
+                round_index=specialist_state["round_index"],
+                target_ref="original-target",
+                original_target_gate=specialist_state["original_target_gate"],
+                delta_gate=specialist_state["delta_regression_gate"],
+                findings=findings,
+                material_changes=material_changes,
+                follow_up_required=follow_up_required,
+                evidence_sufficient=evidence_sufficient,
+                summary="Runner-provided specialist findings were deduped and arbitrated as a bounded convergence round.",
+            )
+        ],
+        stop_condition="evidence_sufficient" if evidence_sufficient else "blocked_no_execution_evidence",
+        stop_reason="structured_specialist_findings_bound",
+        explicit_stop_proof=specialist_state["round_stop_proof"],
+        residuals=residuals,
+        final_report_summary="Convergence bound structured specialist findings without allowing specialist side effects.",
     )
 
 
@@ -321,6 +427,8 @@ def validate_conv_state(state: dict[str, Any], *, terminal: bool, final_status: 
     missing = sorted(required - set(state))
     if missing:
         raise ValueError(f"conv_state is missing required fields: {missing!r}")
+    if "review_panel_spec" in state:
+        validate_specialist_state(_specialist_state_from_conv(state))
     max_rounds = state["max_rounds"]
     round_count = state["round_count"]
     rounds = state["rounds"]
@@ -436,6 +544,36 @@ def _validate_finding(finding: dict[str, Any]) -> None:
     for key in ("finding_id", "summary"):
         if not isinstance(finding[key], str) or not finding[key]:
             raise ValueError(f"conv_state finding {key} must be non-empty")
+
+
+def _conv_finding_from_arbitration(item: dict[str, Any]) -> dict[str, Any]:
+    decision = item["decision"]
+    disposition = {
+        "block": "implementation_backlog",
+        "fix": "accepted_change",
+        "accept_risk": "accepted_risk",
+        "defer": "deferred_scope",
+        "reject": "no_action",
+    }[decision]
+    material_change_required = decision == "fix"
+    return _finding(
+        item["group_id"],
+        item["reason"],
+        novelty="new" if decision in {"block", "fix", "accept_risk"} else "none",
+        severity=_severity_from_arbitration(item),
+        objective_impact="changes_objective" if material_change_required else "preserves_objective",
+        evidence_quality="direct" if decision != "reject" else "insufficient",
+        disposition=disposition,
+        material_change_required=material_change_required,
+    )
+
+
+def _severity_from_arbitration(item: dict[str, Any]) -> str:
+    reason = item.get("reason", "")
+    for severity in ("p0", "p1", "p2", "p3"):
+        if severity in reason:
+            return severity
+    return "none"
 
 
 def _evidence_sufficient_record(target: str) -> ConvRecord:
@@ -727,6 +865,135 @@ def _conv_round_event_keys(handler: ModeHandler, workflow_id: str, *, artifact_i
         if event_type in {"round_start", "round_summary"} and payload.get("artifact_id") == artifact_id:
             keys.add((event_type, int(payload.get("round_index") or 0)))
     return keys
+
+
+def _record_specialist_review(
+    handler: ModeHandler,
+    workflow_id: str,
+    *,
+    target: str,
+    packet: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if not packet:
+        return None
+    artifact_id = specialist_artifact_id("conv")
+    review = build_specialist_review(packet, mode="conv", target=target, artifact_id=artifact_id)
+    artifact_path = handler.store.workflow_dir(workflow_id) / "artifacts" / "conv-specialist-findings.json"
+    workflow = handler.load_workflow(workflow_id)
+    existing = [
+        artifact
+        for artifact in workflow.get("artifacts", [])
+        if isinstance(artifact, dict) and artifact.get("artifact_id") == artifact_id
+    ]
+    if existing:
+        if len(existing) > 1:
+            raise ValueError(f"duplicate specialist findings artifact id: {artifact_id}")
+        artifact = existing[0]
+        if artifact.get("kind") != "evidence":
+            raise ValueError("specialist findings artifact must use evidence kind")
+    else:
+        write_specialist_artifact(artifact_path, {"packet": packet, "specialist_review": review["state"]})
+        artifact = handler.record_artifact(
+            workflow_id,
+            kind="evidence",
+            artifact_id=artifact_id,
+            path=artifact_path,
+            note="validated runner-provided conv specialist findings",
+        )["artifact"]
+    _record_specialist_events(handler, workflow_id, review=review, artifact_id=artifact["artifact_id"])
+    return review
+
+
+def _record_specialist_events(handler: ModeHandler, workflow_id: str, *, review: dict[str, Any], artifact_id: str) -> None:
+    existing = _specialist_event_types(handler, workflow_id, artifact_id=artifact_id)
+    for event_type in ("agent_panel_requested", "agent_findings_recorded", "finding_arbitrated"):
+        if event_type in existing:
+            continue
+        handler.store.append_event(
+            workflow_id,
+            {
+                "schema_version": 1,
+                "event_id": f"evt-conv-{event_type}-{workflow_id}",
+                "workflow_id": workflow_id,
+                "event_type": event_type,
+                "created_at": now_iso(),
+                "note": "validated runner-provided specialist review evidence",
+                "payload": {
+                    "artifact_id": artifact_id,
+                    "mode": "conv",
+                    "runner_ref": SPECIALIST_REVIEW_RUNNER_REF,
+                    "finding_count": len(review["state"]["agent_finding_refs"]),
+                    "arbitration_count": len(review["state"]["finding_arbitration"]),
+                },
+            },
+        )
+
+
+def _specialist_event_types(handler: ModeHandler, workflow_id: str, *, artifact_id: str) -> set[str]:
+    path = handler.store.workflow_dir(workflow_id) / "events.jsonl"
+    if not path.exists():
+        return set()
+    return {
+        event.get("event_type")
+        for event in (json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
+        if isinstance(event, dict) and (event.get("payload") or {}).get("artifact_id") == artifact_id
+    }
+
+
+def _specialist_execution_markers(*, artifact_id: str) -> dict[str, Any]:
+    return {
+        "execution_capability": "delegated_agents",
+        "execution_required": True,
+        "execution_performed": True,
+        "execution_evidence_refs": [artifact_id],
+        "synthetic_report": False,
+        "runner_ref": SPECIALIST_REVIEW_RUNNER_REF,
+        "execution_started_at": now_iso(),
+        "execution_completed_at": now_iso(),
+        "execution_classification_reason": "trusted runner provided structured specialist findings",
+    }
+
+
+def _specialist_blocked_final_status(residuals: dict[str, list[str]]) -> dict[str, Any]:
+    stop_reason = (
+        "blocked_specialist_findings"
+        if residuals.get("blocking_remaining")
+        else "blocked_specialist_follow_up_required"
+    )
+    return {
+        "result": "blocked",
+        "stop_reason": stop_reason,
+        "done": [
+            "Recorded bounded convergence round metadata",
+            "Classified specialist findings through original-target and delta gates",
+            "Blocked pass-style completion on high-severity specialist findings",
+        ],
+        "checked": [
+            "Structured specialist evidence was bound to artifact and event proof",
+            "Visible delivery remains gated by reserve-delivery/report-proof/complete-reported",
+        ],
+        "residuals": residuals,
+    }
+
+
+def _specialist_state_from_conv(state: dict[str, Any]) -> dict[str, Any]:
+    return {key: state[key] for key in (
+        "review_panel_spec",
+        "deterministic_check_results",
+        "agent_finding_refs",
+        "raw_finding_to_group_map",
+        "finding_arbitration",
+        "accepted_change_refs",
+        "original_target_gate",
+        "delta_regression_gate",
+        "follow_up_round_required",
+        "max_rounds_default",
+        "max_rounds",
+        "round_index",
+        "stop_reason",
+        "owner_stop_ref",
+        "round_stop_proof",
+    )}
 
 
 def _compact(text: str) -> str:

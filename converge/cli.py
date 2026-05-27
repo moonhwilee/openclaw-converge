@@ -21,6 +21,7 @@ from .modes.conv_execution import CONV_LOCAL_RUNNER_REF, CONV_ROUND_EXECUTION_AR
 from .modes.goal import GOAL_PLAN_ARTIFACT_ID, GoalHandler, GoalRecord, render_goal_plan, validate_goal_state
 from .modes.plan import PlanHandler
 from .modes.verify import VERIFY_REPORT_ARTIFACT_ID, VerifyHandler, VerifyRecord, render_verify_report
+from .modes.specialist_panel import SPECIALIST_REVIEW_RUNNER_REF, load_specialist_packet, specialist_artifact_id, validate_specialist_state
 from .recovery import recover_workflow, scan_workflows, watchdog_check
 from .artifacts import now_iso, record_workflow_artifact, sha256_file, validate_manifest_entry
 from .schema import SchemaError, validate_bundled_schemas, validate_named, validate_next_safe_action
@@ -138,6 +139,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
             return 0
     verify = VerifyHandler(store).finalize_verify(
         workflow["workflow_id"],
+        specialist_findings=load_specialist_packet(getattr(args, "structured_findings_file", None)),
         recovery_lease_id=args.recovery_lease_id,
         recovery_lease_holder=args.recovery_lease_holder,
     )
@@ -170,6 +172,7 @@ def cmd_conv(args: argparse.Namespace) -> int:
             return 0
     conv = ConvHandler(store).finalize_conv(
         workflow["workflow_id"],
+        specialist_findings=load_specialist_packet(getattr(args, "structured_findings_file", None)),
         recovery_lease_id=args.recovery_lease_id,
         recovery_lease_holder=args.recovery_lease_holder,
     )
@@ -2086,12 +2089,15 @@ def _validate_verify_execution_evidence(
     refs = state.get("execution_evidence_refs")
     if not isinstance(refs, list) or not refs:
         raise ValueError("verify execution_performed=true requires execution_evidence_refs")
+    if state.get("synthetic_report") is not False:
+        raise ValueError("verify execution_performed=true requires synthetic_report=false")
+    if state.get("execution_capability") == "delegated_agents":
+        _validate_specialist_execution_evidence(store, workflow, state, mode="verify", worklog_text=worklog_text)
+        return
     if "verify-deterministic-checks" not in refs:
         raise ValueError("verify execution evidence refs must include verify-deterministic-checks")
     if state.get("execution_capability") != "local_checks":
         raise ValueError("verify execution_performed=true requires local_checks capability")
-    if state.get("synthetic_report") is not False:
-        raise ValueError("verify execution_performed=true requires synthetic_report=false")
     deterministic_evidence = [
         evidence
         for evidence in state.get("evidence", [])
@@ -2137,6 +2143,82 @@ def _validate_verify_execution_evidence(
         raise ValueError("verify deterministic_check_recorded check_count must match evidence artifact")
     if any(not isinstance(check, dict) or check.get("status") != "pass" for check in checks):
         raise ValueError("verify deterministic evidence checks must all pass")
+
+
+def _validate_specialist_execution_evidence(
+    store: WorkflowStore,
+    workflow: dict[str, Any],
+    state: dict[str, Any],
+    *,
+    mode: str,
+    worklog_text: str | None = None,
+) -> None:
+    artifact_id = specialist_artifact_id(mode)
+    refs = state.get("execution_evidence_refs")
+    if not isinstance(refs, list) or artifact_id not in refs:
+        raise ValueError(f"{mode} specialist execution evidence refs must include {artifact_id}")
+    if state.get("runner_ref") != SPECIALIST_REVIEW_RUNNER_REF:
+        raise ValueError(f"{mode} specialist execution has untrusted runner_ref")
+    specialist_state = _specialist_state_from_mode_state(state)
+    validate_specialist_state(specialist_state)
+    evidence = [
+        item
+        for item in state.get("evidence", [])
+        if isinstance(item, dict) and artifact_id in (item.get("artifact_refs") or [])
+    ]
+    if len(evidence) != 1:
+        raise ValueError(f"{mode} specialist execution requires exactly one specialist evidence record")
+    if worklog_text is not None:
+        validate_evidence_artifact_refs(workflow, evidence[0], worklog_text=worklog_text)
+    artifacts = [
+        item
+        for item in workflow.get("artifacts", [])
+        if isinstance(item, dict) and item.get("artifact_id") == artifact_id
+    ]
+    if len(artifacts) != 1 or artifacts[0].get("kind") != "evidence":
+        raise ValueError(f"{mode} specialist execution artifact must be registered exactly once as evidence")
+    artifact_payload = json.loads(Path(artifacts[0]["path"]).read_text(encoding="utf-8"))
+    if artifact_payload.get("specialist_review") != specialist_state:
+        raise ValueError(f"{mode} specialist artifact must match mode state")
+    events = _read_workflow_events(store, workflow["workflow_id"])
+    for event_type in ("agent_panel_requested", "agent_findings_recorded", "finding_arbitrated"):
+        matches = [
+            event
+            for event in events
+            if event.get("event_type") == event_type
+            and (event.get("payload") or {}).get("artifact_id") == artifact_id
+        ]
+        if len(matches) != 1:
+            raise ValueError(f"{mode} specialist execution requires exactly one {event_type} event")
+        payload = matches[0].get("payload") or {}
+        if payload.get("runner_ref") != SPECIALIST_REVIEW_RUNNER_REF:
+            raise ValueError(f"{mode} specialist event has untrusted runner_ref")
+        if payload.get("mode") != mode:
+            raise ValueError(f"{mode} specialist event mode must match")
+        if payload.get("finding_count") != len(specialist_state["agent_finding_refs"]):
+            raise ValueError(f"{mode} specialist event finding_count must match state")
+        if payload.get("arbitration_count") != len(specialist_state["finding_arbitration"]):
+            raise ValueError(f"{mode} specialist event arbitration_count must match state")
+
+
+def _specialist_state_from_mode_state(state: dict[str, Any]) -> dict[str, Any]:
+    return {key: state[key] for key in (
+        "review_panel_spec",
+        "deterministic_check_results",
+        "agent_finding_refs",
+        "raw_finding_to_group_map",
+        "finding_arbitration",
+        "accepted_change_refs",
+        "original_target_gate",
+        "delta_regression_gate",
+        "follow_up_round_required",
+        "max_rounds_default",
+        "max_rounds",
+        "round_index",
+        "stop_reason",
+        "owner_stop_ref",
+        "round_stop_proof",
+    )}
 
 
 def _validate_conv_state_integrity(store: WorkflowStore, workflow: dict[str, Any]) -> None:
@@ -2212,6 +2294,9 @@ def _validate_conv_execution_evidence(store: WorkflowStore, workflow: dict[str, 
     refs = state.get("execution_evidence_refs")
     if not isinstance(refs, list) or not refs:
         raise ValueError("conv execution_performed=true requires execution_evidence_refs")
+    if state.get("execution_capability") == "delegated_agents":
+        _validate_specialist_execution_evidence(store, workflow, state, mode="conv")
+        return
     if CONV_ROUND_EXECUTION_ARTIFACT_ID not in refs:
         raise ValueError("conv execution evidence refs must include conv-round-execution")
     if state.get("execution_capability") != "local_rounds":
@@ -2451,6 +2536,7 @@ def build_parser() -> argparse.ArgumentParser:
     verify.add_argument("--workflow-id")
     verify.add_argument("--owner-session-key")
     verify.add_argument("--visible-delivery", type=parse_json)
+    verify.add_argument("--structured-findings-file")
     verify.add_argument("--recovery-lease-id")
     verify.add_argument("--recovery-lease-holder")
     verify.add_argument("--json", action="store_true", help=json_help)
@@ -2471,6 +2557,7 @@ def build_parser() -> argparse.ArgumentParser:
     conv.add_argument("--workflow-id")
     conv.add_argument("--owner-session-key")
     conv.add_argument("--visible-delivery", type=parse_json)
+    conv.add_argument("--structured-findings-file")
     conv.add_argument("--recovery-lease-id")
     conv.add_argument("--recovery-lease-holder")
     conv.add_argument("--json", action="store_true", help=json_help)

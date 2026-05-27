@@ -495,6 +495,105 @@ def assert_reserve_validates_conv_terminal_material_before_send(state_root: Path
     assert_true("artifact hash is stale" in stale_result["error"], "conv stale material should be hash-checked")
 
 
+def assert_conv_records_structured_specialist_findings(state_root: Path) -> None:
+    packet_path = state_root / "conv-specialist-findings.json"
+    packet_path.write_text(json.dumps(specialist_packet()), encoding="utf-8")
+    wf = run(
+        "conv",
+        "--text",
+        "Converge execution-required target using structured specialist findings",
+        "--workflow-id",
+        "conv-specialist-findings",
+        "--owner-session-key",
+        "session:test",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        "--structured-findings-file",
+        str(packet_path),
+        state_root=state_root,
+    )["workflow"]
+    conv_state = wf["conv_state"]
+    assert_true(wf["status"] == "completed_unreported", "structured specialist conv should complete")
+    assert_true(conv_state["execution_capability"] == "delegated_agents", "conv structured findings should use delegated_agents")
+    assert_true(conv_state["execution_evidence_refs"] == ["conv-specialist-findings"], "conv should bind specialist evidence")
+    assert_true(conv_state["max_rounds_default"] == 5, "conv should preserve Phase 4 max_rounds default")
+    assert_true(conv_state["round_count"] == 1, "conv specialist adapter should record one bounded round")
+    assert_true(
+        conv_state["raw_finding_to_group_map"][0]["group_id"] == conv_state["raw_finding_to_group_map"][1]["group_id"],
+        "conv should dedupe structured findings by failure mode",
+    )
+    assert_true(
+        {event["event_type"] for event in events(state_root, "conv-specialist-findings")}.issuperset(
+            {"agent_panel_requested", "agent_findings_recorded", "finding_arbitrated"}
+        ),
+        "conv should record specialist panel events",
+    )
+    assert_conv_report_matches_state(wf)
+    run("validate", "--workflow-id", "conv-specialist-findings", state_root=state_root)
+
+    original_events = events(state_root, "conv-specialist-findings")
+    events_path = state_root / "workflows" / "conv-specialist-findings" / "events.jsonl"
+    events_path.write_text(
+        "\n".join(
+            json.dumps(event, ensure_ascii=False, sort_keys=True)
+            for event in original_events
+            if event["event_type"] != "finding_arbitrated"
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    result = run_fail("validate", "--workflow-id", "conv-specialist-findings", state_root=state_root)
+    assert_true("finding_arbitrated event" in result["error"], "conv should require specialist arbitration event proof")
+
+    block_packet = specialist_packet()
+    block_packet["findings"][0]["severity"] = "p1"
+    block_packet_path = state_root / "conv-block-specialist-findings.json"
+    block_packet_path.write_text(json.dumps(block_packet), encoding="utf-8")
+    blocked = run(
+        "conv",
+        "--text",
+        "Converge execution-required target with blocking specialist finding",
+        "--workflow-id",
+        "conv-block-specialist-findings",
+        "--owner-session-key",
+        "session:test",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        "--structured-findings-file",
+        str(block_packet_path),
+        state_root=state_root,
+    )["workflow"]
+    assert_true(blocked["status"] == "failed_unreported", "blocking specialist findings should fail closed")
+    assert_true(blocked["final_status"]["result"] == "blocked", "blocking specialist findings should not pass with risks")
+    assert_true(blocked["conv_state"]["stop_condition"] == "blocked_specialist_findings", "blocking specialist findings should bind stop condition")
+
+    fix_packet = specialist_packet()
+    fix_packet["findings"][0]["severity"] = "p2"
+    fix_packet_path = state_root / "conv-fix-specialist-findings.json"
+    fix_packet_path.write_text(json.dumps(fix_packet), encoding="utf-8")
+    needs_follow_up = run(
+        "conv",
+        "--text",
+        "Converge execution-required target with accepted specialist fix",
+        "--workflow-id",
+        "conv-fix-specialist-findings",
+        "--owner-session-key",
+        "session:test",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        "--structured-findings-file",
+        str(fix_packet_path),
+        state_root=state_root,
+    )["workflow"]
+    assert_true(needs_follow_up["status"] == "failed_unreported", "accepted specialist fixes should require follow-up before completion")
+    assert_true(needs_follow_up["final_status"]["result"] == "blocked", "accepted specialist fixes should not pass before follow-up")
+    assert_true(needs_follow_up["conv_state"]["follow_up_required"] is True, "accepted specialist fixes should record follow-up required")
+    assert_true(
+        needs_follow_up["conv_state"]["stop_condition"] == "blocked_specialist_follow_up_required",
+        "accepted specialist fixes should bind follow-up stop condition",
+    )
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory(prefix="converge-conv-mode-smoke-") as tmp:
         state_root = Path(tmp)
@@ -507,6 +606,7 @@ def main() -> int:
         assert_conv_gate_integrity_rejects_drift(state_root)
         assert_conv_preterminal_state_is_validated(state_root)
         assert_reserve_validates_conv_terminal_material_before_send(state_root)
+        assert_conv_records_structured_specialist_findings(state_root)
     return 0
 
 
@@ -534,6 +634,65 @@ def _record_from_state(state: dict[str, Any]) -> ConvRecord:
         residuals=state["residuals"],
         final_report_summary=state["final_report_summary"],
     )
+
+
+def specialist_packet() -> dict[str, Any]:
+    return {
+        "panel_id": "conv-phase4a-panel",
+        "risk_level": "medium",
+        "profiles": [
+            {
+                "profile_id": "reviewer-integrity",
+                "role": "execution integrity reviewer",
+                "expertise": ["evidence binding", "state validation"],
+                "likely_failure_modes": ["missing arbitration proof"],
+                "prohibited_actions": ["visible_messages", "target_mutation"],
+            },
+            {
+                "profile_id": "reviewer-regression",
+                "role": "regression reviewer",
+                "expertise": ["phase regression", "schema compatibility"],
+                "likely_failure_modes": ["missing arbitration proof"],
+                "prohibited_actions": ["external_actions", "push_or_pr"],
+            },
+            {
+                "profile_id": "reviewer-ops",
+                "role": "operations boundary reviewer",
+                "expertise": ["side-effect containment", "report proof"],
+                "likely_failure_modes": ["unsafe side effects"],
+                "prohibited_actions": ["service_restart", "workflow_state_mutation"],
+            },
+        ],
+        "findings": [
+            {
+                "finding_id": "conv-finding-arbitration-event",
+                "profile_id": "reviewer-integrity",
+                "finding": "Conv must require an arbitration event for structured specialist evidence.",
+                "severity": "p3",
+                "evidence": "events.jsonl finding_arbitrated",
+                "why_it_matters": "A missing arbitration event would allow unclassified findings into the verdict.",
+                "minimal_fix_or_test": "Remove finding_arbitrated and expect validate failure.",
+                "scope_risk": "Low, validation-only proof requirement.",
+                "confidence": 0.87,
+                "failure_mode": "missing arbitration proof",
+                "source_provenance": "runner_provided",
+            },
+            {
+                "finding_id": "conv-finding-dedupe",
+                "profile_id": "reviewer-regression",
+                "finding": "Duplicate failure-mode findings must collapse into one arbitration group.",
+                "severity": "p3",
+                "evidence": "conv_state.raw_finding_to_group_map",
+                "why_it_matters": "Duplicate findings should not inflate convergence severity.",
+                "minimal_fix_or_test": "Assert both raw findings map to the same failure-mode group.",
+                "scope_risk": "Low, adapter-local grouping.",
+                "confidence": 0.82,
+                "failure_mode": "missing arbitration proof",
+                "source_provenance": "runner_provided",
+            },
+        ],
+        "side_effects_performed": [],
+    }
 
 
 if __name__ == "__main__":

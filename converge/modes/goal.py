@@ -12,6 +12,7 @@ from ..acceptance import validate_acceptance_payload
 from ..artifacts import now_iso
 from ..messages import normalize_residuals
 from .base import ModeHandler, ModeOutcome, apply_execution_truth_block, execution_blocked_final_status
+from .evidence_contract import attach_phase5a_evidence_contract
 from .execution_truth import classify_execution_markers
 
 
@@ -162,6 +163,12 @@ class GoalHandler(ModeHandler):
             "summary": "Goal evidence completion check passed against the promoted plan artifact.",
             "artifact_refs": [artifact_ref],
         }
+        state = attach_phase5a_evidence_contract(
+            "goal",
+            workflow=self.load_workflow(workflow_id),
+            state=state,
+            terminal_evidence=evidence,
+        )
         checkpoint = self.record_outcome(
             workflow_id,
             ModeOutcome(

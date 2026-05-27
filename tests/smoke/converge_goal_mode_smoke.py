@@ -10,9 +10,9 @@ from typing import Any
 
 
 try:
-    from smoke_helpers import VISIBLE_DELIVERY, assert_true, events, run, run_fail, workflow, write_workflow
+    from smoke_helpers import VISIBLE_DELIVERY, assert_phase5a_contract, assert_phase5a_accepted_change_stale_rejected, assert_phase5a_freshness_rejected, assert_phase5a_missing_gate_rejected, assert_phase5a_stale_hash_rejected, assert_phase5a_terminal_status_rejected, assert_true, events, run, run_fail, workflow, write_workflow
 except ModuleNotFoundError:
-    from tests.smoke.smoke_helpers import VISIBLE_DELIVERY, assert_true, events, run, run_fail, workflow, write_workflow
+    from tests.smoke.smoke_helpers import VISIBLE_DELIVERY, assert_phase5a_contract, assert_phase5a_accepted_change_stale_rejected, assert_phase5a_freshness_rejected, assert_phase5a_missing_gate_rejected, assert_phase5a_stale_hash_rejected, assert_phase5a_terminal_status_rejected, assert_true, events, run, run_fail, workflow, write_workflow
 from converge.modes.goal import GoalRecord, _child_workflow_id, build_goal_record, render_goal_plan, validate_goal_state  # noqa: E402
 from converge.artifacts import sha256_file  # noqa: E402
 
@@ -244,6 +244,23 @@ def assert_execution_required_goal_collects_child_evidence(state_root: Path) -> 
     assert_true(goal_events[-3:] == ["artifact", "plan_accepted", "complete"], "goal should complete after artifact and acceptance")
     assert_true(Path(goal_state["final_plan_artifact_path"]).read_text(encoding="utf-8") == render_goal_plan(_goal_record_from_state(goal_state)), "goal artifact should render from collected child state")
     run("validate", "--workflow-id", "goal-execution-required-real-children", state_root=state_root)
+    assert_phase5a_contract(wf, "goal_state")
+    first_child_gate = f"child:{wf['child_workflow_ids'][0]}"
+    assert_phase5a_missing_gate_rejected(
+        state_root,
+        "goal-execution-required-real-children",
+        "goal_state",
+        first_child_gate,
+    )
+    assert_phase5a_stale_hash_rejected(
+        state_root,
+        "goal-execution-required-real-children",
+        "goal_state",
+        "terminal:goal-promoted-plan",
+    )
+    assert_phase5a_freshness_rejected(state_root, "goal-execution-required-real-children", "goal_state")
+    assert_phase5a_terminal_status_rejected(state_root, "goal-execution-required-real-children", "goal_state")
+    assert_phase5a_accepted_change_stale_rejected(state_root, "goal-execution-required-real-children", "goal_state")
 
     missing_created = json.loads(json.dumps(wf))
     events_path = state_root / "workflows" / "goal-execution-required-real-children" / "events.jsonl"

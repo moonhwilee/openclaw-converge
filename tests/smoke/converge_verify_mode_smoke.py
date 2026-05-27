@@ -9,9 +9,9 @@ from pathlib import Path
 
 
 try:
-    from smoke_helpers import ROOT, assert_true, events, run, run_fail, workflow, write_events, write_workflow
+    from smoke_helpers import ROOT, assert_phase5a_contract, assert_phase5a_accepted_change_stale_rejected, assert_phase5a_freshness_rejected, assert_phase5a_missing_gate_rejected, assert_phase5a_stale_hash_rejected, assert_phase5a_terminal_status_rejected, assert_true, events, run, run_fail, workflow, write_events, write_workflow
 except ModuleNotFoundError:
-    from tests.smoke.smoke_helpers import ROOT, assert_true, events, run, run_fail, workflow, write_events, write_workflow
+    from tests.smoke.smoke_helpers import ROOT, assert_phase5a_contract, assert_phase5a_accepted_change_stale_rejected, assert_phase5a_freshness_rejected, assert_phase5a_missing_gate_rejected, assert_phase5a_stale_hash_rejected, assert_phase5a_terminal_status_rejected, assert_true, events, run, run_fail, workflow, write_events, write_workflow
 from converge.artifacts import sha256_file  # noqa: E402
 from converge.messages import format_final  # noqa: E402
 from converge.modes.verify import build_verify_record, render_verify_report  # noqa: E402
@@ -152,6 +152,22 @@ def main() -> int:
             "deterministic verify should register evidence and report artifacts",
         )
         run("validate", "--workflow-id", "verify-deterministic-file-evidence", state_root=state_root)
+        assert_phase5a_contract(deterministic_verify, "verify_state")
+        assert_phase5a_missing_gate_rejected(
+            state_root,
+            "verify-deterministic-file-evidence",
+            "verify_state",
+            "execution:verify-deterministic-checks",
+        )
+        assert_phase5a_stale_hash_rejected(
+            state_root,
+            "verify-deterministic-file-evidence",
+            "verify_state",
+            "execution:verify-deterministic-checks",
+        )
+        assert_phase5a_freshness_rejected(state_root, "verify-deterministic-file-evidence", "verify_state")
+        assert_phase5a_terminal_status_rejected(state_root, "verify-deterministic-file-evidence", "verify_state")
+        assert_phase5a_accepted_change_stale_rejected(state_root, "verify-deterministic-file-evidence", "verify_state")
         deterministic_events = events(state_root, "verify-deterministic-file-evidence")
         write_events(
             state_root,

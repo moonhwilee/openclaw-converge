@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from converge.modes.goal import build_goal_record, render_goal_plan  # noqa: E402
+from converge.modes.evidence_contract import attach_phase5a_evidence_contract  # noqa: E402
 
 try:
     from terminal_invariant_helpers import (  # noqa: E402
@@ -466,6 +467,18 @@ def assert_terminal_checkpoint_replaces_mode_state_snapshot(state_root: Path) ->
         artifact_path=artifact["path"],
         artifact_hash=artifact["sha256"],
     )
+    terminal_evidence = {
+        "evidence_key": "goal-terminal-mode-state-replacement",
+        "kind": "artifact",
+        "summary": "Terminal evidence for mode state replacement.",
+        "artifact_refs": ["goal-promoted-plan"],
+    }
+    terminal_snapshot = attach_phase5a_evidence_contract(
+        "goal",
+        workflow=workflow(state_root, workflow_id),
+        state=terminal_snapshot,
+        terminal_evidence=terminal_evidence,
+    )
     run(
         "event",
         "--workflow-id",
@@ -497,12 +510,7 @@ def assert_terminal_checkpoint_replaces_mode_state_snapshot(state_root: Path) ->
                 "step_result": "terminal",
                 "residuals": terminal_snapshot["residuals"],
                 "mode_state_update": terminal_snapshot,
-                "terminal_evidence": {
-                    "evidence_key": "goal-terminal-mode-state-replacement",
-                    "kind": "contract",
-                    "summary": "Terminal evidence for mode state replacement.",
-                    "artifact_refs": ["goal-promoted-plan"],
-                },
+                "terminal_evidence": terminal_evidence,
                 "final_status": {"result": "pass_with_risks", "residuals": terminal_snapshot["residuals"]},
             }
         ),

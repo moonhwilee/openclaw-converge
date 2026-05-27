@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .base import ModeHandler, ModeOutcome, apply_execution_truth_block, execution_blocked_final_status
+from .evidence_contract import attach_phase5a_evidence_contract
 from .execution_truth import classify_execution_markers
 from .verify_execution import (
     VERIFY_DETERMINISTIC_CHECK_ARTIFACT_ID,
@@ -211,6 +212,12 @@ class VerifyHandler(ModeHandler):
         artifact_path = artifact["path"]
         state["final_report_artifact_id"] = artifact_ref
         state["final_report_artifact_path"] = artifact_path
+        state = attach_phase5a_evidence_contract(
+            "verify",
+            workflow=self.load_workflow(workflow_id),
+            state=state,
+            terminal_evidence=evidence,
+        )
         checkpoint = self.record_outcome(
             workflow_id,
             ModeOutcome(

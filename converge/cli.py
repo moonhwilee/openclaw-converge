@@ -18,6 +18,7 @@ from .continuation import TERMINAL_CONTINUATION_TARGETS, current_cursor, default
 from .messages import VALID_VERDICTS, lint_verdict_residuals, normalize_residuals, progress_block
 from .modes.conv import CONV_REPORT_ARTIFACT_ID, ConvHandler, ConvRecord, ConvRound, render_conv_report, validate_conv_state
 from .modes.conv_execution import CONV_LOCAL_RUNNER_REF, CONV_ROUND_EXECUTION_ARTIFACT_ID
+from .modes.evidence_contract import validate_phase5a_evidence_contract
 from .modes.goal import GOAL_PLAN_ARTIFACT_ID, GoalHandler, GoalRecord, render_goal_plan, validate_goal_state
 from .modes.plan import PlanHandler
 from .modes.verify import VERIFY_REPORT_ARTIFACT_ID, VerifyHandler, VerifyRecord, render_verify_report
@@ -1733,6 +1734,8 @@ def _validate_goal_state_integrity(store: WorkflowStore, workflow: dict[str, Any
     events = _read_workflow_events(store, workflow["workflow_id"])
     if state.get("execution_performed") is True:
         _validate_goal_child_execution(store, workflow, state, events=events)
+    if terminal_goal:
+        validate_phase5a_evidence_contract("goal", workflow=workflow, state=state)
     plan_accepted_events = [
         event
         for event in events
@@ -2035,6 +2038,8 @@ def _validate_verify_state_integrity(store: WorkflowStore, workflow: dict[str, A
         raise ValueError("terminal verify workflow requires evidence")
     if terminal_verify and not any(artifact_id in (evidence.get("artifact_refs") or []) for evidence in state["evidence"] if isinstance(evidence, dict)):
         raise ValueError("terminal verify workflow evidence must reference final_report_artifact_id")
+    if terminal_verify:
+        validate_phase5a_evidence_contract("verify", workflow=workflow, state=state)
     for key in ("target", "verdict", "final_report_summary"):
         if not isinstance(state.get(key), str) or not state.get(key):
             raise ValueError(f"verify_state {key} must be a non-empty string")
@@ -2259,6 +2264,8 @@ def _validate_conv_state_integrity(store: WorkflowStore, workflow: dict[str, Any
         for ref in evidence.get("artifact_refs") or []
     ]:
         raise ValueError("terminal conv workflow evidence must reference final_report_artifact_id")
+    if terminal_conv:
+        validate_phase5a_evidence_contract("conv", workflow=workflow, state=state)
     expected_report = render_conv_report(
         ConvRecord(
             target=state["target"],

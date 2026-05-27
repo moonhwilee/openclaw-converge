@@ -15,6 +15,7 @@ from .conv_execution import (
     run_conv_round_execution,
     write_conv_round_execution_artifact,
 )
+from .evidence_contract import attach_phase5a_evidence_contract
 from .execution_truth import classify_execution_markers
 from .specialist_panel import (
     SPECIALIST_REVIEW_RUNNER_REF,
@@ -213,6 +214,12 @@ class ConvHandler(ModeHandler):
         }
         state["final_report_artifact_id"] = artifact_ref
         state["final_report_artifact_path"] = artifact_path
+        state = attach_phase5a_evidence_contract(
+            "conv",
+            workflow=self.load_workflow(workflow_id),
+            state=state,
+            terminal_evidence=evidence,
+        )
         checkpoint = self.record_outcome(
             workflow_id,
             ModeOutcome(

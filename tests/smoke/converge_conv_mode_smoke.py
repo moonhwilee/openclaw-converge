@@ -10,9 +10,9 @@ from typing import Any
 
 
 try:
-    from smoke_helpers import VISIBLE_DELIVERY, assert_true, events, run, run_fail, workflow, write_workflow
+    from smoke_helpers import VISIBLE_DELIVERY, assert_phase5a_contract, assert_phase5a_accepted_change_stale_rejected, assert_phase5a_freshness_rejected, assert_phase5a_missing_gate_rejected, assert_phase5a_stale_hash_rejected, assert_phase5a_terminal_status_rejected, assert_true, events, run, run_fail, workflow, write_workflow
 except ModuleNotFoundError:
-    from tests.smoke.smoke_helpers import VISIBLE_DELIVERY, assert_true, events, run, run_fail, workflow, write_workflow
+    from tests.smoke.smoke_helpers import VISIBLE_DELIVERY, assert_phase5a_contract, assert_phase5a_accepted_change_stale_rejected, assert_phase5a_freshness_rejected, assert_phase5a_missing_gate_rejected, assert_phase5a_stale_hash_rejected, assert_phase5a_terminal_status_rejected, assert_true, events, run, run_fail, workflow, write_workflow
 from converge.modes.conv import ConvRecord, ConvRound, _material_change_record, _max_round_record, build_conv_record, render_conv_report, validate_conv_state  # noqa: E402
 
 
@@ -191,6 +191,22 @@ def assert_execution_required_conv_records_real_round_evidence(state_root: Path)
     assert_true(event_types == ["start", "artifact", "round_start", "round_summary", "artifact", "complete"], "conv should record real round events")
     assert_conv_report_matches_state(wf)
     run("validate", "--workflow-id", "conv-execution-required-real-round", state_root=state_root)
+    assert_phase5a_contract(wf, "conv_state")
+    assert_phase5a_missing_gate_rejected(
+        state_root,
+        "conv-execution-required-real-round",
+        "conv_state",
+        "execution:conv-round-execution",
+    )
+    assert_phase5a_stale_hash_rejected(
+        state_root,
+        "conv-execution-required-real-round",
+        "conv_state",
+        "execution:conv-round-execution",
+    )
+    assert_phase5a_freshness_rejected(state_root, "conv-execution-required-real-round", "conv_state")
+    assert_phase5a_terminal_status_rejected(state_root, "conv-execution-required-real-round", "conv_state")
+    assert_phase5a_accepted_change_stale_rejected(state_root, "conv-execution-required-real-round", "conv_state")
 
     missing_round_summary = json.loads(json.dumps(wf))
     write_workflow(state_root, "conv-execution-required-real-round", missing_round_summary)

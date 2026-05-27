@@ -83,6 +83,29 @@ def main() -> int:
             [event["event_type"] for event in events(state_root, "verify-execution-required-blocked")] == ["start", "artifact", "fail"],
             "execution-required verify should fail terminally instead of completing",
         )
+        run("validate", "--workflow-id", "verify-execution-required-blocked", state_root=state_root)
+
+        read_only_verify = run(
+            "verify",
+            "--text",
+            "Review PR read-only with no code changes but verify execution evidence",
+            "--workflow-id",
+            "verify-read-only-still-execution-required",
+            "--owner-session-key",
+            "session:test",
+            "--visible-delivery",
+            visible_delivery,
+            state_root=state_root,
+        )["workflow"]
+        assert_true(
+            read_only_verify["status"] == "failed_unreported",
+            "read-only verify still requires execution evidence",
+        )
+        assert_true(
+            read_only_verify["verify_state"]["execution_required"] is True,
+            "read-only/no-code-change wording must not downgrade verify to plan-only",
+        )
+        run("validate", "--workflow-id", "verify-read-only-still-execution-required", state_root=state_root)
 
         mismatched_status = run(
             "verify",

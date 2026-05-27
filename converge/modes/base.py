@@ -240,6 +240,44 @@ SUCCESS_FINAL_RESULTS = {"pass", "pass_with_risks"}
 EXECUTION_TRUTH_FIELDS = ("execution_required", "execution_performed", "synthetic_report")
 
 
+def apply_execution_truth_block(
+    kind: str,
+    state: dict[str, Any],
+    *,
+    residuals: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], dict[str, list[str]], str | None]:
+    """Return a blocked mode state when terminal success lacks execution proof."""
+
+    blocked_state = deepcopy(state)
+    blockers = _execution_gate_blockers(kind, blocked_state)
+    normalized_residuals = normalize_residuals(residuals or blocked_state.get("residuals"))
+    if not blockers:
+        return blocked_state, normalized_residuals, None
+
+    reason = _execution_block_reason(kind, blocked_state)
+    normalized_residuals["blocking_remaining"] = _unique([*normalized_residuals["blocking_remaining"], *blockers])
+    blocked_state["residuals"] = normalized_residuals
+    _mark_mode_state_blocked(kind, blocked_state, reason)
+    return blocked_state, normalized_residuals, reason
+
+
+def execution_blocked_final_status(kind: str, reason: str, residuals: dict[str, list[str]]) -> dict[str, Any]:
+    return {
+        "result": "blocked",
+        "stop_reason": reason,
+        "done": [
+            "Recorded scaffold or synthetic mode output",
+            "Applied the shared execution truth gate before terminal success",
+        ],
+        "checked": [
+            "execution_required/execution_performed/synthetic_report markers",
+            "No trusted runner evidence recorded for this workflow",
+            "Visible delivery remains gated by reserve-delivery/report-proof/complete-reported",
+        ],
+        "residuals": residuals,
+    }
+
+
 def _apply_execution_terminal_gate(workflow: dict[str, Any], outcome: ModeOutcome) -> ModeOutcome:
     """Block scaffold or synthetic terminal success for execution-required modes."""
 
@@ -254,18 +292,11 @@ def _apply_execution_terminal_gate(workflow: dict[str, Any], outcome: ModeOutcom
 
     active_state = outcome.mode_state_update or workflow.get(f"{kind}_state") or {}
     has_mode_state = bool(active_state)
-    state = deepcopy(active_state)
-    blockers = _execution_gate_blockers(kind, state)
-    if not blockers:
+    state, residuals, reason = apply_execution_truth_block(kind, active_state, residuals=outcome.residuals)
+    if reason is None:
         return outcome
-
-    reason = _execution_block_reason(kind, state)
-    residuals = normalize_residuals(state.get("residuals") or outcome.residuals)
-    residuals["blocking_remaining"] = _unique([*residuals["blocking_remaining"], *blockers])
     mode_state_update = None
     if has_mode_state:
-        state["residuals"] = residuals
-        _mark_mode_state_blocked(kind, state, reason)
         mode_state_update = state
 
     return replace(
@@ -275,20 +306,7 @@ def _apply_execution_terminal_gate(workflow: dict[str, Any], outcome: ModeOutcom
         event_type="fail",
         residuals=residuals,
         mode_state_update=mode_state_update,
-        final_status={
-            "result": "blocked",
-            "stop_reason": reason,
-            "done": [
-                "Recorded scaffold or synthetic mode output",
-                "Applied the shared execution truth gate before terminal success",
-            ],
-            "checked": [
-                "execution_required/execution_performed/synthetic_report markers",
-                "No trusted runner evidence recorded for this workflow",
-                "Visible delivery remains gated by reserve-delivery/report-proof/complete-reported",
-            ],
-            "residuals": residuals,
-        },
+        final_status=execution_blocked_final_status(kind, reason, residuals),
         failure_reason=reason,
     )
 
@@ -352,7 +370,10 @@ def _mark_mode_state_blocked(kind: str, state: dict[str, Any], reason: str) -> N
         state["evidence_sufficient"] = False
         state["final_report_summary"] = "Convergence is blocked because required round execution evidence is missing."
     elif kind == "goal":
-        state["final_report_summary"] = "Goal execution is blocked because child workflows were not run."
+        if reason == "blocked_child_workflows_not_run":
+            state["final_report_summary"] = "Goal execution is blocked because child workflows were not run."
+        else:
+            state["final_report_summary"] = "Goal execution is blocked because required execution truth markers are missing."
 
 
 def _unique(items: list[str]) -> list[str]:

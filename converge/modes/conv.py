@@ -6,13 +6,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .base import ModeHandler, ModeOutcome
+from .base import ModeHandler, ModeOutcome, apply_execution_truth_block, execution_blocked_final_status
 from .execution_truth import classify_execution_markers
 from ..messages import normalize_residuals
 
 
 CONV_REPORT_ARTIFACT_ID = "conv-final-report"
-CONV_STOP_CONDITIONS = {"evidence_sufficient", "max_round", "blocked_no_execution_evidence"}
+CONV_STOP_CONDITIONS = {"evidence_sufficient", "max_round", "blocked_no_execution_evidence", "blocked_missing_execution_truth_markers"}
 CONV_NOVELTY = {"new", "repeated", "none"}
 CONV_SEVERITY = {"p0", "p1", "p2", "p3", "none"}
 CONV_OBJECTIVE_IMPACT = {"changes_objective", "preserves_objective", "none"}
@@ -96,9 +96,36 @@ class ConvHandler(ModeHandler):
             recovery_lease_holder=recovery_lease_holder,
         )
         workflow = self.load_workflow(workflow_id)
-        record = build_conv_record(workflow.get("source_request") or workflow.get("objective") or "")
-        rendered_report = render_conv_report(record)
         artifact_path = (self.store.workflow_dir(workflow_id) / "artifacts" / "conv-report.md").expanduser().resolve()
+        record = build_conv_record(workflow.get("source_request") or workflow.get("objective") or "")
+        artifact_ref = CONV_REPORT_ARTIFACT_ID
+        artifact_path_text = str(artifact_path)
+        state = record.as_state(artifact_id=artifact_ref, artifact_path=artifact_path_text)
+        state, residuals, block_reason = apply_execution_truth_block("conv", state, residuals=record.residuals)
+        render_record = ConvRecord(
+            target=state["target"],
+            max_rounds=state["max_rounds"],
+            rounds=[
+                ConvRound(
+                    round_index=item["round_index"],
+                    target_ref=item["target_ref"],
+                    original_target_gate=item["original_target_gate"],
+                    delta_gate=item["delta_gate"],
+                    findings=item["findings"],
+                    material_changes=item["material_changes"],
+                    follow_up_required=item["follow_up_required"],
+                    evidence_sufficient=item["evidence_sufficient"],
+                    summary=item["summary"],
+                )
+                for item in state["rounds"]
+            ],
+            stop_condition=state["stop_condition"],
+            stop_reason=state["stop_reason"],
+            explicit_stop_proof=state["explicit_stop_proof"],
+            residuals=residuals,
+            final_report_summary=state["final_report_summary"],
+        )
+        rendered_report = render_conv_report(render_record)
         artifact = _existing_conv_artifact(workflow, expected_path=artifact_path, rendered_report=rendered_report)
         if artifact is None:
             artifact_path.parent.mkdir(parents=True, exist_ok=True)
@@ -118,36 +145,46 @@ class ConvHandler(ModeHandler):
             "summary": "Final convergence report registered through the shared artifact path.",
             "artifact_refs": [artifact_ref],
         }
-        state = record.as_state(artifact_id=artifact_ref, artifact_path=artifact_path)
+        state["final_report_artifact_id"] = artifact_ref
+        state["final_report_artifact_path"] = artifact_path
         checkpoint = self.record_outcome(
             workflow_id,
             ModeOutcome(
-                summary="Final convergence record is ready for visible delivery.",
-                status_after="completed_unreported",
+                summary=(
+                    "Convergence terminal success blocked because execution evidence is missing."
+                    if block_reason
+                    else "Final convergence record is ready for visible delivery."
+                ),
+                status_after="failed_unreported" if block_reason else "completed_unreported",
                 phase_after="terminal",
                 checkpoint_type="terminal",
-                event_type="complete",
+                event_type="fail" if block_reason else "complete",
                 worklog_block_kind="terminal_summary",
                 step_result="terminal",
-                residuals=record.residuals,
+                residuals=residuals,
                 terminal_evidence=evidence,
                 mode_state_update=state,
                 recovery_lease_id=recovery_lease_id,
                 recovery_lease_holder=recovery_lease_holder,
-                final_status={
-                    "result": "pass_with_risks" if any(record.residuals.values()) else "pass",
-                    "stop_reason": record.stop_condition,
-                    "done": [
-                        "Recorded bounded convergence round metadata",
-                        "Classified findings through original-target and delta gates",
-                        "Stopped through evidence sufficiency or max-round proof",
-                    ],
-                    "checked": [
-                        "Conv mode used shared artifact and checkpoint contracts",
-                        "Visible delivery remains gated by reserve-delivery/report-proof/complete-reported",
-                    ],
-                    "residuals": record.residuals,
-                },
+                final_status=(
+                    execution_blocked_final_status("conv", block_reason, residuals)
+                    if block_reason
+                    else {
+                        "result": "pass_with_risks" if any(record.residuals.values()) else "pass",
+                        "stop_reason": record.stop_condition,
+                        "done": [
+                            "Recorded bounded convergence round metadata",
+                            "Classified findings through original-target and delta gates",
+                            "Stopped through evidence sufficiency or max-round proof",
+                        ],
+                        "checked": [
+                            "Conv mode used shared artifact and checkpoint contracts",
+                            "Visible delivery remains gated by reserve-delivery/report-proof/complete-reported",
+                        ],
+                        "residuals": record.residuals,
+                    }
+                ),
+                failure_reason=block_reason,
             ),
         )
         return {"workflow_id": workflow_id, "artifact": artifact, "checkpoint": checkpoint, "conv": state}

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .base import ModeHandler, ModeOutcome
+from .base import ModeHandler, ModeOutcome, apply_execution_truth_block, execution_blocked_final_status
 from .execution_truth import classify_execution_markers
 from ..messages import normalize_residuals
 
@@ -108,22 +108,10 @@ class VerifyHandler(ModeHandler):
             recovery_lease_holder=recovery_lease_holder,
         )
         workflow = self.load_workflow(workflow_id)
-        record = build_verify_record(workflow.get("source_request") or workflow.get("objective") or "")
-        rendered_report = render_verify_report(record)
         artifact_path = (self.store.workflow_dir(workflow_id) / "artifacts" / "verify-report.md").expanduser().resolve()
-        artifact = _existing_verify_artifact(workflow, expected_path=artifact_path, rendered_report=rendered_report)
-        if artifact is None:
-            artifact_path.parent.mkdir(parents=True, exist_ok=True)
-            artifact_path.write_text(rendered_report, encoding="utf-8")
-            artifact = self.record_artifact(
-                workflow_id,
-                kind="report",
-                artifact_id=VERIFY_REPORT_ARTIFACT_ID,
-                path=artifact_path,
-                note="final verification report artifact",
-            )["artifact"]
-        artifact_ref = artifact["artifact_id"]
-        artifact_path = artifact["path"]
+        artifact_ref = VERIFY_REPORT_ARTIFACT_ID
+        artifact_path_text = str(artifact_path)
+        record = build_verify_record(workflow.get("source_request") or workflow.get("objective") or "")
         evidence = {
             "evidence_key": "verify-final-report",
             "kind": "artifact",
@@ -141,41 +129,84 @@ class VerifyHandler(ModeHandler):
             residuals=record.residuals,
             final_report_summary=record.final_report_summary,
         )
+        state = state_record.as_state(artifact_id=artifact_ref, artifact_path=artifact_path_text)
+        state, residuals, block_reason = apply_execution_truth_block("verify", state, residuals=state_record.residuals)
+        report_evidence = [
+            item
+            for item in state["evidence"]
+            if artifact_ref not in (item.get("artifact_refs") or [])
+        ]
+        rendered_report = render_verify_report(
+            VerifyRecord(
+                target=state["target"],
+                check_plan=state["check_plan"],
+                deterministic_checks=state["deterministic_checks"],
+                reviewer_findings=state["reviewer_findings"],
+                verdict=state["verdict"],
+                evidence_records=report_evidence,
+                residuals=residuals,
+                final_report_summary=state["final_report_summary"],
+            )
+        )
+        artifact = _existing_verify_artifact(workflow, expected_path=artifact_path, rendered_report=rendered_report)
+        if artifact is None:
+            artifact_path.parent.mkdir(parents=True, exist_ok=True)
+            artifact_path.write_text(rendered_report, encoding="utf-8")
+            artifact = self.record_artifact(
+                workflow_id,
+                kind="report",
+                artifact_id=VERIFY_REPORT_ARTIFACT_ID,
+                path=artifact_path,
+                note="final verification report artifact",
+            )["artifact"]
+        artifact_ref = artifact["artifact_id"]
+        artifact_path = artifact["path"]
+        state["final_report_artifact_id"] = artifact_ref
+        state["final_report_artifact_path"] = artifact_path
         checkpoint = self.record_outcome(
             workflow_id,
             ModeOutcome(
-                summary="Final verification verdict is ready for visible delivery.",
-                status_after="completed_unreported",
+                summary=(
+                    "Verification terminal success blocked because execution evidence is missing."
+                    if block_reason
+                    else "Final verification verdict is ready for visible delivery."
+                ),
+                status_after="failed_unreported" if block_reason else "completed_unreported",
                 phase_after="terminal",
                 checkpoint_type="terminal",
-                event_type="complete",
+                event_type="fail" if block_reason else "complete",
                 worklog_block_kind="terminal_summary",
                 step_result="terminal",
-                residuals=state_record.residuals,
+                residuals=residuals,
                 terminal_evidence=evidence,
-                mode_state_update=state_record.as_state(artifact_id=artifact_ref, artifact_path=artifact_path),
+                mode_state_update=state,
                 recovery_lease_id=recovery_lease_id,
                 recovery_lease_holder=recovery_lease_holder,
-                final_status={
-                    "result": state_record.verdict,
-                    "done": [
-                        "Recorded a structured verification verdict",
-                        "Registered the final verification report through the shared artifact path",
-                        "Stopped before adapters, recovery, or external actions",
-                    ],
-                    "checked": [
-                        "Verify mode used shared artifact and checkpoint contracts",
-                        "Visible delivery remains gated by reserve-delivery/report-proof/complete-reported",
-                    ],
-                    "residuals": state_record.residuals,
-                },
+                final_status=(
+                    execution_blocked_final_status("verify", block_reason, residuals)
+                    if block_reason
+                    else {
+                        "result": state_record.verdict,
+                        "done": [
+                            "Recorded a structured verification verdict",
+                            "Registered the final verification report through the shared artifact path",
+                            "Stopped before adapters, recovery, or external actions",
+                        ],
+                        "checked": [
+                            "Verify mode used shared artifact and checkpoint contracts",
+                            "Visible delivery remains gated by reserve-delivery/report-proof/complete-reported",
+                        ],
+                        "residuals": state_record.residuals,
+                    }
+                ),
+                failure_reason=block_reason,
             ),
         )
         return {
             "workflow_id": workflow_id,
             "artifact": artifact,
             "checkpoint": checkpoint,
-            "verify": state_record.as_state(artifact_id=artifact_ref, artifact_path=artifact_path),
+            "verify": state,
         }
 
 

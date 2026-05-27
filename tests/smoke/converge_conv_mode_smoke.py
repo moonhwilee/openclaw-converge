@@ -142,6 +142,7 @@ def assert_execution_required_conv_blocks_synthetic_round(state_root: Path) -> N
         [event["event_type"] for event in events(state_root, "conv-execution-required-blocked")] == ["start", "artifact", "fail"],
         "execution-required conv should fail terminally instead of completing",
     )
+    run("validate", "--workflow-id", "conv-execution-required-blocked", state_root=state_root)
 
 
 def assert_resume_preserves_progress(state_root: Path) -> None:

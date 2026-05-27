@@ -10,7 +10,7 @@ from typing import Any
 from ..acceptance import validate_acceptance_payload
 from ..artifacts import now_iso
 from ..messages import normalize_residuals
-from .base import ModeHandler, ModeOutcome
+from .base import ModeHandler, ModeOutcome, apply_execution_truth_block, execution_blocked_final_status
 from .execution_truth import classify_execution_markers
 
 
@@ -88,8 +88,26 @@ class GoalHandler(ModeHandler):
         workflow = self.load_workflow(workflow_id)
         existing_plan_accepted = _existing_plan_accepted_payload(self.store, workflow_id)
         record = build_goal_record(workflow, accepted_at=existing_plan_accepted.get("accepted_at") if existing_plan_accepted else None)
-        rendered_plan = render_goal_plan(record)
         artifact_path = (self.store.workflow_dir(workflow_id) / "artifacts" / "goal-plan.md").expanduser().resolve()
+        artifact_ref = GOAL_PLAN_ARTIFACT_ID
+        artifact_path_text = str(artifact_path)
+        pre_state = record.as_state(artifact_id=artifact_ref, artifact_path=artifact_path_text, artifact_hash="pending")
+        pre_state, residuals, block_reason = apply_execution_truth_block("goal", pre_state, residuals=record.residuals)
+        render_record = GoalRecord(
+            objective=pre_state["objective"],
+            non_goals=pre_state["non_goals"],
+            success_criteria=pre_state["success_criteria"],
+            assumptions=pre_state["assumptions"],
+            approval_boundaries=pre_state["approval_boundaries"],
+            slice_queue=pre_state["slice_queue"],
+            plan_accepted=pre_state["plan_accepted"],
+            evidence_completion_check=pre_state["evidence_completion_check"],
+            plan_artifact_promotion=pre_state["plan_artifact_promotion"],
+            child_workflow_refs=pre_state["child_workflow_refs"],
+            residuals=residuals,
+            final_report_summary=pre_state["final_report_summary"],
+        )
+        rendered_plan = render_goal_plan(render_record)
         artifact = _existing_goal_artifact(workflow, expected_path=artifact_path, rendered_plan=rendered_plan)
         if existing_plan_accepted is not None and artifact is None:
             _validate_existing_plan_acceptance_scope(workflow, existing_plan_accepted, record)
@@ -106,7 +124,22 @@ class GoalHandler(ModeHandler):
             )["artifact"]
         artifact_ref = artifact["artifact_id"]
         artifact_path = artifact["path"]
-        state = record.as_state(artifact_id=artifact_ref, artifact_path=artifact_path, artifact_hash=artifact["sha256"])
+        blocked_record = GoalRecord(
+            objective=pre_state["objective"],
+            non_goals=pre_state["non_goals"],
+            success_criteria=pre_state["success_criteria"],
+            assumptions=pre_state["assumptions"],
+            approval_boundaries=pre_state["approval_boundaries"],
+            slice_queue=pre_state["slice_queue"],
+            plan_accepted=pre_state["plan_accepted"],
+            evidence_completion_check=pre_state["evidence_completion_check"],
+            plan_artifact_promotion=pre_state["plan_artifact_promotion"],
+            child_workflow_refs=pre_state["child_workflow_refs"],
+            residuals=residuals,
+            final_report_summary=pre_state["final_report_summary"],
+        )
+        state = blocked_record.as_state(artifact_id=artifact_ref, artifact_path=artifact_path, artifact_hash=artifact["sha256"])
+        state, residuals, block_reason = apply_execution_truth_block("goal", state, residuals=residuals)
         if existing_plan_accepted is not None and existing_plan_accepted != state["plan_accepted"]:
             raise ValueError("existing goal plan_accepted event payload does not match current accepted plan")
         validate_goal_state(state, workflow=workflow, terminal=True, final_status=None)
@@ -120,34 +153,43 @@ class GoalHandler(ModeHandler):
         checkpoint = self.record_outcome(
             workflow_id,
             ModeOutcome(
-                summary="Goal slice queue and accepted plan are ready for visible delivery.",
-                status_after="completed_unreported",
+                summary=(
+                    "Goal terminal success blocked because execution evidence is missing."
+                    if block_reason
+                    else "Goal slice queue and accepted plan are ready for visible delivery."
+                ),
+                status_after="failed_unreported" if block_reason else "completed_unreported",
                 phase_after="terminal",
                 checkpoint_type="terminal",
-                event_type="complete",
+                event_type="fail" if block_reason else "complete",
                 worklog_block_kind="terminal_summary",
                 step_result="terminal",
-                residuals=record.residuals,
+                residuals=residuals,
                 terminal_evidence=evidence,
                 mode_state_update=state,
                 recovery_lease_id=recovery_lease_id,
                 recovery_lease_holder=recovery_lease_holder,
-                final_status={
-                    "result": "pass_with_risks" if any(record.residuals.values()) else "pass",
-                    "done": [
-                        "Recorded objective and success-criteria gates",
-                        "Represented goal slices in continuation_plan.steps",
-                        "Validated the scoped plan_accepted payload",
-                        "Promoted the goal plan artifact through the shared artifact path",
-                        "Recorded child workflow reference fields without creating child workflows",
-                    ],
-                    "checked": [
-                        "Goal mode used shared artifact and checkpoint contracts",
-                        "Terminal evidence references the promoted plan artifact",
-                        "Visible delivery remains gated by reserve-delivery/report-proof/complete-reported",
-                    ],
-                    "residuals": record.residuals,
-                },
+                final_status=(
+                    execution_blocked_final_status("goal", block_reason, residuals)
+                    if block_reason
+                    else {
+                        "result": "pass_with_risks" if any(record.residuals.values()) else "pass",
+                        "done": [
+                            "Recorded objective and success-criteria gates",
+                            "Represented goal slices in continuation_plan.steps",
+                            "Validated the scoped plan_accepted payload",
+                            "Promoted the goal plan artifact through the shared artifact path",
+                            "Recorded child workflow reference fields without creating child workflows",
+                        ],
+                        "checked": [
+                            "Goal mode used shared artifact and checkpoint contracts",
+                            "Terminal evidence references the promoted plan artifact",
+                            "Visible delivery remains gated by reserve-delivery/report-proof/complete-reported",
+                        ],
+                        "residuals": record.residuals,
+                    }
+                ),
+                failure_reason=block_reason,
             ),
         )
         return {"workflow_id": workflow_id, "artifact": artifact, "checkpoint": checkpoint, "goal": state}

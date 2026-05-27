@@ -9,14 +9,8 @@ PLAN_ONLY_PATTERNS = (
     "scaffold-only",
     "dry-run only",
     "contract only",
-    "no code changes",
-    "documentation only",
     "계획만",
     "계획 문서 작성만",
-    "문서 작성만",
-    "문서화만",
-    "코드 수정하지",
-    "구현하지 말고",
     "이번 단계는 계획",
 )
 

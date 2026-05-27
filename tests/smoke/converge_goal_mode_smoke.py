@@ -156,6 +156,7 @@ def assert_execution_required_goal_blocks_planned_children(state_root: Path) -> 
         [event["event_type"] for event in events(state_root, "goal-execution-required-blocked")] == ["start", "artifact", "plan_accepted", "fail"],
         "execution-required goal should fail terminally instead of completing",
     )
+    run("validate", "--workflow-id", "goal-execution-required-blocked", state_root=state_root)
 
 
 def assert_plan_accepted_requires_objective(state_root: Path) -> None:

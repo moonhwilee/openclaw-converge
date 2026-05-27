@@ -545,7 +545,8 @@ def main() -> int:
             ),
         )
         terminal_workflow = store.load_workflow("goal-mode-terminal")
-        assert_true(terminal_workflow["final_status"]["result"] == "pass", "terminal mode final_status should persist")
+        assert_true(terminal_workflow["status"] == "failed_unreported", "terminal mode should fail closed without execution markers")
+        assert_true(terminal_workflow["final_status"]["result"] == "blocked", "terminal mode should persist blocked final_status")
         assert_true("■ Goal final" in format_final(terminal_workflow), "terminal mode workflow should format final report")
 
         store.create_workflow(kind="goal", text="Race mode", workflow_id="goal-mode-race")

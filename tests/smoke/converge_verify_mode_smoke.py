@@ -24,7 +24,7 @@ def main() -> int:
         payload = run(
             "verify",
             "--text",
-            "Audit C2 verify mode contract only",
+            "plan-only Audit C2 verify mode contract only",
             "--workflow-id",
             "verify-c2-smoke",
             "--owner-session-key",
@@ -56,10 +56,38 @@ def main() -> int:
         assert_true(event_types == ["start", "artifact", "complete"], "verify mode should use start/artifact/complete events only")
         assert_true(format_final(wf).startswith("■ Verification final"), "verify final report marker mismatch")
 
+        blocked_verify = run(
+            "verify",
+            "--text",
+            "Audit execution-required target",
+            "--workflow-id",
+            "verify-execution-required-blocked",
+            "--owner-session-key",
+            "session:test",
+            "--visible-delivery",
+            visible_delivery,
+            state_root=state_root,
+        )["workflow"]
+        assert_true(blocked_verify["status"] == "failed_unreported", "execution-required verify should fail closed")
+        assert_true(blocked_verify["final_status"]["result"] == "blocked", "execution-required verify should be blocked")
+        assert_true(
+            blocked_verify["final_status"]["stop_reason"] == "blocked_no_execution_evidence",
+            "verify should block on missing execution evidence",
+        )
+        assert_true(
+            blocked_verify["verify_state"]["execution_required"] is True
+            and blocked_verify["verify_state"]["execution_performed"] is False,
+            "verify should record execution truth markers",
+        )
+        assert_true(
+            [event["event_type"] for event in events(state_root, "verify-execution-required-blocked")] == ["start", "artifact", "fail"],
+            "execution-required verify should fail terminally instead of completing",
+        )
+
         mismatched_status = run(
             "verify",
             "--text",
-            "Reject mismatched reserve final status",
+            "plan-only Reject mismatched reserve final status",
             "--workflow-id",
             "verify-reserve-final-status-mismatch",
             "--visible-delivery",
@@ -159,7 +187,7 @@ def main() -> int:
         stale_reserve = run(
             "verify",
             "--text",
-            "Do not send stale verify reports",
+            "plan-only Do not send stale verify reports",
             "--workflow-id",
             "verify-stale-reserve",
             "--visible-delivery",
@@ -188,7 +216,7 @@ def main() -> int:
         stale_proof = run(
             "verify",
             "--text",
-            "Proof externally sent stale verify reports",
+            "plan-only Proof externally sent stale verify reports",
             "--workflow-id",
             "verify-stale-proof",
             "--visible-delivery",
@@ -230,7 +258,7 @@ def main() -> int:
         proofed_then_stale = run(
             "verify",
             "--text",
-            "Complete already proofed stale verify reports",
+            "plan-only Complete already proofed stale verify reports",
             "--workflow-id",
             "verify-proofed-then-stale",
             "--visible-delivery",
@@ -284,7 +312,7 @@ def main() -> int:
         duplicate = run(
             "verify",
             "--text",
-            "Duplicate verify",
+            "plan-only Duplicate verify",
             "--workflow-id",
             "verify-c2-smoke",
             state_root=state_root,
@@ -314,7 +342,7 @@ def main() -> int:
         missing_evidence = run(
             "verify",
             "--text",
-            "Reject missing verify evidence",
+            "plan-only Reject missing verify evidence",
             "--workflow-id",
             "verify-missing-evidence",
             "--visible-delivery",
@@ -334,7 +362,7 @@ def main() -> int:
         unanchored_evidence = run(
             "verify",
             "--text",
-            "Reject unanchored verify evidence",
+            "plan-only Reject unanchored verify evidence",
             "--workflow-id",
             "verify-unanchored-evidence",
             "--visible-delivery",
@@ -358,7 +386,7 @@ def main() -> int:
         residual_mismatch = run(
             "verify",
             "--text",
-            "Reject verify residual drift",
+            "plan-only Reject verify residual drift",
             "--workflow-id",
             "verify-residual-mismatch",
             "--visible-delivery",
@@ -378,7 +406,7 @@ def main() -> int:
         report_drift = run(
             "verify",
             "--text",
-            "Reject verify report drift",
+            "plan-only Reject verify report drift",
             "--workflow-id",
             "verify-report-drift",
             "--visible-delivery",
@@ -406,7 +434,7 @@ def main() -> int:
         checkpoint_state_drift = run(
             "verify",
             "--text",
-            "Reject checkpoint verify state drift",
+            "plan-only Reject checkpoint verify state drift",
             "--workflow-id",
             "verify-checkpoint-state-drift",
             "--visible-delivery",
@@ -437,7 +465,7 @@ def main() -> int:
         checkpoint_extra_drift = run(
             "verify",
             "--text",
-            "Reject extra checkpoint verify state drift",
+            "plan-only Reject extra checkpoint verify state drift",
             "--workflow-id",
             "verify-checkpoint-extra-drift",
             "--visible-delivery",
@@ -456,7 +484,7 @@ def main() -> int:
         verification_evidence_drift = run(
             "verify",
             "--text",
-            "Reject workflow verification evidence drift",
+            "plan-only Reject workflow verification evidence drift",
             "--workflow-id",
             "verify-evidence-drift",
             "--visible-delivery",
@@ -498,7 +526,7 @@ def main() -> int:
         stale_hash = run(
             "verify",
             "--text",
-            "Reject stale verify report hash",
+            "plan-only Reject stale verify report hash",
             "--workflow-id",
             "verify-stale-report-hash",
             "--visible-delivery",
@@ -516,7 +544,7 @@ def main() -> int:
             "--kind",
             "verify",
             "--text",
-            "Resume a start-only verify",
+            "plan-only Resume a start-only verify",
             "--workflow-id",
             "verify-start-partial",
             "--visible-delivery",
@@ -527,7 +555,7 @@ def main() -> int:
         resumed_final = run(
             "verify",
             "--text",
-            "ignored retry text",
+            "plan-only ignored retry text",
             "--workflow-id",
             "verify-start-partial",
             "--visible-delivery",
@@ -541,7 +569,7 @@ def main() -> int:
             "--kind",
             "verify",
             "--text",
-            "Resume an artifact-only verify",
+            "plan-only Resume an artifact-only verify",
             "--workflow-id",
             "verify-artifact-partial",
             "--visible-delivery",
@@ -566,7 +594,7 @@ def main() -> int:
         artifact_resumed = run_fail(
             "verify",
             "--text",
-            "ignored retry text",
+            "plan-only ignored retry text",
             "--workflow-id",
             "verify-artifact-partial",
             "--visible-delivery",
@@ -585,7 +613,7 @@ def main() -> int:
                 "--kind",
                 "verify",
                 "--text",
-                "Relative root report retry",
+                "plan-only Relative root report retry",
                 "--workflow-id",
                 "verify-relative-artifact",
                 "--visible-delivery",
@@ -596,7 +624,7 @@ def main() -> int:
             relative_report_path = ROOT / relative_report_arg
             relative_report_path.parent.mkdir(parents=True, exist_ok=True)
             relative_report_path.write_text(
-                render_verify_report(build_verify_record("Relative root report retry")),
+                render_verify_report(build_verify_record("plan-only Relative root report retry")),
                 encoding="utf-8",
             )
             run(
@@ -614,7 +642,7 @@ def main() -> int:
             relative_resumed = run(
                 "verify",
                 "--text",
-                "ignored retry text",
+                "plan-only ignored retry text",
                 "--workflow-id",
                 "verify-relative-artifact",
                 "--visible-delivery",

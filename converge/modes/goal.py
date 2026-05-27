@@ -11,6 +11,7 @@ from ..acceptance import validate_acceptance_payload
 from ..artifacts import now_iso
 from ..messages import normalize_residuals
 from .base import ModeHandler, ModeOutcome
+from .execution_truth import classify_execution_markers
 
 
 GOAL_PLAN_ARTIFACT_ID = "goal-promoted-plan"
@@ -47,7 +48,7 @@ class GoalRecord:
                 "plan_artifact_hash": artifact_hash,
             }
         )
-        return {
+        state = {
             "final_plan_artifact_id": artifact_id,
             "final_plan_artifact_path": artifact_path,
             "objective": self.objective,
@@ -63,6 +64,8 @@ class GoalRecord:
             "residuals": self.residuals,
             "final_report_summary": self.final_report_summary,
         }
+        state.update(classify_execution_markers(self.objective, capability="planned_child_refs_only"))
+        return state
 
 
 class GoalHandler(ModeHandler):

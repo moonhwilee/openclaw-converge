@@ -72,7 +72,7 @@ def main() -> int:
         invalid_choice = run_fail("artifact", "--workflow-id", "bad-input", "--kind", "unknown", "--path", str(state_root), state_root=state_root)
         assert_true(not invalid_choice["ok"] and "invalid choice" in invalid_choice["error"], "argparse choice errors should stay machine-readable")
 
-        goal = run("start", "--kind", "goal", "--text", "Implement runtime foundation", "--workflow-id", "goal-runtime", *wrapper_args, state_root=state_root)
+        goal = run("start", "--kind", "goal", "--text", "plan-only Implement runtime foundation", "--workflow-id", "goal-runtime", *wrapper_args, state_root=state_root)
         assert_true(goal["workflow"]["kind"] == "goal", "start --kind goal should create goal workflow")
         assert_goal_c4_initial_contract(goal["workflow"], "start --kind goal should use C4 initialization contract")
         assert_true(goal["workflow"]["owner_session_key"] == "session:test", "start --kind goal should preserve owner session")
@@ -84,7 +84,7 @@ def main() -> int:
         assert_true(plan["workflow"]["kind"] == "plan", "plan helper should create plan workflow")
         assert_true(plan["workflow"]["status"] == "completed_unreported", "plan helper should finalize through shared checkpoint")
         assert_true(plan["workflow"]["continuation_plan"] is None, "plan helper should use shared start contract")
-        verify = run_bin("verify", "--text", "Verify runtime foundation", "--workflow-id", "verify-runtime", *wrapper_args, state_root=state_root)
+        verify = run_bin("verify", "--text", "plan-only Verify runtime foundation", "--workflow-id", "verify-runtime", *wrapper_args, state_root=state_root)
         assert_true(verify["workflow"]["kind"] == "verify", "verify helper should create verify workflow through bin")
         assert_true(verify["workflow"]["continuation_plan"] is None, "verify helper should use shared start contract")
         conv = run("start", "--kind", "conv", "--text", "Converge runtime foundation", "--workflow-id", "conv-runtime", *wrapper_args, state_root=state_root)
@@ -396,7 +396,7 @@ def main() -> int:
             route_mismatch_reserve["send_authorized"] is False and route_mismatch_reserve["reason"] == "visible_delivery_mismatch",
             "reserve-delivery should preserve the workflow visible delivery route",
         )
-        run("goal", "--text", "Implement runtime foundation", "--workflow-id", "goal-runtime", *wrapper_args, state_root=state_root)
+        run("goal", "--text", "plan-only Implement runtime foundation", "--workflow-id", "goal-runtime", *wrapper_args, state_root=state_root)
         terminal = run(
             "reserve-delivery",
             "--workflow-id",

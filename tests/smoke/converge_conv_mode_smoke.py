@@ -20,7 +20,7 @@ def finalize_conv(state_root: Path, *, workflow_id: str, text: str) -> dict[str,
     return run(
         "conv",
         "--text",
-        text,
+        f"plan-only {text}",
         "--workflow-id",
         workflow_id,
         "--owner-session-key",
@@ -31,11 +31,12 @@ def finalize_conv(state_root: Path, *, workflow_id: str, text: str) -> dict[str,
     )["workflow"]
 
 
-def assert_conv_report_matches(wf: dict[str, Any], text: str) -> None:
+def assert_conv_report_matches(wf: dict[str, Any], text: str | None = None) -> None:
     artifact_path = Path(wf["conv_state"]["final_report_artifact_path"])
+    source_text = text if text is not None else wf["source_request"]
     assert_true(artifact_path.is_file(), "conv report artifact should be materialized")
     assert_true(
-        artifact_path.read_text(encoding="utf-8") == render_conv_report(build_conv_record(text)),
+        artifact_path.read_text(encoding="utf-8") == render_conv_report(build_conv_record(source_text)),
         "conv report artifact should match rendered conv state",
     )
 
@@ -59,7 +60,7 @@ def assert_default_conv_contract(state_root: Path) -> None:
     assert_true(wf["verification"]["evidence"][-1]["artifact_refs"] == ["conv-final-report"], "terminal evidence should reference conv report")
     assert_true(wf["next_safe_action"]["action_type"] == "report_terminal_status", "conv terminal state should require report flow")
     assert_true([event["event_type"] for event in events(state_root, "conv-c3-smoke")] == ["start", "artifact", "complete"], "conv should use start/artifact/complete events")
-    assert_conv_report_matches(wf, text)
+    assert_conv_report_matches(wf)
     run("validate", "--workflow-id", "conv-c3-smoke", state_root=state_root)
 
     reservation = run(
@@ -110,13 +111,46 @@ def assert_default_conv_contract(state_root: Path) -> None:
     )
 
 
+def assert_execution_required_conv_blocks_synthetic_round(state_root: Path) -> None:
+    wf = run(
+        "conv",
+        "--text",
+        "Improve execution-required target until convergence",
+        "--workflow-id",
+        "conv-execution-required-blocked",
+        "--owner-session-key",
+        "session:test",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        state_root=state_root,
+    )["workflow"]
+    assert_true(wf["status"] == "failed_unreported", "execution-required conv should fail closed")
+    assert_true(wf["final_status"]["result"] == "blocked", "execution-required conv should be blocked")
+    assert_true(
+        wf["final_status"]["stop_reason"] == "blocked_no_execution_evidence",
+        "conv should block on missing execution evidence",
+    )
+    assert_true(
+        wf["conv_state"]["execution_required"] is True and wf["conv_state"]["execution_performed"] is False,
+        "conv should record execution truth markers",
+    )
+    assert_true(
+        wf["conv_state"]["execution_blocked"] is True,
+        "conv blocked state should record execution_blocked",
+    )
+    assert_true(
+        [event["event_type"] for event in events(state_root, "conv-execution-required-blocked")] == ["start", "artifact", "fail"],
+        "execution-required conv should fail terminally instead of completing",
+    )
+
+
 def assert_resume_preserves_progress(state_root: Path) -> None:
     run(
         "start",
         "--kind",
         "conv",
         "--text",
-        "Converge in-progress conv fixture",
+        "plan-only Converge in-progress conv fixture",
         "--workflow-id",
         "conv-progress-helper",
         "--visible-delivery",
@@ -136,7 +170,7 @@ def assert_resume_preserves_progress(state_root: Path) -> None:
     wf = run(
         "conv",
         "--text",
-        "ignored retry text",
+        "plan-only ignored retry text",
         "--workflow-id",
         "conv-progress-helper",
         "--visible-delivery",
@@ -153,7 +187,7 @@ def assert_material_change_and_max_round_fixtures(state_root: Path) -> None:
     accidental = finalize_conv(state_root, workflow_id="conv-plain-fixture-text", text=material_text)
     assert_true(accidental["conv_state"]["round_count"] == 1, "fixture words in user text should not select synthetic paths")
     assert_true(accidental["conv_state"]["stop_condition"] == "evidence_sufficient", "fixture words should behave like normal text")
-    assert_conv_report_matches(accidental, material_text)
+    assert_conv_report_matches(accidental)
 
     material_record = _material_change_record(material_text)
     material_state = material_record.as_state(artifact_id="conv-final-report", artifact_path="/tmp/conv-report.md")
@@ -361,6 +395,7 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="converge-conv-mode-smoke-") as tmp:
         state_root = Path(tmp)
         assert_default_conv_contract(state_root)
+        assert_execution_required_conv_blocks_synthetic_round(state_root)
         assert_resume_preserves_progress(state_root)
         assert_material_change_and_max_round_fixtures(state_root)
         assert_conv_integrity_rejects_drift(state_root)

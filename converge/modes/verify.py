@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .base import ModeHandler, ModeOutcome
+from .execution_truth import classify_execution_markers
 from ..messages import normalize_residuals
 
 
@@ -26,7 +27,7 @@ class VerifyRecord:
     final_report_summary: str
 
     def as_state(self, *, artifact_id: str, artifact_path: str) -> dict[str, Any]:
-        return {
+        state = {
             "final_report_artifact_id": artifact_id,
             "final_report_artifact_path": artifact_path,
             "target": self.target,
@@ -38,6 +39,8 @@ class VerifyRecord:
             "residuals": self.residuals,
             "final_report_summary": self.final_report_summary,
         }
+        state.update(classify_execution_markers(self.target, capability="report_scaffold_only"))
+        return state
 
 
 def validate_verify_state(

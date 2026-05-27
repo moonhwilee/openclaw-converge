@@ -7,11 +7,12 @@ from pathlib import Path
 from typing import Any
 
 from .base import ModeHandler, ModeOutcome
+from .execution_truth import classify_execution_markers
 from ..messages import normalize_residuals
 
 
 CONV_REPORT_ARTIFACT_ID = "conv-final-report"
-CONV_STOP_CONDITIONS = {"evidence_sufficient", "max_round"}
+CONV_STOP_CONDITIONS = {"evidence_sufficient", "max_round", "blocked_no_execution_evidence"}
 CONV_NOVELTY = {"new", "repeated", "none"}
 CONV_SEVERITY = {"p0", "p1", "p2", "p3", "none"}
 CONV_OBJECTIVE_IMPACT = {"changes_objective", "preserves_objective", "none"}
@@ -57,7 +58,7 @@ class ConvRecord:
     final_report_summary: str
 
     def as_state(self, *, artifact_id: str, artifact_path: str) -> dict[str, Any]:
-        return {
+        state = {
             "final_report_artifact_id": artifact_id,
             "final_report_artifact_path": artifact_path,
             "target": self.target,
@@ -73,6 +74,8 @@ class ConvRecord:
             "residuals": self.residuals,
             "final_report_summary": self.final_report_summary,
         }
+        state.update(classify_execution_markers(self.target, capability="synthetic_round_only"))
+        return state
 
 
 class ConvHandler(ModeHandler):

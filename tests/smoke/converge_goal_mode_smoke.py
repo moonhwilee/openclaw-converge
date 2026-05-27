@@ -20,7 +20,7 @@ def finalize_goal(state_root: Path, *, workflow_id: str, text: str) -> dict[str,
     return run(
         "goal",
         "--text",
-        text,
+        f"plan-only {text}",
         "--workflow-id",
         workflow_id,
         "--owner-session-key",
@@ -125,6 +125,39 @@ def assert_default_goal_contract(state_root: Path) -> None:
     assert_true(reported["status"] == "reported", "complete-reported should mark goal workflow reported")
 
 
+def assert_execution_required_goal_blocks_planned_children(state_root: Path) -> None:
+    wf = run(
+        "goal",
+        "--text",
+        "Implement execution-required goal workflow",
+        "--workflow-id",
+        "goal-execution-required-blocked",
+        "--owner-session-key",
+        "session:test",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        state_root=state_root,
+    )["workflow"]
+    assert_true(wf["status"] == "failed_unreported", "execution-required goal should fail closed")
+    assert_true(wf["final_status"]["result"] == "blocked", "execution-required goal should be blocked")
+    assert_true(
+        wf["final_status"]["stop_reason"] == "blocked_child_workflows_not_run",
+        "goal should block on planned child refs",
+    )
+    assert_true(
+        wf["goal_state"]["execution_required"] is True and wf["goal_state"]["execution_performed"] is False,
+        "goal should record execution truth markers",
+    )
+    assert_true(
+        wf["goal_state"]["execution_blocked"] is True,
+        "goal blocked state should record execution_blocked",
+    )
+    assert_true(
+        [event["event_type"] for event in events(state_root, "goal-execution-required-blocked")] == ["start", "artifact", "plan_accepted", "fail"],
+        "execution-required goal should fail terminally instead of completing",
+    )
+
+
 def assert_plan_accepted_requires_objective(state_root: Path) -> None:
     run("start", "--kind", "goal", "--text", "Manual acceptance validation", "--workflow-id", "goal-acceptance-validation", state_root=state_root)
     payload = {
@@ -155,7 +188,7 @@ def assert_plan_accepted_requires_objective(state_root: Path) -> None:
 
 def assert_goal_retry_reuses_existing_plan_accepted(state_root: Path) -> None:
     workflow_id = "goal-retry-plan-accepted"
-    run("start", "--kind", "goal", "--text", "Retry accepted plan", "--workflow-id", workflow_id, state_root=state_root)
+    run("start", "--kind", "goal", "--text", "plan-only Retry accepted plan", "--workflow-id", workflow_id, state_root=state_root)
     wf = workflow(state_root, workflow_id)
     record = build_goal_record(wf, accepted_at="2026-05-25T00:00:00Z")
     plan_path = state_root / "workflows" / workflow_id / "artifacts" / "goal-plan.md"
@@ -190,7 +223,7 @@ def assert_goal_retry_reuses_existing_plan_accepted(state_root: Path) -> None:
         json.dumps(accepted_state["plan_accepted"]),
         state_root=state_root,
     )
-    retry = run("goal", "--text", "Retry accepted plan", "--workflow-id", workflow_id, state_root=state_root)["workflow"]
+    retry = run("goal", "--text", "plan-only Retry accepted plan", "--workflow-id", workflow_id, state_root=state_root)["workflow"]
     assert_true(retry["status"] == "completed_unreported", "goal retry should complete from existing plan_accepted event")
     assert_true(
         retry["goal_state"]["plan_accepted"] == accepted_state["plan_accepted"],
@@ -200,7 +233,7 @@ def assert_goal_retry_reuses_existing_plan_accepted(state_root: Path) -> None:
 
 def assert_goal_rejects_duplicate_preterminal_acceptance(state_root: Path) -> None:
     workflow_id = "goal-duplicate-preterminal-accepted"
-    run("start", "--kind", "goal", "--text", "Duplicate accepted plan", "--workflow-id", workflow_id, state_root=state_root)
+    run("start", "--kind", "goal", "--text", "plan-only Duplicate accepted plan", "--workflow-id", workflow_id, state_root=state_root)
     wf = workflow(state_root, workflow_id)
     record = build_goal_record(wf, accepted_at="2026-05-25T00:00:00Z")
     plan_path = state_root / "workflows" / workflow_id / "artifacts" / "goal-plan.md"
@@ -236,14 +269,14 @@ def assert_goal_rejects_duplicate_preterminal_acceptance(state_root: Path) -> No
             json.dumps(accepted_state["plan_accepted"]),
             state_root=state_root,
         )
-    result = run_fail("goal", "--text", "Duplicate accepted plan", "--workflow-id", workflow_id, state_root=state_root)
+    result = run_fail("goal", "--text", "plan-only Duplicate accepted plan", "--workflow-id", workflow_id, state_root=state_root)
     assert_true("duplicated" in result["error"], "goal should reject duplicate preterminal plan_accepted events before terminalizing")
     assert_true(workflow(state_root, workflow_id)["status"] == "running", "duplicate acceptance must not create terminal goal state")
 
 
 def assert_goal_rejects_conflicting_acceptance_without_dirtying_artifact(state_root: Path) -> None:
     workflow_id = "goal-conflicting-preterminal-accepted"
-    run("start", "--kind", "goal", "--text", "Conflicting accepted plan", "--workflow-id", workflow_id, state_root=state_root)
+    run("start", "--kind", "goal", "--text", "plan-only Conflicting accepted plan", "--workflow-id", workflow_id, state_root=state_root)
     wf = workflow(state_root, workflow_id)
     record = build_goal_record(wf, accepted_at="2026-05-25T00:00:00Z")
     conflicting_payload = dict(record.plan_accepted)
@@ -260,7 +293,7 @@ def assert_goal_rejects_conflicting_acceptance_without_dirtying_artifact(state_r
         json.dumps(conflicting_payload),
         state_root=state_root,
     )
-    result = run_fail("goal", "--text", "Conflicting accepted plan", "--workflow-id", workflow_id, state_root=state_root)
+    result = run_fail("goal", "--text", "plan-only Conflicting accepted plan", "--workflow-id", workflow_id, state_root=state_root)
     assert_true("does not match current accepted plan" in result["error"], "goal should reject conflicting acceptance before artifact registration")
     failed = workflow(state_root, workflow_id)
     assert_true(failed["status"] == "running", "conflicting acceptance must not create terminal goal state")
@@ -412,6 +445,7 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="converge-goal-mode-smoke-") as tmp:
         state_root = Path(tmp)
         assert_default_goal_contract(state_root)
+        assert_execution_required_goal_blocks_planned_children(state_root)
         assert_plan_accepted_requires_objective(state_root)
         assert_goal_retry_reuses_existing_plan_accepted(state_root)
         assert_goal_rejects_duplicate_preterminal_acceptance(state_root)

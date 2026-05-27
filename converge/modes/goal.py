@@ -667,6 +667,7 @@ def attach_phase5b_child_delivery_state(state: dict[str, Any], *, residuals: dic
         "complete": collection.get("complete") is True,
     }
     updated["child_delivery_mode_transitions"] = transitions
+    updated["workflow_graph"] = _phase5_workflow_graph(updated, child_refs=child_refs, child_rollups=child_rollups)
     updated["duplicate_report_guard"] = {
         "guard_id": f"duplicate-child-visible-report-guard:{updated.get('final_plan_artifact_id')}",
         "parent_owns_visible_delivery": True,
@@ -678,6 +679,77 @@ def attach_phase5b_child_delivery_state(state: dict[str, Any], *, residuals: dic
         "valid": True,
     }
     return updated
+
+
+def _phase5_workflow_graph(
+    state: dict[str, Any],
+    *,
+    child_refs: list[dict[str, Any]],
+    child_rollups: list[dict[str, Any]],
+) -> dict[str, Any]:
+    parent_id = state.get("plan_accepted", {}).get("source_ref") or "goal-parent"
+    owner_sessions = sorted(
+        {
+            child.get("owner_session_key")
+            for child in child_refs
+            if isinstance(child.get("owner_session_key"), str) and child.get("owner_session_key")
+        }
+    )
+    visible_delivery_policies = [
+        child.get("visible_delivery_policy")
+        for child in child_refs
+        if isinstance(child.get("visible_delivery_policy"), dict)
+    ]
+    parent_owner = owner_sessions[0] if len(owner_sessions) == 1 else ""
+    parent_visible_delivery = visible_delivery_policies[0] if visible_delivery_policies else {}
+    rollup_by_id = {item["workflow_id"]: item for item in child_rollups}
+    nodes = [
+        {
+            "workflow_id": parent_id,
+            "parent_id": None,
+            "role": "goal",
+            "required": True,
+            "state_root": "current_workflow_store",
+            "owner_session": parent_owner,
+            "visible_delivery_policy": parent_visible_delivery,
+            "terminal_status": None,
+            "report_proof_ref": None,
+        }
+    ]
+    edges = []
+    for child in child_refs:
+        child_id = child["workflow_id"]
+        rollup = rollup_by_id[child_id]
+        nodes.append(
+            {
+                "workflow_id": child_id,
+                "parent_id": parent_id,
+                "role": child.get("kind"),
+                "required": True,
+                "state_root": "current_workflow_store",
+                "owner_session": child.get("owner_session_key") or parent_owner,
+                "visible_delivery_policy": child.get("visible_delivery_policy") or parent_visible_delivery,
+                "terminal_status": child.get("terminal_status"),
+                "report_proof_ref": child.get("report_proof_ref"),
+            }
+        )
+        edges.append(
+            {
+                "parent_id": parent_id,
+                "child_id": child_id,
+                "role": child.get("kind"),
+                "required": True,
+                "collection_status": "collected" if rollup.get("workflow_id") == child_id else "missing",
+            }
+        )
+    return {
+        "graph_id": f"phase5-goal-child-graph:{parent_id}",
+        "nodes": nodes,
+        "edges": edges,
+        "acyclic": True,
+        "owner_session_consistent": len(owner_sessions) <= 1,
+        "state_root_consistent": True,
+    }
 
 
 def phase5b_child_delivery_mode(state: dict[str, Any], child_id: str) -> str | None:
@@ -764,6 +836,49 @@ def validate_phase5b_child_delivery_state(state: dict[str, Any], *, terminal: bo
         raise ValueError("goal Phase 5B duplicate child visible report attempts are blocked")
     if terminal and normalize_residuals(rollup.get("parent_residuals")) != normalize_residuals(state.get("residuals")):
         raise ValueError("goal Phase 5B child residual rollup parent residuals must match goal residuals")
+    _validate_phase5_workflow_graph(state, child_ids=child_ids, rollup_ids=rollup_ids)
+
+
+def _validate_phase5_workflow_graph(state: dict[str, Any], *, child_ids: list[str], rollup_ids: list[str]) -> None:
+    graph = state.get("workflow_graph")
+    if not isinstance(graph, dict):
+        raise ValueError("goal Phase 5 workflow_graph must be present")
+    nodes = graph.get("nodes")
+    edges = graph.get("edges")
+    if not isinstance(nodes, list) or not isinstance(edges, list):
+        raise ValueError("goal Phase 5 workflow_graph nodes and edges must be arrays")
+    node_ids = [node.get("workflow_id") for node in nodes if isinstance(node, dict)]
+    if len(node_ids) != len(nodes) or len(node_ids) != len(set(node_ids)):
+        raise ValueError("goal Phase 5 workflow_graph node ids must be unique")
+    parent_nodes = [
+        node
+        for node in nodes
+        if isinstance(node, dict) and node.get("role") == "goal" and node.get("parent_id") is None
+    ]
+    if len(parent_nodes) != 1:
+        raise ValueError("goal Phase 5 workflow_graph requires exactly one parent goal node")
+    parent_id = parent_nodes[0]["workflow_id"]
+    expected_node_ids = sorted([parent_id, *child_ids])
+    if sorted(node_ids) != expected_node_ids:
+        raise ValueError("goal Phase 5 workflow_graph nodes must match parent and child refs")
+    if graph.get("acyclic") is not True or graph.get("state_root_consistent") is not True:
+        raise ValueError("goal Phase 5 workflow_graph must be acyclic and state-root consistent")
+    if graph.get("owner_session_consistent") is not True:
+        raise ValueError("goal Phase 5 workflow_graph owner sessions must be consistent")
+    edge_child_ids = [edge.get("child_id") for edge in edges if isinstance(edge, dict)]
+    if sorted(edge_child_ids) != sorted(child_ids) or len(edge_child_ids) != len(set(edge_child_ids)):
+        raise ValueError("goal Phase 5 workflow_graph edges must match child refs")
+    for edge in edges:
+        if not isinstance(edge, dict):
+            raise ValueError("goal Phase 5 workflow_graph edge must be an object")
+        if edge.get("parent_id") != parent_id:
+            raise ValueError("goal Phase 5 workflow_graph edge parent must match goal node")
+        if edge.get("child_id") not in child_ids or edge.get("child_id") == parent_id:
+            raise ValueError("goal Phase 5 workflow_graph edge child must match a child node")
+        if edge.get("required") is not True or edge.get("collection_status") != "collected":
+            raise ValueError("goal Phase 5 workflow_graph edge must be required and collected")
+    if sorted(edge_child_ids) != sorted(rollup_ids):
+        raise ValueError("goal Phase 5 workflow_graph edges must match child residual rollup")
 
 
 def _report_proof_ref_id(proof_ref: Any) -> str | None:
@@ -823,6 +938,9 @@ def _child_ref_from_workflow(child: dict[str, Any], *, role: str) -> dict[str, A
             for ref in evidence.get("artifact_refs") or []
         ],
         "report_proof_ref": (child.get("visible_delivery_state") or {}).get("report_proof"),
+        "owner_session_key": child.get("owner_session_key") or "",
+        "visible_delivery_policy": child.get("visible_delivery") or {},
+        "parent_id": child.get("parent_workflow_id"),
         "created_at": child.get("created_at"),
     }
 

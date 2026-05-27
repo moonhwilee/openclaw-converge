@@ -557,6 +557,22 @@ def assert_conv_records_structured_specialist_findings(state_root: Path) -> None
         conv_state["recovery_resume_cursor"] == conv_state["agent_result_collection_status"]["collection_cursor"],
         "conv should bind specialist recovery cursor",
     )
+    recovery_scan = run("scan", state_root=state_root)
+    recovery_record = next(item for item in recovery_scan["workflows"] if item["workflow_id"] == "conv-specialist-findings")
+    assert_true(
+        recovery_record["agent_result_collection"]["recovery_resume_cursor"] == conv_state["recovery_resume_cursor"],
+        "conv recovery scan should expose specialist collection resume cursor",
+    )
+    assert_true(
+        recovery_record["profile_registry"]["kinds"] == ["check", "reviewer", "runner"],
+        "conv recovery scan should expose specialist profile registry kinds",
+    )
+    recovery_watchdog = run("watchdog-check", state_root=state_root)
+    recovery_packet = next(item for item in recovery_watchdog["recoveries"] if item["workflow_id"] == "conv-specialist-findings")
+    assert_true(
+        recovery_packet["agent_result_collection"]["relaunch_required"] is False,
+        "conv recovery packet should prove completed specialist requests are not relaunched",
+    )
     assert_true(
         {event["event_type"] for event in events(state_root, "conv-specialist-findings")}.issuperset(
             {"agent_panel_requested", "agent_findings_recorded", "finding_arbitrated"}

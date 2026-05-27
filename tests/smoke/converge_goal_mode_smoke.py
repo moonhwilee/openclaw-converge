@@ -274,6 +274,15 @@ def assert_execution_required_goal_collects_child_evidence(state_root: Path) -> 
         goal_state["duplicate_report_guard"]["parent_must_not_duplicate_child_reports"] is True,
         "Phase 5B should attach duplicate child report guard",
     )
+    assert_true(
+        sorted(node["workflow_id"] for node in goal_state["workflow_graph"]["nodes"])
+        == sorted([wf["workflow_id"], *wf["child_workflow_ids"]]),
+        "Phase 5 should expose a workflow_graph over parent and child workflows",
+    )
+    assert_true(
+        sorted(edge["child_id"] for edge in goal_state["workflow_graph"]["edges"]) == sorted(wf["child_workflow_ids"]),
+        "Phase 5 workflow_graph edges should match child workflows",
+    )
     for child_id in wf["child_workflow_ids"]:
         child = workflow(state_root, child_id)
         assert_true(child["parent_workflow_id"] == wf["workflow_id"], "child should point back to parent")
@@ -334,6 +343,13 @@ def assert_execution_required_goal_collects_child_evidence(state_root: Path) -> 
     persist_goal_state(state_root, "goal-execution-required-real-children", duplicate_attempt)
     result = run_fail("validate", "--workflow-id", "goal-execution-required-real-children", state_root=state_root)
     assert_true("duplicate child visible report attempts" in result["error"], "Phase 5B should reject duplicate child report attempts")
+    persist_goal_state(state_root, "goal-execution-required-real-children", wf)
+
+    missing_graph = json.loads(json.dumps(wf))
+    del missing_graph["goal_state"]["workflow_graph"]
+    persist_goal_state(state_root, "goal-execution-required-real-children", missing_graph)
+    result = run_fail("validate", "--workflow-id", "goal-execution-required-real-children", state_root=state_root)
+    assert_true("workflow_graph" in result["error"], "Phase 5 should reject missing workflow_graph")
     persist_goal_state(state_root, "goal-execution-required-real-children", wf)
 
     first_child_gate = f"child:{wf['child_workflow_ids'][0]}"
@@ -470,6 +486,25 @@ def assert_execution_required_goal_collects_child_evidence(state_root: Path) -> 
     write_workflow(state_root, "goal-execution-required-real-children", wf)
     Path(goal_state["final_plan_artifact_path"]).write_text(render_goal_plan(_goal_record_from_state(goal_state)), encoding="utf-8")
 
+    early_child_result = run(
+        "reserve-delivery",
+        "--workflow-id",
+        wf["child_workflow_ids"][0],
+        "--terminal-status",
+        "completed",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        "--summary",
+        "child report should be blocked before parent summary report",
+        "--final-status",
+        json.dumps(workflow(state_root, wf["child_workflow_ids"][0])["final_status"]),
+        state_root=state_root,
+    )
+    assert_true(
+        early_child_result["send_authorized"] is False and early_child_result["reason"] == "duplicate_child_report_guard",
+        "Phase 5B should block parent_summary_only child visible reports before parent report",
+    )
+
     reservation = run(
         "reserve-delivery",
         "--workflow-id",
@@ -552,6 +587,15 @@ def assert_phase5b_visible_child_mode_positive_path(state_root: Path) -> None:
         VISIBLE_DELIVERY,
         state_root=state_root,
     )["workflow"]
+    for child_ref in wf["goal_state"]["child_workflow_refs"]:
+        child_ref["delivery_mode"] = "visible_child_report_required"
+        child_ref["delivery_mode_reason"] = "child visible report proof is required before parent reported completion"
+    for item in wf["goal_state"]["child_residual_rollup"]["children"]:
+        item["delivery_mode"] = "visible_child_report_required"
+    for item in wf["goal_state"]["child_delivery_mode_transitions"]:
+        item["to_mode"] = "visible_child_report_required"
+        item["reason"] = "child visible report proof is required before parent reported completion"
+    persist_goal_state(state_root, wf["workflow_id"], wf)
     for child_id in wf["child_workflow_ids"]:
         reported_child = report_workflow(state_root, child_id)
         assert_true(reported_child["status"] == "reported", "visible_child_report_required setup should report child")
@@ -672,6 +716,24 @@ def assert_phase5b_waived_child_mode_requires_owner_proof(state_root: Path) -> N
     )
     write_events(state_root, waived["workflow_id"], waiver_events)
     run("validate", "--workflow-id", waived["workflow_id"], state_root=state_root)
+    early_child_result = run(
+        "reserve-delivery",
+        "--workflow-id",
+        child_id,
+        "--terminal-status",
+        "completed",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        "--summary",
+        "waived child report should be blocked before parent report",
+        "--final-status",
+        json.dumps(workflow(state_root, child_id)["final_status"]),
+        state_root=state_root,
+    )
+    assert_true(
+        early_child_result["send_authorized"] is False and early_child_result["reason"] == "duplicate_child_report_guard",
+        "Phase 5B should block waived child visible reports before parent report",
+    )
     reservation = run(
         "reserve-delivery",
         "--workflow-id",
@@ -701,6 +763,24 @@ def assert_phase5b_waived_child_mode_requires_owner_proof(state_root: Path) -> N
     assert_true(reported["status"] == "reported", "waived_with_owner_proof should allow parent report with unreported child")
     child = workflow(state_root, child_id)
     assert_true(child["status"] == "completed_unreported", "waived_with_owner_proof should not silently report child")
+    late_child_result = run(
+        "reserve-delivery",
+        "--workflow-id",
+        child_id,
+        "--terminal-status",
+        "completed",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        "--summary",
+        "waived child report should be blocked after parent report",
+        "--final-status",
+        json.dumps(child["final_status"]),
+        state_root=state_root,
+    )
+    assert_true(
+        late_child_result["send_authorized"] is False and late_child_result["reason"] == "duplicate_child_report_guard",
+        "Phase 5B should block waived child visible reports after parent report",
+    )
 
 
 def assert_goal_child_ids_handle_long_parent_ids(state_root: Path) -> None:

@@ -2043,16 +2043,17 @@ def _child_visible_report_block_reason(store: WorkflowStore, workflow: dict[str,
         parent = store.load_workflow(parent_id)
     except FileNotFoundError:
         return None
-    if parent.get("kind") != "goal" or parent.get("status") != "reported":
+    if parent.get("kind") != "goal":
         return None
     state = parent.get("goal_state")
     if not isinstance(state, dict):
         return None
-    if phase5b_child_delivery_mode(state, workflow["workflow_id"]) != PHASE5B_PARENT_SUMMARY_MODE:
+    delivery_mode = phase5b_child_delivery_mode(state, workflow["workflow_id"])
+    if delivery_mode not in {PHASE5B_PARENT_SUMMARY_MODE, PHASE5B_OWNER_WAIVER_MODE}:
         return None
     guard = state.get("duplicate_report_guard")
     if isinstance(guard, dict) and guard.get("parent_must_not_duplicate_child_reports") is True:
-        return "Phase 5B duplicate_report_guard blocks child visible report after parent_summary_only parent report"
+        return f"Phase 5B duplicate_report_guard blocks child visible report under {delivery_mode}"
     return None
 
 

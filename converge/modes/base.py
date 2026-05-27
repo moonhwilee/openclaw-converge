@@ -344,7 +344,12 @@ def _execution_gate_blockers(kind: str, state: dict[str, Any]) -> list[str]:
         ]
         if planned_refs:
             blockers.append(f"Goal child workflows are planned references only: {', '.join(planned_refs)}.")
-    if kind == "conv" and execution_required is True and state.get("evidence_sufficient") is True:
+    if (
+        kind == "conv"
+        and execution_required is True
+        and state.get("evidence_sufficient") is True
+        and (execution_performed is not True or synthetic_report is not False or not state.get("execution_evidence_refs"))
+    ):
         blockers.append("Convergence evidence sufficiency is synthetic until a real round runner records execution proof.")
     return blockers
 

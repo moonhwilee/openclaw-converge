@@ -13,7 +13,7 @@ try:
     from smoke_helpers import VISIBLE_DELIVERY, assert_true, events, run, run_fail, workflow, write_workflow
 except ModuleNotFoundError:
     from tests.smoke.smoke_helpers import VISIBLE_DELIVERY, assert_true, events, run, run_fail, workflow, write_workflow
-from converge.modes.conv import _material_change_record, _max_round_record, build_conv_record, render_conv_report, validate_conv_state  # noqa: E402
+from converge.modes.conv import ConvRecord, ConvRound, _material_change_record, _max_round_record, build_conv_record, render_conv_report, validate_conv_state  # noqa: E402
 
 
 def finalize_conv(state_root: Path, *, workflow_id: str, text: str) -> dict[str, Any]:
@@ -37,6 +37,17 @@ def assert_conv_report_matches(wf: dict[str, Any], text: str | None = None) -> N
     assert_true(artifact_path.is_file(), "conv report artifact should be materialized")
     assert_true(
         artifact_path.read_text(encoding="utf-8") == render_conv_report(build_conv_record(source_text)),
+        "conv report artifact should match rendered conv state",
+    )
+
+
+def assert_conv_report_matches_state(wf: dict[str, Any]) -> None:
+    conv_state = wf["conv_state"]
+    artifact_path = Path(conv_state["final_report_artifact_path"])
+    record = _record_from_state(conv_state)
+    assert_true(artifact_path.is_file(), "conv report artifact should be materialized")
+    assert_true(
+        artifact_path.read_text(encoding="utf-8") == render_conv_report(record),
         "conv report artifact should match rendered conv state",
     )
 
@@ -143,6 +154,98 @@ def assert_execution_required_conv_blocks_synthetic_round(state_root: Path) -> N
         "execution-required conv should fail terminally instead of completing",
     )
     run("validate", "--workflow-id", "conv-execution-required-blocked", state_root=state_root)
+
+
+def assert_execution_required_conv_records_real_round_evidence(state_root: Path) -> None:
+    target = state_root / "phase2-target.txt"
+    target.write_text("phase 2 deterministic conv target\n", encoding="utf-8")
+    wf = run(
+        "conv",
+        "--text",
+        f"Improve execution-required target {target}",
+        "--workflow-id",
+        "conv-execution-required-real-round",
+        "--owner-session-key",
+        "session:test",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        state_root=state_root,
+    )["workflow"]
+    conv_state = wf["conv_state"]
+    assert_true(wf["status"] == "completed_unreported", "execution-required conv with real evidence should complete")
+    assert_true(wf["final_status"]["result"] == "pass_with_risks", "Phase 2 real evidence should pass with scoped residuals")
+    assert_true(conv_state["execution_required"] is True, "conv should preserve execution_required=true")
+    assert_true(conv_state["execution_performed"] is True, "trusted conv runner should record execution_performed=true")
+    assert_true(conv_state["synthetic_report"] is False, "real conv evidence should clear synthetic_report")
+    assert_true(conv_state["execution_capability"] == "local_rounds", "conv should record local round capability")
+    assert_true(
+        conv_state["execution_evidence_refs"] == ["conv-round-execution"],
+        "conv should reference round execution evidence",
+    )
+    assert_true(conv_state["round_count"] == 1, "trusted conv runner should record one minimal round")
+    assert_true(conv_state["rounds"][0]["delta_gate"] == "no_delta", "minimal round should carry no delta")
+    artifact_ids = [artifact["artifact_id"] for artifact in wf["artifacts"]]
+    assert_true("conv-round-execution" in artifact_ids, "conv should register round evidence artifact")
+    assert_true("conv-final-report" in artifact_ids, "conv should register final report artifact")
+    event_types = [event["event_type"] for event in events(state_root, "conv-execution-required-real-round")]
+    assert_true(event_types == ["start", "artifact", "round_start", "round_summary", "artifact", "complete"], "conv should record real round events")
+    assert_conv_report_matches_state(wf)
+    run("validate", "--workflow-id", "conv-execution-required-real-round", state_root=state_root)
+
+    missing_round_summary = json.loads(json.dumps(wf))
+    write_workflow(state_root, "conv-execution-required-real-round", missing_round_summary)
+    events_path = state_root / "workflows" / "conv-execution-required-real-round" / "events.jsonl"
+    original_events = events_path.read_text(encoding="utf-8")
+    without_summary = "\n".join(
+        line
+        for line in original_events.splitlines()
+        if not line.strip() or json.loads(line).get("event_type") != "round_summary"
+    )
+    events_path.write_text(without_summary + "\n", encoding="utf-8")
+    result = run_fail("validate", "--workflow-id", "conv-execution-required-real-round", state_root=state_root)
+    assert_true("round_summary event" in result["error"], "conv should reject missing round_summary evidence")
+    events_path.write_text(original_events, encoding="utf-8")
+
+    bad_runner = json.loads(json.dumps(wf))
+    for event in events(state_root, "conv-execution-required-real-round"):
+        if event["event_type"] == "round_start":
+            event["payload"]["runner_ref"] = "untrusted-runner"
+            lines = []
+            for line in original_events.splitlines():
+                parsed = json.loads(line)
+                if parsed["event_id"] == event["event_id"]:
+                    parsed = event
+                lines.append(json.dumps(parsed, ensure_ascii=False, sort_keys=True))
+            events_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            break
+    write_workflow(state_root, "conv-execution-required-real-round", bad_runner)
+    result = run_fail("validate", "--workflow-id", "conv-execution-required-real-round", state_root=state_root)
+    assert_true("round_start event has untrusted runner_ref" in result["error"], "conv should reject untrusted round_start runner")
+    events_path.write_text(original_events, encoding="utf-8")
+
+    drifted_start = json.loads(json.dumps(wf))
+    for event in events(state_root, "conv-execution-required-real-round"):
+        if event["event_type"] == "round_start":
+            event["payload"]["target_ref"] = "different-target"
+            lines = []
+            for line in original_events.splitlines():
+                parsed = json.loads(line)
+                if parsed["event_id"] == event["event_id"]:
+                    parsed = event
+                lines.append(json.dumps(parsed, ensure_ascii=False, sort_keys=True))
+            events_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            break
+    write_workflow(state_root, "conv-execution-required-real-round", drifted_start)
+    result = run_fail("validate", "--workflow-id", "conv-execution-required-real-round", state_root=state_root)
+    assert_true("round_start target_ref must match" in result["error"], "conv should reject round_start target drift")
+    events_path.write_text(original_events, encoding="utf-8")
+
+    stale_target = json.loads(json.dumps(wf))
+    target.write_text("phase 2 deterministic conv target changed after evidence\n", encoding="utf-8")
+    write_workflow(state_root, "conv-execution-required-real-round", stale_target)
+    result = run_fail("validate", "--workflow-id", "conv-execution-required-real-round", state_root=state_root)
+    assert_true("target check hash is stale" in result["error"], "conv should reject stale target evidence")
+    events_path.write_text(original_events, encoding="utf-8")
 
 
 def assert_resume_preserves_progress(state_root: Path) -> None:
@@ -397,6 +500,7 @@ def main() -> int:
         state_root = Path(tmp)
         assert_default_conv_contract(state_root)
         assert_execution_required_conv_blocks_synthetic_round(state_root)
+        assert_execution_required_conv_records_real_round_evidence(state_root)
         assert_resume_preserves_progress(state_root)
         assert_material_change_and_max_round_fixtures(state_root)
         assert_conv_integrity_rejects_drift(state_root)
@@ -404,6 +508,32 @@ def main() -> int:
         assert_conv_preterminal_state_is_validated(state_root)
         assert_reserve_validates_conv_terminal_material_before_send(state_root)
     return 0
+
+
+def _record_from_state(state: dict[str, Any]) -> ConvRecord:
+    return ConvRecord(
+        target=state["target"],
+        max_rounds=state["max_rounds"],
+        rounds=[
+            ConvRound(
+                round_index=item["round_index"],
+                target_ref=item["target_ref"],
+                original_target_gate=item["original_target_gate"],
+                delta_gate=item["delta_gate"],
+                findings=item["findings"],
+                material_changes=item["material_changes"],
+                follow_up_required=item["follow_up_required"],
+                evidence_sufficient=item["evidence_sufficient"],
+                summary=item["summary"],
+            )
+            for item in state["rounds"]
+        ],
+        stop_condition=state["stop_condition"],
+        stop_reason=state["stop_reason"],
+        explicit_stop_proof=state["explicit_stop_proof"],
+        residuals=state["residuals"],
+        final_report_summary=state["final_report_summary"],
+    )
 
 
 if __name__ == "__main__":

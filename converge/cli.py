@@ -17,6 +17,7 @@ from .command_adapter import build_dry_run_packet
 from .continuation import TERMINAL_CONTINUATION_TARGETS, current_cursor, default_continuation_plan
 from .messages import VALID_VERDICTS, lint_verdict_residuals, normalize_residuals, progress_block
 from .modes.conv import CONV_REPORT_ARTIFACT_ID, ConvHandler, ConvRecord, ConvRound, render_conv_report, validate_conv_state
+from .modes.conv_execution import CONV_LOCAL_RUNNER_REF, CONV_ROUND_EXECUTION_ARTIFACT_ID
 from .modes.goal import GOAL_PLAN_ARTIFACT_ID, GoalHandler, GoalRecord, render_goal_plan, validate_goal_state
 from .modes.plan import PlanHandler
 from .modes.verify import VERIFY_REPORT_ARTIFACT_ID, VerifyHandler, VerifyRecord, render_verify_report
@@ -1992,6 +1993,109 @@ def _validate_conv_state_integrity(store: WorkflowStore, workflow: dict[str, Any
     )
     if Path(artifact["path"]).read_text(encoding="utf-8") != expected_report:
         raise ValueError("conv report artifact must match conv_state")
+    if state.get("execution_performed") is True:
+        _validate_conv_execution_evidence(store, workflow, state)
+
+
+def _validate_conv_execution_evidence(store: WorkflowStore, workflow: dict[str, Any], state: dict[str, Any]) -> None:
+    refs = state.get("execution_evidence_refs")
+    if not isinstance(refs, list) or not refs:
+        raise ValueError("conv execution_performed=true requires execution_evidence_refs")
+    if CONV_ROUND_EXECUTION_ARTIFACT_ID not in refs:
+        raise ValueError("conv execution evidence refs must include conv-round-execution")
+    if state.get("execution_capability") != "local_rounds":
+        raise ValueError("conv execution_performed=true requires local_rounds capability")
+    if state.get("synthetic_report") is not False:
+        raise ValueError("conv execution_performed=true requires synthetic_report=false")
+    if state.get("runner_ref") != CONV_LOCAL_RUNNER_REF:
+        raise ValueError("conv execution_performed=true has untrusted runner_ref")
+    artifacts = [
+        artifact
+        for artifact in workflow.get("artifacts", [])
+        if isinstance(artifact, dict) and artifact.get("artifact_id") == CONV_ROUND_EXECUTION_ARTIFACT_ID
+    ]
+    if len(artifacts) != 1:
+        raise ValueError("conv execution evidence artifact must be registered exactly once")
+    artifact = artifacts[0]
+    if artifact.get("kind") != "evidence":
+        raise ValueError("conv execution evidence artifact must be registered as evidence")
+    artifact_payload = json.loads(Path(artifact["path"]).read_text(encoding="utf-8"))
+    if artifact_payload.get("runner_ref") != CONV_LOCAL_RUNNER_REF:
+        raise ValueError("conv execution evidence artifact has untrusted runner_ref")
+    artifact_rounds = artifact_payload.get("rounds")
+    if not isinstance(artifact_rounds, list) or not artifact_rounds:
+        raise ValueError("conv execution evidence artifact must contain rounds")
+    if len(artifact_rounds) != state.get("round_count"):
+        raise ValueError("conv execution evidence round_count must match conv_state")
+    for artifact_round, state_round in zip(artifact_rounds, state.get("rounds") or [], strict=True):
+        for key in (
+            "round_index",
+            "target_ref",
+            "original_target_gate",
+            "delta_gate",
+            "findings",
+            "material_changes",
+            "follow_up_required",
+            "evidence_sufficient",
+            "summary",
+        ):
+            if artifact_round.get(key) != state_round.get(key):
+                raise ValueError("conv execution evidence rounds must match conv_state")
+        checks = artifact_round.get("target_checks")
+        if not isinstance(checks, list) or not checks:
+            raise ValueError("conv execution evidence round must contain target_checks")
+        if any(not isinstance(check, dict) or check.get("status") != "pass" for check in checks):
+            raise ValueError("conv execution evidence target checks must all pass")
+        for check in checks:
+            if check.get("kind") != "file_inspection":
+                raise ValueError("conv execution evidence target checks must be file inspections")
+            path = check.get("path")
+            if not isinstance(path, str) or not path:
+                raise ValueError("conv execution evidence target check path must be non-empty")
+            target_path = Path(path)
+            if not target_path.is_file():
+                raise ValueError("conv execution evidence target check path is missing")
+            if sha256_file(target_path) != check.get("sha256"):
+                raise ValueError("conv execution evidence target check hash is stale")
+    events = _read_workflow_events(store, workflow["workflow_id"])
+    for round_state in state.get("rounds") or []:
+        round_index = round_state["round_index"]
+        starts = [
+            event
+            for event in events
+            if event.get("event_type") == "round_start"
+            and (event.get("payload") or {}).get("artifact_id") == CONV_ROUND_EXECUTION_ARTIFACT_ID
+            and (event.get("payload") or {}).get("round_index") == round_index
+        ]
+        summaries = [
+            event
+            for event in events
+            if event.get("event_type") == "round_summary"
+            and (event.get("payload") or {}).get("artifact_id") == CONV_ROUND_EXECUTION_ARTIFACT_ID
+            and (event.get("payload") or {}).get("round_index") == round_index
+        ]
+        if len(starts) != 1:
+            raise ValueError("conv execution_performed=true requires exactly one round_start event per round")
+        if len(summaries) != 1:
+            raise ValueError("conv execution_performed=true requires exactly one round_summary event per round")
+        start_payload = starts[0].get("payload") or {}
+        summary_payload = summaries[0].get("payload") or {}
+        if start_payload.get("runner_ref") != CONV_LOCAL_RUNNER_REF:
+            raise ValueError("conv round_start event has untrusted runner_ref")
+        if start_payload.get("target_ref") != round_state["target_ref"]:
+            raise ValueError("conv round_start target_ref must match conv_state")
+        if start_payload.get("original_target_gate") != round_state["original_target_gate"]:
+            raise ValueError("conv round_start original_target_gate must match conv_state")
+        if summary_payload.get("runner_ref") != CONV_LOCAL_RUNNER_REF:
+            raise ValueError("conv round_summary event has untrusted runner_ref")
+        if summary_payload.get("status") != "pass":
+            raise ValueError("conv round_summary event must record pass status")
+        if summary_payload.get("material_changes") != round_state["material_changes"]:
+            raise ValueError("conv round_summary material_changes must match conv_state")
+        if summary_payload.get("follow_up_required") != round_state["follow_up_required"]:
+            raise ValueError("conv round_summary follow_up_required must match conv_state")
+        if summary_payload.get("evidence_sufficient") != round_state["evidence_sufficient"]:
+            raise ValueError("conv round_summary evidence_sufficient must match conv_state")
 
 
 def _validate_report_event_integrity(

@@ -2,12 +2,21 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from .base import ModeHandler, ModeOutcome, apply_execution_truth_block, execution_blocked_final_status
+from .conv_execution import (
+    CONV_LOCAL_RUNNER_REF,
+    CONV_ROUND_EXECUTION_ARTIFACT_ID,
+    conv_execution_markers,
+    run_conv_round_execution,
+    write_conv_round_execution_artifact,
+)
 from .execution_truth import classify_execution_markers
+from ..artifacts import now_iso
 from ..messages import normalize_residuals
 
 
@@ -97,10 +106,15 @@ class ConvHandler(ModeHandler):
         )
         workflow = self.load_workflow(workflow_id)
         artifact_path = (self.store.workflow_dir(workflow_id) / "artifacts" / "conv-report.md").expanduser().resolve()
-        record = build_conv_record(workflow.get("source_request") or workflow.get("objective") or "")
+        text = workflow.get("source_request") or workflow.get("objective") or ""
+        execution_result = run_conv_round_execution(text, source_root=Path.cwd())
+        execution_artifact = _record_conv_round_execution_artifact(self, workflow_id, result=execution_result)
+        record = build_conv_record_from_execution(text, execution_result) if execution_artifact else build_conv_record(text)
         artifact_ref = CONV_REPORT_ARTIFACT_ID
         artifact_path_text = str(artifact_path)
         state = record.as_state(artifact_id=artifact_ref, artifact_path=artifact_path_text)
+        if execution_artifact:
+            state.update(conv_execution_markers(execution_result, artifact_id=execution_artifact["artifact_id"]))
         state, residuals, block_reason = apply_execution_truth_block("conv", state, residuals=record.residuals)
         render_record = ConvRecord(
             target=state["target"],
@@ -193,6 +207,46 @@ class ConvHandler(ModeHandler):
 def build_conv_record(text: str) -> ConvRecord:
     target = _compact(text) or "Converge on the supplied target with bounded evidence."
     return _evidence_sufficient_record(target)
+
+
+def build_conv_record_from_execution(text: str, result: dict[str, Any]) -> ConvRecord:
+    target = _compact(text) or "Converge on the supplied target with bounded evidence."
+    rounds = [
+        ConvRound(
+            round_index=item["round_index"],
+            target_ref=item["target_ref"],
+            original_target_gate=item["original_target_gate"],
+            delta_gate=item["delta_gate"],
+            findings=item["findings"],
+            material_changes=item["material_changes"],
+            follow_up_required=item["follow_up_required"],
+            evidence_sufficient=item["evidence_sufficient"],
+            summary=item["summary"],
+        )
+        for item in result.get("rounds") or []
+    ]
+    if not rounds:
+        return build_conv_record(text)
+    residuals = {
+        "blocking_remaining": [],
+        "accepted_risks": [
+            "Phase 2 uses deterministic local round evidence only; delegated specialist/agent execution remains outside scope.",
+        ],
+        "implementation_backlog": [
+            "Future phases add delegated reviewers, accepted-change application, and child workflow collection.",
+        ],
+        "deferred_scope": [],
+    }
+    return ConvRecord(
+        target=target,
+        max_rounds=3,
+        rounds=rounds,
+        stop_condition="evidence_sufficient",
+        stop_reason="trusted_local_round_evidence_sufficient",
+        explicit_stop_proof="Trusted local conv runner recorded original-target evidence and no accepted material delta.",
+        residuals=residuals,
+        final_report_summary="Convergence stopped on trusted deterministic round evidence with no material follow-up required.",
+    )
 
 
 def render_conv_report(record: ConvRecord) -> str:
@@ -571,6 +625,108 @@ def _existing_conv_artifact(workflow: dict[str, Any], *, expected_path: Path, re
     if Path(path).read_text(encoding="utf-8") != rendered_report:
         raise ValueError("existing conv artifact does not match rendered final report")
     return artifact
+
+
+def _record_conv_round_execution_artifact(
+    handler: ModeHandler,
+    workflow_id: str,
+    *,
+    result: dict[str, Any],
+) -> dict[str, Any] | None:
+    if not result.get("rounds"):
+        return None
+    artifact_path = handler.store.workflow_dir(workflow_id) / "artifacts" / "conv-round-execution.json"
+    workflow = handler.load_workflow(workflow_id)
+    matches = [
+        artifact
+        for artifact in workflow.get("artifacts", [])
+        if isinstance(artifact, dict) and artifact.get("artifact_id") == CONV_ROUND_EXECUTION_ARTIFACT_ID
+    ]
+    if matches:
+        if len(matches) > 1:
+            raise ValueError(f"duplicate conv round execution artifact id: {CONV_ROUND_EXECUTION_ARTIFACT_ID}")
+        artifact = matches[0]
+        if artifact.get("kind") != "evidence":
+            raise ValueError("conv round execution artifact must use evidence kind")
+        if not Path(str(artifact.get("path", ""))).is_file():
+            raise ValueError("conv round execution artifact path is missing")
+    else:
+        write_conv_round_execution_artifact(artifact_path, result)
+        artifact = handler.record_artifact(
+            workflow_id,
+            kind="evidence",
+            artifact_id=CONV_ROUND_EXECUTION_ARTIFACT_ID,
+            path=artifact_path,
+            note="trusted deterministic conv round execution evidence",
+        )["artifact"]
+    _record_conv_round_events(handler, workflow_id, result=result, artifact_id=artifact["artifact_id"])
+    return artifact
+
+
+def _record_conv_round_events(
+    handler: ModeHandler,
+    workflow_id: str,
+    *,
+    result: dict[str, Any],
+    artifact_id: str,
+) -> None:
+    existing = _conv_round_event_keys(handler, workflow_id, artifact_id=artifact_id)
+    for round_state in result.get("rounds") or []:
+        round_index = round_state["round_index"]
+        for event_type in ("round_start", "round_summary"):
+            key = (event_type, round_index)
+            if key in existing:
+                continue
+            payload = {
+                "runner_ref": result["runner_ref"],
+                "artifact_id": artifact_id,
+                "round_index": round_index,
+            }
+            if event_type == "round_start":
+                payload.update(
+                    {
+                        "target_ref": round_state["target_ref"],
+                        "original_target_gate": round_state["original_target_gate"],
+                    }
+                )
+            else:
+                payload.update(
+                    {
+                        "status": "pass",
+                        "finding_count": len(round_state.get("findings") or []),
+                        "material_changes": round_state["material_changes"],
+                        "follow_up_required": round_state["follow_up_required"],
+                        "evidence_sufficient": round_state["evidence_sufficient"],
+                    }
+                )
+            handler.store.append_event(
+                workflow_id,
+                {
+                    "schema_version": 1,
+                    "event_id": f"evt-conv-{event_type}-{round_index}-{workflow_id}",
+                    "workflow_id": workflow_id,
+                    "event_type": event_type,
+                    "created_at": now_iso(),
+                    "note": "trusted deterministic conv round evidence recorded",
+                    "payload": payload,
+                },
+            )
+
+
+def _conv_round_event_keys(handler: ModeHandler, workflow_id: str, *, artifact_id: str) -> set[tuple[str, int]]:
+    path = handler.store.workflow_dir(workflow_id) / "events.jsonl"
+    if not path.exists():
+        return set()
+    keys: set[tuple[str, int]] = set()
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        event = json.loads(line)
+        payload = event.get("payload") or {}
+        event_type = event.get("event_type")
+        if event_type in {"round_start", "round_summary"} and payload.get("artifact_id") == artifact_id:
+            keys.add((event_type, int(payload.get("round_index") or 0)))
+    return keys
 
 
 def _compact(text: str) -> str:

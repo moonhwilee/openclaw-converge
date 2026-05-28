@@ -738,6 +738,25 @@ def assert_goal_collects_native_child_panel_evidence(state_root: Path) -> None:
     assert_true("native_agent_panel_proof" in result["error"], "goal validate should reject forged parent native proof")
     persist_goal_state(state_root, "goal-native-child-panel", wf)
 
+    tampered_child_ref = wf["goal_state"]["child_workflow_refs"][0]
+    tampered_child = workflow(state_root, tampered_child_ref["workflow_id"])
+    original_child = json.loads(json.dumps(tampered_child))
+    tampered_state = tampered_child[f"{tampered_child_ref['kind']}_state"]
+    tampered_state["agent_result_refs"][0]["tool_smoke_evidence"].pop("session_store_proof", None)
+    write_workflow(state_root, tampered_child_ref["workflow_id"], tampered_child)
+    matching_tampered_parent = json.loads(json.dumps(wf))
+    matching_tampered_parent["goal_state"]["child_workflow_refs"][0]["native_agent_panel_proof"]["tool_smoke_proofs"][0][
+        "tool_smoke_evidence"
+    ].pop("session_store_proof", None)
+    persist_goal_state(state_root, "goal-native-child-panel", matching_tampered_parent)
+    result = run_fail("validate", "--workflow-id", "goal-native-child-panel", state_root=state_root)
+    assert_true(
+        "session_store_proof" in result["error"] or "specialist artifact must match mode state" in result["error"],
+        "goal validate should deep-validate child native tool-smoke proof instead of only matching parent summary",
+    )
+    write_workflow(state_root, tampered_child_ref["workflow_id"], original_child)
+    persist_goal_state(state_root, "goal-native-child-panel", wf)
+
     cli_workflow_id = "goal-native-cli-child-panel"
     goal_record = build_goal_record(
         {

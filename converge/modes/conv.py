@@ -1345,6 +1345,8 @@ def _validate_fix_runner_mutation_proof(result: dict[str, Any], *, source_root: 
     )
     if result.get("idempotency_key") != expected_key:
         raise ValueError("fix_runner result idempotency_key must match mutation proof")
+    if _expected_fix_runner_mutations(result["accepted_change_refs"]) != mutations:
+        raise ValueError("fix_runner mutation proof must match accepted local_file_edits before/after hashes")
     for mutation in mutations:
         if not isinstance(mutation, dict):
             raise ValueError("fix_runner mutation proof entries must be objects")
@@ -1362,6 +1364,22 @@ def _validate_fix_runner_mutation_proof(result: dict[str, Any], *, source_root: 
         current_sha = hashlib.sha256(target.read_bytes()).hexdigest()
         if current_sha != after_sha:
             raise ValueError("fix_runner mutation proof after_sha256 must match current source root")
+
+
+def _expected_fix_runner_mutations(accepted_change_refs: list[dict[str, Any]]) -> list[dict[str, str]]:
+    expected: list[dict[str, str]] = []
+    for change in accepted_change_refs:
+        edits = change.get("local_file_edits") or []
+        for edit in edits:
+            expected.append(
+                {
+                    "change_ref": change["change_ref"],
+                    "path": edit["path"],
+                    "before_sha256": hashlib.sha256(edit["old"].encode("utf-8")).hexdigest(),
+                    "after_sha256": hashlib.sha256(edit["new"].encode("utf-8")).hexdigest(),
+                }
+            )
+    return expected
 
 
 def _record_fix_runner_events(handler: ModeHandler, workflow_id: str, *, state: dict[str, Any]) -> None:

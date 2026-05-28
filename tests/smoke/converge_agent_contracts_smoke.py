@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import subprocess
 import tempfile
@@ -235,13 +236,25 @@ def assert_source_and_fix_runner_contracts() -> None:
             }
         ]
         applied = applied_change_refs or accepted
-        checks = focused_check_results or [{"check_id": "focused-check-1", "change_ref": "accepted-change-1", "status": "pass"}]
+        before_sha = hashlib.sha256("before".encode("utf-8")).hexdigest()
+        after_sha = hashlib.sha256("after".encode("utf-8")).hexdigest()
+        checks = focused_check_results or [
+            {
+                "check_id": "focused-check-1",
+                "change_ref": "accepted-change-1",
+                "kind": "bounded_local_file_edit",
+                "status": "pass",
+                "mutation_count": 1,
+                "mutation_paths": ["target.txt"],
+                "mutation_hashes": [{"path": "target.txt", "before_sha256": before_sha, "after_sha256": after_sha}],
+            }
+        ]
         mutations = file_mutations or [
             {
                 "change_ref": "accepted-change-1",
                 "path": "target.txt",
-                "before_sha256": "0" * 64,
-                "after_sha256": "1" * 64,
+                "before_sha256": before_sha,
+                "after_sha256": after_sha,
             }
         ]
         payload: dict[str, object] = {

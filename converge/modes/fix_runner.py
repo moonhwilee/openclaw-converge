@@ -48,8 +48,19 @@ def run_bounded_local_fix_runner(workflow: dict[str, Any], *, source_root: Path)
             {
                 "check_id": f"focused-check-{change_ref}",
                 "change_ref": change_ref,
+                "kind": "bounded_local_file_edit",
                 "status": "pass",
                 "summary": f"Validated and applied {len(change_prepared)} bounded local file edit(s).",
+                "mutation_count": len(change_prepared),
+                "mutation_paths": [item["path"] for item in change_prepared],
+                "mutation_hashes": [
+                    {
+                        "path": item["path"],
+                        "before_sha256": item["before_sha256"],
+                        "after_sha256": item["after_sha256"],
+                    }
+                    for item in change_prepared
+                ],
             }
         )
 

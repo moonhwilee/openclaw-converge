@@ -558,7 +558,7 @@ def validate_fix_runner_result(payload: dict[str, Any]) -> None:
     applied_ids = _validate_fix_runner_change_refs(payload["applied_change_refs"], field_name="applied_change_refs", require_local_file_edits=True)
     if applied_ids != accepted_ids:
         raise ValueError("fix_runner result applied_change_refs must match accepted_change_refs")
-    checked_ids: list[str] = []
+    checks_by_change: dict[str, dict[str, Any]] = {}
     for check in payload["focused_check_results"]:
         if (
             not isinstance(check, dict)
@@ -568,14 +568,19 @@ def validate_fix_runner_result(payload: dict[str, Any]) -> None:
             or check.get("change_ref") not in accepted_ids
         ):
             raise ValueError("fix_runner focused checks must be structured pass results")
-        checked_ids.append(check["change_ref"])
-    if sorted(checked_ids) != sorted(accepted_ids):
+        if check.get("kind") != "bounded_local_file_edit":
+            raise ValueError("fix_runner focused checks must bind bounded local file edit proof")
+        if check["change_ref"] in checks_by_change:
+            raise ValueError("fix_runner focused checks must cover every accepted change exactly once")
+        checks_by_change[check["change_ref"]] = check
+    if sorted(checks_by_change) != sorted(accepted_ids):
         raise ValueError("fix_runner focused checks must cover every accepted change exactly once")
     if payload["artifact_refs"] != [payload["result_id"]]:
         raise ValueError("fix_runner result artifact_refs must bind exactly to result_id")
     if payload.get("material_change_applied") is not True:
         raise ValueError("fix_runner result material_change_applied must be true")
     mutation_ids: list[str] = []
+    mutations_by_change: dict[str, list[dict[str, Any]]] = {}
     for mutation in payload["file_mutations"]:
         if not isinstance(mutation, dict):
             raise ValueError("fix_runner file_mutations entries must be objects")
@@ -591,8 +596,25 @@ def validate_fix_runner_result(payload: dict[str, Any]) -> None:
         if mutation["before_sha256"] == mutation["after_sha256"]:
             raise ValueError("fix_runner file_mutations must change file hashes")
         mutation_ids.append(mutation["change_ref"])
+        mutations_by_change.setdefault(mutation["change_ref"], []).append(mutation)
     if sorted(set(mutation_ids)) != sorted(accepted_ids):
         raise ValueError("fix_runner file_mutations must cover every accepted change")
+    for change_ref, check in checks_by_change.items():
+        mutations = mutations_by_change.get(change_ref) or []
+        expected_hashes = [
+            {
+                "path": item["path"],
+                "before_sha256": item["before_sha256"],
+                "after_sha256": item["after_sha256"],
+            }
+            for item in mutations
+        ]
+        if check.get("mutation_count") != len(mutations):
+            raise ValueError("fix_runner focused checks must bind mutation_count to file_mutations")
+        if check.get("mutation_paths") != [item["path"] for item in mutations]:
+            raise ValueError("fix_runner focused checks must bind mutation_paths to file_mutations")
+        if check.get("mutation_hashes") != expected_hashes:
+            raise ValueError("fix_runner focused checks must bind mutation hashes to file_mutations")
     expected_idempotency_key = stable_hash(
         {
             "runner_id": payload["runner_id"],

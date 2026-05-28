@@ -2172,8 +2172,14 @@ def _validate_goal_child_execution(
         ]
         if child_ref.get("evidence_refs") != expected_evidence_refs:
             raise ValueError("goal child workflow ref evidence_refs must match child workflow")
-        if child_ref.get("native_agent_panel_proof") != _native_child_panel_proof(child, role=child_ref["kind"]):
+        expected_native_proof = _native_child_panel_proof(child, role=child_ref["kind"])
+        if child_ref.get("native_agent_panel_proof") != expected_native_proof:
             raise ValueError("goal child workflow native_agent_panel_proof must match child workflow")
+        if expected_native_proof is not None:
+            child_state = child.get(f"{child_ref['kind']}_state")
+            if not isinstance(child_state, dict):
+                raise ValueError("goal child workflow native_agent_panel_proof requires child mode state")
+            _validate_specialist_execution_evidence(store, child, child_state, mode=child_ref["kind"])
         intent_events = [
             event
             for event in events

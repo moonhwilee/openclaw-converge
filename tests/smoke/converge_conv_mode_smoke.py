@@ -1064,6 +1064,89 @@ def assert_conv_records_structured_specialist_findings(state_root: Path) -> None
         "conv should reject forged fix runner results without file mutation proof",
     )
 
+    weak_check_path = state_root / "conv-fix-runner-result-weak-check.json"
+    weak_check = json.loads(fix_runner_result_path.read_text(encoding="utf-8"))
+    weak_check["workflow_id"] = "conv-fix-specialist-findings-weak-check"
+    weak_check_runner_id = "conv-fix-runner-conv-fix-specialist-findings-weak-check-round-1"
+    weak_check["runner_id"] = weak_check_runner_id
+    weak_check["result_id"] = f"{weak_check_runner_id}-result"
+    weak_check["artifact_refs"] = [f"{weak_check_runner_id}-result"]
+    weak_check["focused_check_results"][0].pop("mutation_hashes", None)
+    weak_check["idempotency_key"] = stable_hash(
+        {
+            "runner_id": weak_check["runner_id"],
+            "workflow_id": weak_check["workflow_id"],
+            "source_root": weak_check["source_root"],
+            "accepted_change_refs": weak_check["accepted_change_refs"],
+            "file_mutations": weak_check["file_mutations"],
+        }
+    )
+    weak_check_path.write_text(json.dumps(weak_check), encoding="utf-8")
+    weak_check_rejected = run_fail(
+        "conv",
+        "--text",
+        "Converge execution-required target with accepted specialist fix",
+        "--workflow-id",
+        "conv-fix-specialist-findings-weak-check",
+        "--owner-session-key",
+        "session:test",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        "--structured-findings-file",
+        str(fix_packet_path),
+        "--fix-runner-result-file",
+        str(weak_check_path),
+        "--fix-runner-source-root",
+        str(fix_runner_source_root),
+        state_root=state_root,
+    )
+    assert_true(
+        "focused checks must bind mutation hashes" in weak_check_rejected["error"],
+        "conv should reject fix runner results whose focused checks do not bind mutation hashes",
+    )
+
+    wrong_before_path = state_root / "conv-fix-runner-result-wrong-before.json"
+    wrong_before = json.loads(fix_runner_result_path.read_text(encoding="utf-8"))
+    wrong_before["workflow_id"] = "conv-fix-specialist-findings-wrong-before"
+    wrong_before_runner_id = "conv-fix-runner-conv-fix-specialist-findings-wrong-before-round-1"
+    wrong_before["runner_id"] = wrong_before_runner_id
+    wrong_before["result_id"] = f"{wrong_before_runner_id}-result"
+    wrong_before["artifact_refs"] = [f"{wrong_before_runner_id}-result"]
+    wrong_before["file_mutations"][0]["before_sha256"] = "0" * 64
+    wrong_before["focused_check_results"][0]["mutation_hashes"][0]["before_sha256"] = "0" * 64
+    wrong_before["idempotency_key"] = stable_hash(
+        {
+            "runner_id": wrong_before["runner_id"],
+            "workflow_id": wrong_before["workflow_id"],
+            "source_root": wrong_before["source_root"],
+            "accepted_change_refs": wrong_before["accepted_change_refs"],
+            "file_mutations": wrong_before["file_mutations"],
+        }
+    )
+    wrong_before_path.write_text(json.dumps(wrong_before), encoding="utf-8")
+    wrong_before_rejected = run_fail(
+        "conv",
+        "--text",
+        "Converge execution-required target with accepted specialist fix",
+        "--workflow-id",
+        "conv-fix-specialist-findings-wrong-before",
+        "--owner-session-key",
+        "session:test",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        "--structured-findings-file",
+        str(fix_packet_path),
+        "--fix-runner-result-file",
+        str(wrong_before_path),
+        "--fix-runner-source-root",
+        str(fix_runner_source_root),
+        state_root=state_root,
+    )
+    assert_true(
+        "mutation proof must match accepted local_file_edits" in wrong_before_rejected["error"],
+        "conv should reject fix runner mutation proof that is not bound to accepted local_file_edits",
+    )
+
     wrong_source_root = state_root / "wrong-fix-runner-source"
     wrong_source_root.mkdir()
     (wrong_source_root / "target.txt").write_text("before fix\n", encoding="utf-8")

@@ -487,6 +487,11 @@ def assert_openclaw_cli_backend_uses_explicit_session_and_structured_result() ->
         "child prompt should distinguish tool smoke from review verdict",
     )
     assert_true(
+        "If tool_smoke_status is passed, error must be null or omitted" in prompt
+        and "Avoid shell variables named status" in prompt,
+        "child prompt should prevent recovered smoke attempts from being reported as terminal errors",
+    )
+    assert_true(
         "confidence must be a JSON number" in prompt,
         "child prompt should require schema-compatible numeric confidence",
     )

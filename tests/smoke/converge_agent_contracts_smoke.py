@@ -486,6 +486,10 @@ def assert_openclaw_cli_backend_uses_explicit_session_and_structured_result() ->
         "not whether your review found risks" in prompt,
         "child prompt should distinguish tool smoke from review verdict",
     )
+    assert_true(
+        "confidence must be a JSON number" in prompt,
+        "child prompt should require schema-compatible numeric confidence",
+    )
 
     missing_smoke = subprocess.CompletedProcess(
         ["openclaw"],

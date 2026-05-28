@@ -299,7 +299,8 @@ def build_child_prompt(request: NativeLaunchRequest) -> str:
         "return one p3 informational finding that records the passed inspection. "
         "Each finding must include: finding_id, finding, severity, confidence, "
         "evidence, why_it_matters, minimal_fix_or_test, scope_risk, and "
-        "failure_mode.\n"
+        "failure_mode. confidence must be a JSON number from 0.0 to 1.0, "
+        "not a string such as high or medium.\n"
         f"REQUEST_JSON:\n{json.dumps(payload, ensure_ascii=True, sort_keys=True)}\n"
     )
 

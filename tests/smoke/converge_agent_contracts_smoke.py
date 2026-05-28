@@ -491,7 +491,7 @@ def assert_openclaw_cli_backend_uses_explicit_session_and_structured_result() ->
         "child prompt should require schema-compatible numeric confidence",
     )
     assert_true(
-        "evidence must be one non-empty string" in prompt and '"confidence":0.9' in prompt,
+        "evidence must be one non-empty string" in prompt and '"evidence":"agent_session_ref:agent:main:converge-example"' in prompt,
         "child prompt should include a schema-compatible finding example",
     )
 

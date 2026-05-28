@@ -301,10 +301,11 @@ def build_child_prompt(request: NativeLaunchRequest) -> str:
         "evidence, why_it_matters, minimal_fix_or_test, scope_risk, and "
         "failure_mode. confidence must be a JSON number from 0.0 to 1.0, "
         "not a string such as high or medium. evidence must be one non-empty "
-        "string, not an array. Example finding shape: "
+        "string, not an array, and must use a concrete anchor such as "
+        "agent_session_ref:<REQUEST_JSON.session_key>. Example finding shape: "
         '{"finding_id":"inspection_passed","finding":"Read-only inspection '
-        'completed.","severity":"p3","confidence":0.9,"evidence":"command '
-        'exited 0","why_it_matters":"Confirms the target was inspected.",'
+        'completed.","severity":"p3","confidence":0.9,"evidence":"agent_session_ref:agent:main:converge-example",'
+        '"why_it_matters":"Confirms the target was inspected.",'
         '"minimal_fix_or_test":"No fix required.","scope_risk":"Limited to the '
         'provided target refs.","failure_mode":"none_observed"}.\n'
         f"REQUEST_JSON:\n{json.dumps(payload, ensure_ascii=True, sort_keys=True)}\n"

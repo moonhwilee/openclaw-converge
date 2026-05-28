@@ -482,6 +482,10 @@ def assert_openclaw_cli_backend_uses_explicit_session_and_structured_result() ->
         "at least one structured finding" in prompt and "p3 informational finding" in prompt,
         "child prompt should make native finding shape explicit",
     )
+    assert_true(
+        "not whether your review found risks" in prompt,
+        "child prompt should distinguish tool smoke from review verdict",
+    )
 
     missing_smoke = subprocess.CompletedProcess(
         ["openclaw"],

@@ -320,6 +320,35 @@ def main() -> int:
         )
         run("validate", "--workflow-id", "verify-specialist-findings", state_root=state_root)
         specialist_events = events(state_root, "verify-specialist-findings")
+
+        p2_packet = json.loads(json.dumps(packet))
+        p2_packet["findings"][0]["severity"] = "p2"
+        p2_packet_path = state_root / "verify-p2-specialist-findings.json"
+        p2_packet_path.write_text(json.dumps(p2_packet), encoding="utf-8")
+        p2_specialist = run(
+            "verify",
+            "--text",
+            "Verify P2 specialist structured findings",
+            "--workflow-id",
+            "verify-p2-specialist-findings",
+            "--owner-session-key",
+            "session:test",
+            "--visible-delivery",
+            visible_delivery,
+            "--structured-findings-file",
+            str(p2_packet_path),
+            state_root=state_root,
+        )["workflow"]
+        assert_true(
+            p2_specialist["status"] == "failed_unreported",
+            "P2 specialist findings should become a clean failed terminal workflow",
+        )
+        assert_true(
+            p2_specialist["final_status"]["result"] == "needs_fix",
+            "P2 specialist findings should report needs_fix instead of a complete checkpoint validation error",
+        )
+        run("validate", "--workflow-id", "verify-p2-specialist-findings", state_root=state_root)
+
         write_events(
             state_root,
             "verify-specialist-findings",

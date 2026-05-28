@@ -162,7 +162,10 @@ class VerifyHandler(ModeHandler):
         if specialist_state:
             residuals = _verify_specialist_residuals(residuals, specialist_state)
         verdict = record.verdict
-        if specialist_state and any(item["decision"] in {"block", "fix"} for item in specialist_state["finding_arbitration"]):
+        specialist_needs_fix = bool(
+            specialist_state and any(item["decision"] in {"block", "fix"} for item in specialist_state["finding_arbitration"])
+        )
+        if specialist_needs_fix:
             verdict = "needs_fix"
         state_record = VerifyRecord(
             target=record.target,
@@ -224,12 +227,14 @@ class VerifyHandler(ModeHandler):
                 summary=(
                     "Verification terminal success blocked because execution evidence is missing."
                     if block_reason
+                    else "Verification stopped because specialist findings require fixes."
+                    if specialist_needs_fix
                     else "Final verification verdict is ready for visible delivery."
                 ),
-                status_after="failed_unreported" if block_reason else "completed_unreported",
+                status_after="failed_unreported" if block_reason or specialist_needs_fix else "completed_unreported",
                 phase_after="terminal",
                 checkpoint_type="terminal",
-                event_type="fail" if block_reason else "complete",
+                event_type="fail" if block_reason or specialist_needs_fix else "complete",
                 worklog_block_kind="terminal_summary",
                 step_result="terminal",
                 residuals=residuals,
@@ -240,6 +245,19 @@ class VerifyHandler(ModeHandler):
                 final_status=(
                     execution_blocked_final_status("verify", block_reason, residuals)
                     if block_reason
+                    else {
+                        "result": "needs_fix",
+                        "done": [
+                            "Recorded structured specialist findings",
+                            "Registered the final verification report through the shared artifact path",
+                        ],
+                        "checked": [
+                            "Specialist arbitration found blocking or fix-required findings",
+                            "Visible delivery remains gated by reserve-delivery/report-proof/complete-reported",
+                        ],
+                        "residuals": residuals,
+                    }
+                    if specialist_needs_fix
                     else {
                         "result": state_record.verdict,
                         "done": [
@@ -256,7 +274,7 @@ class VerifyHandler(ModeHandler):
                         "residuals": residuals,
                     }
                 ),
-                failure_reason=block_reason,
+                failure_reason=block_reason or ("specialist_findings_need_fix" if specialist_needs_fix else None),
             ),
         )
         return {

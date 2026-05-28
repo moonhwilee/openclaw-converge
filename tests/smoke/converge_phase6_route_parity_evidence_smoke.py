@@ -169,6 +169,13 @@ def main() -> None:
         visible_delivery_drift["commands"]["/conv"]["visible_delivery"] = {"channel": "telegram", "target": "other"}
         assert_rejects(state_root, evidence_file, visible_delivery_drift, "one visible delivery target")
 
+        malformed_visible_delivery = deepcopy(evidence)
+        malformed_visible_delivery["commands"]["/conv"]["visible_delivery"] = {
+            "channel": "telegram",
+            "target": {"id": "not-string"},
+        }
+        assert_rejects(state_root, evidence_file, malformed_visible_delivery, "invalid visible_delivery")
+
         mixed_state_root = deepcopy(evidence)
         mixed_state_root["commands"]["/conv"]["state_root"] = str(root / "other-state")
         assert_rejects(state_root, evidence_file, mixed_state_root, "one state root")

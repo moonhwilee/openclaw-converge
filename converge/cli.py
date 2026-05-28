@@ -918,6 +918,16 @@ def cmd_complete_reported(args: argparse.Namespace) -> int:
     _validate_delivery_message_id(args.delivery_message_id)
     _validate_visible_delivery_arg(args.visible_delivery)
     store = WorkflowStore(args.state_root)
+    with store.lock(args.workflow_id):
+        preflight_workflow = store.load_workflow(args.workflow_id)
+        if preflight_workflow.get("kind") == "goal" and preflight_workflow.get("status") in {
+            "completed_unreported",
+            "failed_unreported",
+        }:
+            reported_preflight = json.loads(json.dumps(preflight_workflow))
+            reported_preflight["status"] = "reported"
+            reported_preflight["phase"] = "reported"
+            _validate_reported_goal_child_integrity(store, reported_preflight)
     proof = _record_report_proof(
         store,
         workflow_id=args.workflow_id,
@@ -997,7 +1007,10 @@ def cmd_complete_reported(args: argparse.Namespace) -> int:
             "source_of_truth": "converge.workflow",
         }
         _validate_report_payload(reported_payload, timestamp_key="reported_at", label="report_sent")
-        _apply_reported_transition(workflow, reported_payload)
+        reported_workflow = json.loads(json.dumps(workflow))
+        _apply_reported_transition(reported_workflow, reported_payload)
+        if reported_workflow.get("kind") == "goal":
+            _validate_reported_goal_child_integrity(store, reported_workflow)
         store.append_event(
             args.workflow_id,
             _report_sent_event(
@@ -1008,8 +1021,7 @@ def cmd_complete_reported(args: argparse.Namespace) -> int:
             ),
             locked=True,
         )
-        _validate_workflow_integrity(store, workflow, validate_material=False)
-        store.save_workflow(workflow)
+        store.save_workflow(reported_workflow)
     print_json({"ok": True, "workflow_id": args.workflow_id, "status": "reported", "event_id": event_id, "proof": proof})
     return 0
 

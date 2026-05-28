@@ -234,6 +234,64 @@ def assert_execution_required_conv_records_real_round_evidence(state_root: Path)
     )
     run("validate", "--workflow-id", "conv-execution-required-material-blocked", state_root=state_root)
 
+    mixed_material_request = run(
+        "conv",
+        "--text",
+        f"Review and fix execution-required target {target}",
+        "--workflow-id",
+        "conv-execution-required-mixed-material-blocked",
+        "--owner-session-key",
+        "session:test",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        state_root=state_root,
+    )["workflow"]
+    assert_true(
+        mixed_material_request["status"] == "failed_unreported",
+        "mixed review+fix conv request should block when only local inspection evidence is available",
+    )
+    assert_true(
+        mixed_material_request["conv_state"]["execution_performed"] is False,
+        "mixed material conv request should not mark local file inspection as execution proof",
+    )
+    run("validate", "--workflow-id", "conv-execution-required-mixed-material-blocked", state_root=state_root)
+
+    korean_mixed_material_request = run(
+        "conv",
+        "--text",
+        f"검토 후 수정 execution-required target {target}",
+        "--workflow-id",
+        "conv-execution-required-korean-mixed-material-blocked",
+        "--owner-session-key",
+        "session:test",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        state_root=state_root,
+    )["workflow"]
+    assert_true(
+        korean_mixed_material_request["status"] == "failed_unreported",
+        "Korean mixed review+fix conv request should require material runner evidence",
+    )
+    run("validate", "--workflow-id", "conv-execution-required-korean-mixed-material-blocked", state_root=state_root)
+
+    explicit_read_only_boundary = run(
+        "conv",
+        "--text",
+        f"Review only, no fixes for execution-required target {target}",
+        "--workflow-id",
+        "conv-execution-required-explicit-read-only",
+        "--owner-session-key",
+        "session:test",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        state_root=state_root,
+    )["workflow"]
+    assert_true(
+        explicit_read_only_boundary["status"] == "completed_unreported",
+        "explicit read-only conv boundary should still allow local inspection evidence",
+    )
+    run("validate", "--workflow-id", "conv-execution-required-explicit-read-only", state_root=state_root)
+
     missing_round_summary = json.loads(json.dumps(wf))
     write_workflow(state_root, "conv-execution-required-real-round", missing_round_summary)
     events_path = state_root / "workflows" / "conv-execution-required-real-round" / "events.jsonl"

@@ -119,7 +119,13 @@ def validate_phase6_route_parity_evidence(evidence: dict[str, Any], *, expected_
             if proof_ref != expected_ref:
                 raise ValueError(f"Phase 6 route parity evidence for {command} must bind {proof_field} to command and workflow")
         visible_delivery = record.get("visible_delivery")
-        if not isinstance(visible_delivery, dict) or not visible_delivery.get("channel") or not visible_delivery.get("target"):
+        if (
+            not isinstance(visible_delivery, dict)
+            or not isinstance(visible_delivery.get("channel"), str)
+            or not visible_delivery["channel"]
+            or not isinstance(visible_delivery.get("target"), str)
+            or not visible_delivery["target"]
+        ):
             raise ValueError(f"Phase 6 route parity evidence for {command} has invalid visible_delivery")
         if common_owner_session is None:
             common_owner_session = record["owner_session_key"]

@@ -550,6 +550,43 @@ def assert_execution_required_goal_collects_child_evidence(state_root: Path) -> 
         json.dumps(wf["final_status"]),
         state_root=state_root,
     )
+    forced_reported_child = workflow(state_root, wf["child_workflow_ids"][0])
+    forced_reported_child["status"] = "reported"
+    forced_reported_child["phase"] = "reported"
+    forced_reported_child.setdefault("visible_delivery_state", {})["reported"] = {
+        "reservation_id": "forced-child-reservation",
+        "delivery_message_id": "forced-child-message",
+        "visible_delivery": VISIBLE_DELIVERY,
+        "reported_at": "2026-01-01T00:00:00Z",
+        "report_authority": "test",
+        "source_of_truth": "test",
+    }
+    write_workflow(state_root, forced_reported_child["workflow_id"], forced_reported_child)
+    reported_parent_with_invalid_child = run_fail(
+        "complete-reported",
+        "--workflow-id",
+        "goal-execution-required-real-children",
+        "--reservation-id",
+        reservation["reservation_id"],
+        "--delivery-message-id",
+        "telegram-message-parent-goal-invalid-child",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        state_root=state_root,
+    )
+    assert_true(
+        "parent_summary_only child must not be separately reported" in reported_parent_with_invalid_child["error"],
+        "complete-reported should validate reported goal child state before recording report_sent",
+    )
+    assert_true(
+        not any(event["event_type"] == "report_sent" for event in events(state_root, "goal-execution-required-real-children")),
+        "failed complete-reported should not append report_sent before validation passes",
+    )
+    forced_reported_child["status"] = "completed_unreported"
+    forced_reported_child["phase"] = "terminal"
+    forced_reported_child["visible_delivery_state"].pop("reported")
+    write_workflow(state_root, forced_reported_child["workflow_id"], forced_reported_child)
+
     reported_parent = run(
         "complete-reported",
         "--workflow-id",

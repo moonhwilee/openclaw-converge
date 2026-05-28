@@ -42,6 +42,20 @@ READ_ONLY_TERMS = (
     "점검",
     "감사",
 )
+EXPLICIT_READ_ONLY_BOUNDARY_TERMS = (
+    "audit only",
+    "review only",
+    "inspect only",
+    "read-only only",
+    "no fix",
+    "no fixes",
+    "no changes",
+    "no edits",
+    "검토만",
+    "점검만",
+    "수정 없이",
+    "변경 없이",
+)
 
 
 def run_conv_round_execution(text: str, *, source_root: Path) -> dict[str, Any]:
@@ -166,9 +180,12 @@ def _path_tokens(text: str) -> list[str]:
 
 def _requires_material_runner(text: str) -> bool:
     normalized = (text or "").casefold()
+    has_material_intent = any(term in normalized for term in MATERIAL_WORK_TERMS)
+    if has_material_intent:
+        return not any(term in normalized for term in EXPLICIT_READ_ONLY_BOUNDARY_TERMS)
     if any(term in normalized for term in READ_ONLY_TERMS):
         return False
-    return any(term in normalized for term in MATERIAL_WORK_TERMS)
+    return False
 
 
 def _resolve_candidate(token: str, *, source_root: Path) -> Path | None:

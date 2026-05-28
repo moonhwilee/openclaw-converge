@@ -957,6 +957,14 @@ def assert_conv_records_structured_specialist_findings(state_root: Path) -> None
         "fix runner result artifact should be a required Phase 5A evidence gate",
     )
     run("validate", "--workflow-id", "conv-fix-specialist-findings", state_root=state_root)
+    fix_runner_target.write_text("after fix but stale\n", encoding="utf-8")
+    stale_source_result = run_fail("validate", "--workflow-id", "conv-fix-specialist-findings", state_root=state_root)
+    assert_true(
+        "after_sha256 must match current source root" in stale_source_result["error"],
+        "conv validate should reject stale fix-runner source content after completed result proof",
+    )
+    fix_runner_target.write_text("after fix\n", encoding="utf-8")
+    run("validate", "--workflow-id", "conv-fix-specialist-findings", state_root=state_root)
 
     partial_result_path = state_root / "conv-fix-runner-result-partial.json"
     partial_result_path.write_text(

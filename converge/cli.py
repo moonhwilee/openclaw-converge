@@ -19,7 +19,7 @@ from .checkpoint import record_checkpoint, validate_evidence_artifact_refs, vali
 from .command_adapter import EXPECTED_PRODUCTION_ROUTE_PARITY, build_dry_run_packet
 from .continuation import TERMINAL_CONTINUATION_TARGETS, current_cursor, default_continuation_plan
 from .messages import VALID_VERDICTS, lint_verdict_residuals, normalize_residuals, progress_block
-from .modes.conv import CONV_REPORT_ARTIFACT_ID, ConvHandler, ConvRecord, ConvRound, render_conv_report, validate_conv_state
+from .modes.conv import CONV_REPORT_ARTIFACT_ID, ConvHandler, ConvRecord, ConvRound, _validate_fix_runner_mutation_proof, render_conv_report, validate_conv_state
 from .modes.conv_execution import CONV_LOCAL_RUNNER_REF, CONV_ROUND_EXECUTION_ARTIFACT_ID
 from .modes.evidence_contract import validate_phase5a_evidence_contract
 from .modes.fix_runner import run_bounded_local_fix_runner, write_fix_runner_result
@@ -2872,6 +2872,7 @@ def _validate_conv_fix_runner_evidence(store: WorkflowStore, workflow: dict[str,
         raise ValueError("conv fix_runner completed_result_ids must match state")
     request_ids = {item["runner_id"] for item in requests}
     for result in results:
+        _validate_fix_runner_mutation_proof(result, source_root=Path(result["source_root"]))
         if result["runner_id"] not in request_ids:
             raise ValueError("conv fix_runner result runner_id must match request ids")
         artifact_refs = result.get("artifact_refs") or []

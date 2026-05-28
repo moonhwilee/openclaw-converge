@@ -49,6 +49,10 @@ EXPECTED_MODES = {
     "/verify": "verify",
     "/conv": "conv",
 }
+EXPECTED_PROOF_REF_PREFIXES = {
+    "report_proof_ref": "report-proof",
+    "complete_reported_ref": "complete-reported",
+}
 
 
 def validate_phase6_route_parity_evidence(evidence: dict[str, Any], *, expected_state_root: str | None = None) -> dict[str, Any]:
@@ -111,7 +115,8 @@ def validate_phase6_route_parity_evidence(evidence: dict[str, Any], *, expected_
         workflow_id = record["workflow_id"]
         for proof_field in ("report_proof_ref", "complete_reported_ref"):
             proof_ref = record[proof_field]
-            if command not in proof_ref or workflow_id not in proof_ref:
+            expected_ref = f"{EXPECTED_PROOF_REF_PREFIXES[proof_field]}:{workflow_id}:{command}"
+            if proof_ref != expected_ref:
                 raise ValueError(f"Phase 6 route parity evidence for {command} must bind {proof_field} to command and workflow")
         visible_delivery = record.get("visible_delivery")
         if not isinstance(visible_delivery, dict) or not visible_delivery.get("channel") or not visible_delivery.get("target"):

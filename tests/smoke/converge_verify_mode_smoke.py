@@ -168,6 +168,14 @@ def main() -> int:
         )
         assert_phase5a_freshness_rejected(state_root, "verify-deterministic-file-evidence", "verify_state")
         assert_phase5a_terminal_status_rejected(state_root, "verify-deterministic-file-evidence", "verify_state")
+        target_file.write_text("phase 1 deterministic evidence fixture mutated after verification\n", encoding="utf-8")
+        stale_target_result = run_fail("validate", "--workflow-id", "verify-deterministic-file-evidence", state_root=state_root)
+        assert_true(
+            "verify deterministic evidence check hash is stale" in stale_target_result["error"],
+            "deterministic verify evidence should go stale when the inspected target changes",
+        )
+        target_file.write_text("phase 1 deterministic evidence fixture\n", encoding="utf-8")
+        run("validate", "--workflow-id", "verify-deterministic-file-evidence", state_root=state_root)
         assert_phase5a_accepted_change_stale_rejected(state_root, "verify-deterministic-file-evidence", "verify_state")
         deterministic_events = events(state_root, "verify-deterministic-file-evidence")
         write_events(

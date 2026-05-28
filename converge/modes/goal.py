@@ -79,7 +79,7 @@ class GoalRecord:
 
 
 class GoalHandler(ModeHandler):
-    """Promotes an accepted goal plan without owning delivery or child execution."""
+    """Promotes accepted goals and owns source-local child workflow collection."""
 
     kind = "goal"
 

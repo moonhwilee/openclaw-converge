@@ -196,6 +196,19 @@ def main() -> None:
         ]
         assert_rejects(state_root, evidence_file, cross_command_complete_proof, "bind complete_reported_ref")
 
+        malformed_same_command_report_proof = deepcopy(evidence)
+        conv_workflow_id = evidence["commands"]["/conv"]["workflow_id"]
+        malformed_same_command_report_proof["commands"]["/conv"][
+            "report_proof_ref"
+        ] = f"not-a-report-proof-but-contains-{conv_workflow_id}-and-/conv"
+        assert_rejects(state_root, evidence_file, malformed_same_command_report_proof, "bind report_proof_ref")
+
+        malformed_same_command_complete_proof = deepcopy(evidence)
+        malformed_same_command_complete_proof["commands"]["/conv"][
+            "complete_reported_ref"
+        ] = f"not-complete-reported-but-contains-{conv_workflow_id}-and-/conv"
+        assert_rejects(state_root, evidence_file, malformed_same_command_complete_proof, "bind complete_reported_ref")
+
         command_side_effect = deepcopy(evidence)
         command_side_effect["commands"]["/verify"]["side_effects_performed"] = ["gateway_restart"]
         assert_rejects(state_root, evidence_file, command_side_effect, "command side effects")

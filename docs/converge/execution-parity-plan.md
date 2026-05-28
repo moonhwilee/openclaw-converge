@@ -593,6 +593,10 @@ Do not implement Phase 5 without separate owner approval after Phase 0-4 parity
 evidence passes. Phase 5 work without an approval record is rejected even if the
 design is otherwise correct.
 
+This PR records Phase 5/6 as an owner-requested source-local continuation of the
+same execution-parity work. Future independent Phase 5 starts still require a
+separate owner approval record before implementation.
+
 Required behavior:
 
 - Represent orchestration as a parent-child workflow graph, not as a flat chat

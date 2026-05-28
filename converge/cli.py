@@ -2447,6 +2447,17 @@ def _validate_verify_execution_evidence(
         raise ValueError("verify deterministic_check_recorded check_count must match evidence artifact")
     if any(not isinstance(check, dict) or check.get("status") != "pass" for check in checks):
         raise ValueError("verify deterministic evidence checks must all pass")
+    for check in checks:
+        if check.get("kind") != "file_inspection":
+            raise ValueError("verify deterministic evidence checks must be file inspections")
+        path = check.get("path")
+        if not isinstance(path, str) or not path:
+            raise ValueError("verify deterministic evidence check path must be non-empty")
+        target_path = Path(path)
+        if not target_path.is_file():
+            raise ValueError("verify deterministic evidence check path is missing")
+        if sha256_file(target_path) != check.get("sha256"):
+            raise ValueError("verify deterministic evidence check hash is stale")
 
 
 def _validate_specialist_execution_evidence(

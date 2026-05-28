@@ -467,8 +467,18 @@ def _extract_child_payload(stdout: str) -> dict[str, Any]:
     outer = json.loads(stdout)
     if not isinstance(outer, dict):
         raise ValueError("openclaw agent --json output must be an object")
+    candidates: list[Any] = []
     for key in ("response", "reply", "message", "content", "text", "output"):
-        value = outer.get(key)
+        candidates.append(outer.get(key))
+    result = outer.get("result")
+    if isinstance(result, dict):
+        candidates.extend([result.get("finalAssistantRawText"), result.get("finalAssistantVisibleText")])
+        payloads = result.get("payloads")
+        if isinstance(payloads, list):
+            for payload in payloads:
+                if isinstance(payload, dict):
+                    candidates.append(payload.get("text"))
+    for value in candidates:
         if isinstance(value, dict):
             return value
         if isinstance(value, str) and value.strip():

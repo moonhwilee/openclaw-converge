@@ -485,6 +485,19 @@ def assert_openclaw_cli_backend_uses_explicit_session_and_structured_result() ->
     assert_true(seam_result.result.status == "failed", "CLI seam should fail child output without tool smoke")
     assert_true(seam_result.result.tool_smoke_status == "not_run", "CLI seam must not default missing tool smoke to passed")
     assert_true(seam_result.result.satisfies_native_agent_panel is False, "missing coordinator smoke must not satisfy native panel")
+
+    wrapped_result = OpenClawAgentCliBackend(
+        runner=lambda command, _timeout: subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=_cli_child_stdout(command[3], openclaw_agent_json=True),
+            stderr="",
+        )
+    ).run_review(request)
+    assert_true(
+        wrapped_result.result.tool_smoke_status == "passed",
+        "CLI seam should parse OpenClaw 2026.5.27 result.payloads text",
+    )
     expect_error(lambda: validate_openclaw_agent_session_key("session:child:a"), "agent:<id>:<key>")
 
 
@@ -700,7 +713,7 @@ def _trajectory_completed_process(
     return subprocess.CompletedProcess(command, 0, stdout=json.dumps(summary, sort_keys=True), stderr="")
 
 
-def _cli_child_stdout(session_key: str) -> str:
+def _cli_child_stdout(session_key: str, *, openclaw_agent_json: bool = False) -> str:
     child = {
         "tool_smoke_status": "passed",
         "tool_smoke_evidence": {
@@ -713,6 +726,21 @@ def _cli_child_stdout(session_key: str) -> str:
         "findings": [{"severity": "p2", "evidence_refs": ["file:a"]}],
         "error": None,
     }
+    if openclaw_agent_json:
+        text = json.dumps(child, sort_keys=True)
+        return json.dumps(
+            {
+                "runId": "run-shape-smoke",
+                "status": "ok",
+                "summary": "completed",
+                "result": {
+                    "payloads": [{"text": text, "mediaUrl": None}],
+                    "finalAssistantRawText": text,
+                    "finalAssistantVisibleText": text,
+                },
+            },
+            sort_keys=True,
+        )
     return json_dumps_response(child)
 
 

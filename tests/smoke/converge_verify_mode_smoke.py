@@ -1484,7 +1484,7 @@ class FakeNativePanelBackend:
         for index, request in enumerate(requests, start=1):
             completed_at = f"2026-05-28T00:0{index}:00Z"
             finding = {
-                "finding_id": f"native-finding-{index}",
+                "finding_id": "child-supplied-duplicate-native-finding",
                 "profile_id": "child-supplied-wrong-profile",
                 "finding": f"Native child {index} inspected the verify target without blocking findings.",
                 "severity": "p3",

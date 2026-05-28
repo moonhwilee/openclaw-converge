@@ -678,7 +678,7 @@ def _native_findings(results: list[NativeChildResult]) -> list[dict[str, Any]]:
             item["profile_id"] = result.profile_ref
             item["source_provenance"] = "native_openclaw_session"
             item.setdefault("evidence", f"agent_session_ref:{result.agent_session_ref}")
-            item.setdefault("finding_id", stable_hash({"request_id": result.request_id, "finding": item}))
+            item["finding_id"] = stable_hash({"request_id": result.request_id, "finding": item})
             findings.append(item)
     return _findings(findings, profiles=profiles)
 

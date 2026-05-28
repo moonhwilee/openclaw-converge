@@ -474,6 +474,10 @@ def assert_openclaw_cli_backend_uses_explicit_session_and_structured_result() ->
     assert_true(result.result.satisfies_native_agent_panel is False, "experimental CLI seam should not satisfy native agent panel")
     prompt = build_child_prompt(request)
     assert_true("visible messages" in prompt.lower(), "child prompt should restate visible-message restriction")
+    assert_true(
+        '"session_key": "agent:main:child-a"' in prompt and '"agent_session_ref": "agent:main:child-a"' in prompt,
+        "child prompt should provide exact session refs for tool-smoke evidence",
+    )
 
     missing_smoke = subprocess.CompletedProcess(
         ["openclaw"],

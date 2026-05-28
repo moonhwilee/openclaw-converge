@@ -278,6 +278,8 @@ def build_child_prompt(request: NativeLaunchRequest) -> str:
         "output_schema": request.output_schema,
         "tool_policy": request.tool_policy,
         "budget_policy": request.budget_policy,
+        "session_key": request.session_key,
+        "agent_session_ref": request.session_key,
     }
     return (
         "You are a read-only Converge native specialist child session.\n"
@@ -288,7 +290,8 @@ def build_child_prompt(request: NativeLaunchRequest) -> str:
         "tool_smoke_evidence, error. tool_smoke_status must be passed only "
         "after an allowed file or artifact read and a harmless status/shell "
         "check when shell is in scope. tool_smoke_evidence must include status, "
-        "kind, checked_at, session_key, and agent_session_ref.\n"
+        "kind, checked_at, session_key, and agent_session_ref. Set session_key "
+        "and agent_session_ref exactly to REQUEST_JSON.session_key.\n"
         f"REQUEST_JSON:\n{json.dumps(payload, ensure_ascii=True, sort_keys=True)}\n"
     )
 

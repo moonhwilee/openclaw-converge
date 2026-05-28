@@ -490,6 +490,10 @@ def assert_openclaw_cli_backend_uses_explicit_session_and_structured_result() ->
         "confidence must be a JSON number" in prompt,
         "child prompt should require schema-compatible numeric confidence",
     )
+    assert_true(
+        "evidence must be one non-empty string" in prompt and '"confidence":0.9' in prompt,
+        "child prompt should include a schema-compatible finding example",
+    )
 
     missing_smoke = subprocess.CompletedProcess(
         ["openclaw"],

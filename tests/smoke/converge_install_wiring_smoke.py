@@ -195,6 +195,62 @@ def test_local_install_wires_cli_and_runner() -> None:
         assert_no_python_cache(plugin_dir)
         validate = run_json([str(converge_bin), "validate", "--sample-docs"], env=env)
         assert_true(validate["ok"] is True, "installed CLI should validate sample docs")
+        route_parity = run_json(
+            [
+                str(converge_bin),
+                "--state-root",
+                str(state_root),
+                "route-parity-check",
+                "--owner-session-key",
+                "session:installed-phase6",
+                "--visible-delivery",
+                '{"channel":"telegram","target":"demo"}',
+            ],
+            env=env,
+        )
+        assert_true(route_parity["ok"] is True, "installed CLI should run Phase 6 route parity dry-run gate")
+        assert_true(
+            route_parity["production_route_parity_proven"] is False,
+            "installed Phase 6 route parity dry-run must not prove production parity",
+        )
+        dry_run_evidence = root / "phase6-dry-run-evidence.json"
+        dry_run_evidence.write_text(
+            json.dumps(
+                {
+                    "evidence_source": "command-dry-run",
+                    "proof_level": "route_dry_run_gate",
+                    "gateway_restart_performed": False,
+                    "route_change_performed": False,
+                    "deploy_or_install_performed": False,
+                    "external_action_performed": False,
+                    "cleanup_or_legacy_removal_performed": False,
+                },
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        dry_run_verify = subprocess.run(
+            [
+                str(converge_bin),
+                "--state-root",
+                str(state_root),
+                "route-parity-verify",
+                "--evidence-file",
+                str(dry_run_evidence),
+            ],
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert_true(dry_run_verify.returncode == 1, "installed CLI should reject CLI-only Phase 6 evidence")
+        assert_true(
+            "CLI-only or command-adapter" in json.loads(dry_run_verify.stdout)["error"],
+            "installed Phase 6 route parity verify should report CLI-only evidence rejection",
+        )
         workflow = run_json(
             [
                 str(converge_bin),

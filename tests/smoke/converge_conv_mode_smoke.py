@@ -10,17 +10,17 @@ from typing import Any
 
 
 try:
-    from smoke_helpers import VISIBLE_DELIVERY, assert_true, events, run, run_fail, workflow, write_workflow
+    from smoke_helpers import VISIBLE_DELIVERY, assert_phase5a_contract, assert_phase5a_accepted_change_stale_rejected, assert_phase5a_freshness_rejected, assert_phase5a_missing_gate_rejected, assert_phase5a_stale_hash_rejected, assert_phase5a_terminal_status_rejected, assert_true, events, run, run_fail, workflow, write_workflow
 except ModuleNotFoundError:
-    from tests.smoke.smoke_helpers import VISIBLE_DELIVERY, assert_true, events, run, run_fail, workflow, write_workflow
-from converge.modes.conv import _material_change_record, _max_round_record, build_conv_record, render_conv_report, validate_conv_state  # noqa: E402
+    from tests.smoke.smoke_helpers import VISIBLE_DELIVERY, assert_phase5a_contract, assert_phase5a_accepted_change_stale_rejected, assert_phase5a_freshness_rejected, assert_phase5a_missing_gate_rejected, assert_phase5a_stale_hash_rejected, assert_phase5a_terminal_status_rejected, assert_true, events, run, run_fail, workflow, write_workflow
+from converge.modes.conv import ConvRecord, ConvRound, _material_change_record, _max_round_record, build_conv_record, render_conv_report, validate_conv_state  # noqa: E402
 
 
 def finalize_conv(state_root: Path, *, workflow_id: str, text: str) -> dict[str, Any]:
     return run(
         "conv",
         "--text",
-        text,
+        f"plan-only {text}",
         "--workflow-id",
         workflow_id,
         "--owner-session-key",
@@ -31,11 +31,23 @@ def finalize_conv(state_root: Path, *, workflow_id: str, text: str) -> dict[str,
     )["workflow"]
 
 
-def assert_conv_report_matches(wf: dict[str, Any], text: str) -> None:
+def assert_conv_report_matches(wf: dict[str, Any], text: str | None = None) -> None:
     artifact_path = Path(wf["conv_state"]["final_report_artifact_path"])
+    source_text = text if text is not None else wf["source_request"]
     assert_true(artifact_path.is_file(), "conv report artifact should be materialized")
     assert_true(
-        artifact_path.read_text(encoding="utf-8") == render_conv_report(build_conv_record(text)),
+        artifact_path.read_text(encoding="utf-8") == render_conv_report(build_conv_record(source_text)),
+        "conv report artifact should match rendered conv state",
+    )
+
+
+def assert_conv_report_matches_state(wf: dict[str, Any]) -> None:
+    conv_state = wf["conv_state"]
+    artifact_path = Path(conv_state["final_report_artifact_path"])
+    record = _record_from_state(conv_state)
+    assert_true(artifact_path.is_file(), "conv report artifact should be materialized")
+    assert_true(
+        artifact_path.read_text(encoding="utf-8") == render_conv_report(record),
         "conv report artifact should match rendered conv state",
     )
 
@@ -59,7 +71,7 @@ def assert_default_conv_contract(state_root: Path) -> None:
     assert_true(wf["verification"]["evidence"][-1]["artifact_refs"] == ["conv-final-report"], "terminal evidence should reference conv report")
     assert_true(wf["next_safe_action"]["action_type"] == "report_terminal_status", "conv terminal state should require report flow")
     assert_true([event["event_type"] for event in events(state_root, "conv-c3-smoke")] == ["start", "artifact", "complete"], "conv should use start/artifact/complete events")
-    assert_conv_report_matches(wf, text)
+    assert_conv_report_matches(wf)
     run("validate", "--workflow-id", "conv-c3-smoke", state_root=state_root)
 
     reservation = run(
@@ -110,13 +122,239 @@ def assert_default_conv_contract(state_root: Path) -> None:
     )
 
 
+def assert_execution_required_conv_blocks_synthetic_round(state_root: Path) -> None:
+    wf = run(
+        "conv",
+        "--text",
+        "Improve execution-required target until convergence",
+        "--workflow-id",
+        "conv-execution-required-blocked",
+        "--owner-session-key",
+        "session:test",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        state_root=state_root,
+    )["workflow"]
+    assert_true(wf["status"] == "failed_unreported", "execution-required conv should fail closed")
+    assert_true(wf["final_status"]["result"] == "blocked", "execution-required conv should be blocked")
+    assert_true(
+        wf["final_status"]["stop_reason"] == "blocked_no_execution_evidence",
+        "conv should block on missing execution evidence",
+    )
+    assert_true(
+        wf["conv_state"]["execution_required"] is True and wf["conv_state"]["execution_performed"] is False,
+        "conv should record execution truth markers",
+    )
+    assert_true(
+        wf["conv_state"]["execution_blocked"] is True,
+        "conv blocked state should record execution_blocked",
+    )
+    assert_true(
+        [event["event_type"] for event in events(state_root, "conv-execution-required-blocked")] == ["start", "artifact", "fail"],
+        "execution-required conv should fail terminally instead of completing",
+    )
+    run("validate", "--workflow-id", "conv-execution-required-blocked", state_root=state_root)
+
+
+def assert_execution_required_conv_records_real_round_evidence(state_root: Path) -> None:
+    target = state_root / "phase2-target.txt"
+    target.write_text("phase 2 deterministic conv target\n", encoding="utf-8")
+    wf = run(
+        "conv",
+        "--text",
+        f"Read-only audit execution-required target {target}",
+        "--workflow-id",
+        "conv-execution-required-real-round",
+        "--owner-session-key",
+        "session:test",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        state_root=state_root,
+    )["workflow"]
+    conv_state = wf["conv_state"]
+    assert_true(wf["status"] == "completed_unreported", "execution-required conv with real evidence should complete")
+    assert_true(wf["final_status"]["result"] == "pass_with_risks", "Phase 2 real evidence should pass with scoped residuals")
+    assert_true(conv_state["execution_required"] is True, "conv should preserve execution_required=true")
+    assert_true(conv_state["execution_performed"] is True, "trusted conv runner should record execution_performed=true")
+    assert_true(conv_state["synthetic_report"] is False, "real conv evidence should clear synthetic_report")
+    assert_true(conv_state["execution_capability"] == "local_rounds", "conv should record local round capability")
+    assert_true(
+        conv_state["execution_evidence_refs"] == ["conv-round-execution"],
+        "conv should reference round execution evidence",
+    )
+    assert_true(conv_state["round_count"] == 1, "trusted conv runner should record one minimal round")
+    assert_true(conv_state["rounds"][0]["delta_gate"] == "no_delta", "minimal round should carry no delta")
+    artifact_ids = [artifact["artifact_id"] for artifact in wf["artifacts"]]
+    assert_true("conv-round-execution" in artifact_ids, "conv should register round evidence artifact")
+    assert_true("conv-final-report" in artifact_ids, "conv should register final report artifact")
+    event_types = [event["event_type"] for event in events(state_root, "conv-execution-required-real-round")]
+    assert_true(event_types == ["start", "artifact", "round_start", "round_summary", "artifact", "complete"], "conv should record real round events")
+    assert_conv_report_matches_state(wf)
+    run("validate", "--workflow-id", "conv-execution-required-real-round", state_root=state_root)
+    assert_phase5a_contract(wf, "conv_state")
+    assert_phase5a_missing_gate_rejected(
+        state_root,
+        "conv-execution-required-real-round",
+        "conv_state",
+        "execution:conv-round-execution",
+    )
+    assert_phase5a_stale_hash_rejected(
+        state_root,
+        "conv-execution-required-real-round",
+        "conv_state",
+        "execution:conv-round-execution",
+    )
+    assert_phase5a_freshness_rejected(state_root, "conv-execution-required-real-round", "conv_state")
+    assert_phase5a_terminal_status_rejected(state_root, "conv-execution-required-real-round", "conv_state")
+    assert_phase5a_accepted_change_stale_rejected(state_root, "conv-execution-required-real-round", "conv_state")
+
+    material_request = run(
+        "conv",
+        "--text",
+        f"Improve execution-required target {target}",
+        "--workflow-id",
+        "conv-execution-required-material-blocked",
+        "--owner-session-key",
+        "session:test",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        state_root=state_root,
+    )["workflow"]
+    assert_true(
+        material_request["status"] == "failed_unreported",
+        "material conv request should block when only local inspection evidence is available",
+    )
+    assert_true(
+        material_request["final_status"]["stop_reason"] == "blocked_no_execution_evidence",
+        "material conv request should require specialist/fix-runner evidence",
+    )
+    assert_true(
+        material_request["conv_state"]["execution_performed"] is False,
+        "material conv request should not mark local file inspection as execution proof",
+    )
+    run("validate", "--workflow-id", "conv-execution-required-material-blocked", state_root=state_root)
+
+    mixed_material_request = run(
+        "conv",
+        "--text",
+        f"Review and fix execution-required target {target}",
+        "--workflow-id",
+        "conv-execution-required-mixed-material-blocked",
+        "--owner-session-key",
+        "session:test",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        state_root=state_root,
+    )["workflow"]
+    assert_true(
+        mixed_material_request["status"] == "failed_unreported",
+        "mixed review+fix conv request should block when only local inspection evidence is available",
+    )
+    assert_true(
+        mixed_material_request["conv_state"]["execution_performed"] is False,
+        "mixed material conv request should not mark local file inspection as execution proof",
+    )
+    run("validate", "--workflow-id", "conv-execution-required-mixed-material-blocked", state_root=state_root)
+
+    korean_mixed_material_request = run(
+        "conv",
+        "--text",
+        f"검토 후 수정 execution-required target {target}",
+        "--workflow-id",
+        "conv-execution-required-korean-mixed-material-blocked",
+        "--owner-session-key",
+        "session:test",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        state_root=state_root,
+    )["workflow"]
+    assert_true(
+        korean_mixed_material_request["status"] == "failed_unreported",
+        "Korean mixed review+fix conv request should require material runner evidence",
+    )
+    run("validate", "--workflow-id", "conv-execution-required-korean-mixed-material-blocked", state_root=state_root)
+
+    explicit_read_only_boundary = run(
+        "conv",
+        "--text",
+        f"Review only, no fixes for execution-required target {target}",
+        "--workflow-id",
+        "conv-execution-required-explicit-read-only",
+        "--owner-session-key",
+        "session:test",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        state_root=state_root,
+    )["workflow"]
+    assert_true(
+        explicit_read_only_boundary["status"] == "completed_unreported",
+        "explicit read-only conv boundary should still allow local inspection evidence",
+    )
+    run("validate", "--workflow-id", "conv-execution-required-explicit-read-only", state_root=state_root)
+
+    missing_round_summary = json.loads(json.dumps(wf))
+    write_workflow(state_root, "conv-execution-required-real-round", missing_round_summary)
+    events_path = state_root / "workflows" / "conv-execution-required-real-round" / "events.jsonl"
+    original_events = events_path.read_text(encoding="utf-8")
+    without_summary = "\n".join(
+        line
+        for line in original_events.splitlines()
+        if not line.strip() or json.loads(line).get("event_type") != "round_summary"
+    )
+    events_path.write_text(without_summary + "\n", encoding="utf-8")
+    result = run_fail("validate", "--workflow-id", "conv-execution-required-real-round", state_root=state_root)
+    assert_true("round_summary event" in result["error"], "conv should reject missing round_summary evidence")
+    events_path.write_text(original_events, encoding="utf-8")
+
+    bad_runner = json.loads(json.dumps(wf))
+    for event in events(state_root, "conv-execution-required-real-round"):
+        if event["event_type"] == "round_start":
+            event["payload"]["runner_ref"] = "untrusted-runner"
+            lines = []
+            for line in original_events.splitlines():
+                parsed = json.loads(line)
+                if parsed["event_id"] == event["event_id"]:
+                    parsed = event
+                lines.append(json.dumps(parsed, ensure_ascii=False, sort_keys=True))
+            events_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            break
+    write_workflow(state_root, "conv-execution-required-real-round", bad_runner)
+    result = run_fail("validate", "--workflow-id", "conv-execution-required-real-round", state_root=state_root)
+    assert_true("round_start event has untrusted runner_ref" in result["error"], "conv should reject untrusted round_start runner")
+    events_path.write_text(original_events, encoding="utf-8")
+
+    drifted_start = json.loads(json.dumps(wf))
+    for event in events(state_root, "conv-execution-required-real-round"):
+        if event["event_type"] == "round_start":
+            event["payload"]["target_ref"] = "different-target"
+            lines = []
+            for line in original_events.splitlines():
+                parsed = json.loads(line)
+                if parsed["event_id"] == event["event_id"]:
+                    parsed = event
+                lines.append(json.dumps(parsed, ensure_ascii=False, sort_keys=True))
+            events_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            break
+    write_workflow(state_root, "conv-execution-required-real-round", drifted_start)
+    result = run_fail("validate", "--workflow-id", "conv-execution-required-real-round", state_root=state_root)
+    assert_true("round_start target_ref must match" in result["error"], "conv should reject round_start target drift")
+    events_path.write_text(original_events, encoding="utf-8")
+
+    stale_target = json.loads(json.dumps(wf))
+    target.write_text("phase 2 deterministic conv target changed after evidence\n", encoding="utf-8")
+    write_workflow(state_root, "conv-execution-required-real-round", stale_target)
+    result = run_fail("validate", "--workflow-id", "conv-execution-required-real-round", state_root=state_root)
+    assert_true("target check hash is stale" in result["error"], "conv should reject stale target evidence")
+    events_path.write_text(original_events, encoding="utf-8")
+
+
 def assert_resume_preserves_progress(state_root: Path) -> None:
     run(
         "start",
         "--kind",
         "conv",
         "--text",
-        "Converge in-progress conv fixture",
+        "plan-only Converge in-progress conv fixture",
         "--workflow-id",
         "conv-progress-helper",
         "--visible-delivery",
@@ -136,7 +374,7 @@ def assert_resume_preserves_progress(state_root: Path) -> None:
     wf = run(
         "conv",
         "--text",
-        "ignored retry text",
+        "plan-only ignored retry text",
         "--workflow-id",
         "conv-progress-helper",
         "--visible-delivery",
@@ -153,7 +391,7 @@ def assert_material_change_and_max_round_fixtures(state_root: Path) -> None:
     accidental = finalize_conv(state_root, workflow_id="conv-plain-fixture-text", text=material_text)
     assert_true(accidental["conv_state"]["round_count"] == 1, "fixture words in user text should not select synthetic paths")
     assert_true(accidental["conv_state"]["stop_condition"] == "evidence_sufficient", "fixture words should behave like normal text")
-    assert_conv_report_matches(accidental, material_text)
+    assert_conv_report_matches(accidental)
 
     material_record = _material_change_record(material_text)
     material_state = material_record.as_state(artifact_id="conv-final-report", artifact_path="/tmp/conv-report.md")
@@ -357,17 +595,310 @@ def assert_reserve_validates_conv_terminal_material_before_send(state_root: Path
     assert_true("artifact hash is stale" in stale_result["error"], "conv stale material should be hash-checked")
 
 
+def assert_conv_records_structured_specialist_findings(state_root: Path) -> None:
+    packet_path = state_root / "conv-specialist-findings.json"
+    packet_path.write_text(json.dumps(specialist_packet()), encoding="utf-8")
+    wf = run(
+        "conv",
+        "--text",
+        "Converge execution-required target using structured specialist findings",
+        "--workflow-id",
+        "conv-specialist-findings",
+        "--owner-session-key",
+        "session:test",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        "--structured-findings-file",
+        str(packet_path),
+        state_root=state_root,
+    )["workflow"]
+    conv_state = wf["conv_state"]
+    assert_true(wf["status"] == "completed_unreported", "structured specialist conv should complete")
+    assert_true(conv_state["execution_capability"] == "delegated_agents", "conv structured findings should use delegated_agents")
+    assert_true(conv_state["execution_evidence_refs"] == ["conv-specialist-findings"], "conv should bind specialist evidence")
+    assert_true(conv_state["max_rounds_default"] == 5, "conv should preserve Phase 4 max_rounds default")
+    assert_true(conv_state["round_count"] == 1, "conv specialist adapter should record one bounded round")
+    assert_true(
+        conv_state["raw_finding_to_group_map"][0]["group_id"] == conv_state["raw_finding_to_group_map"][1]["group_id"],
+        "conv should dedupe structured findings by failure mode",
+    )
+    assert_true(len(conv_state["agent_request_refs"]) == 3, "conv should persist one agent request per profile")
+    assert_true(len(conv_state["agent_result_refs"]) == len(conv_state["agent_finding_refs"]), "conv should persist specialist result refs")
+    assert_true(len(conv_state["profile_registry_refs"]) == 5, "conv should persist reviewer/check/runner profile specs")
+    assert_true(
+        {item["kind"] for item in conv_state["profile_registry_refs"]} == {"reviewer", "check", "runner"},
+        "conv should include reusable reviewer/check/runner profile kinds",
+    )
+    assert_true(
+        conv_state["agent_result_collection_status"]["status"] == "complete",
+        "conv should record complete specialist result collection",
+    )
+    assert_true(
+        conv_state["agent_result_collection_status"]["relaunch_required"] is False,
+        "conv recovered specialist collection should not relaunch completed requests",
+    )
+    assert_true(
+        conv_state["recovery_resume_cursor"] == conv_state["agent_result_collection_status"]["collection_cursor"],
+        "conv should bind specialist recovery cursor",
+    )
+    recovery_scan = run("scan", state_root=state_root)
+    recovery_record = next(item for item in recovery_scan["workflows"] if item["workflow_id"] == "conv-specialist-findings")
+    assert_true(
+        recovery_record["agent_result_collection"]["recovery_resume_cursor"] == conv_state["recovery_resume_cursor"],
+        "conv recovery scan should expose specialist collection resume cursor",
+    )
+    assert_true(
+        recovery_record["profile_registry"]["kinds"] == ["check", "reviewer", "runner"],
+        "conv recovery scan should expose specialist profile registry kinds",
+    )
+    recovery_watchdog = run("watchdog-check", state_root=state_root)
+    recovery_packet = next(item for item in recovery_watchdog["recoveries"] if item["workflow_id"] == "conv-specialist-findings")
+    assert_true(
+        recovery_packet["agent_result_collection"]["relaunch_required"] is False,
+        "conv recovery packet should prove completed specialist requests are not relaunched",
+    )
+    assert_true(
+        recovery_packet["profile_registry"]["kinds"] == ["check", "reviewer", "runner"],
+        "conv recovery packet should expose specialist profile registry kinds",
+    )
+    assert_true(
+        {event["event_type"] for event in events(state_root, "conv-specialist-findings")}.issuperset(
+            {"agent_panel_requested", "agent_findings_recorded", "finding_arbitrated"}
+        ),
+        "conv should record specialist panel events",
+    )
+    assert_conv_report_matches_state(wf)
+    run("validate", "--workflow-id", "conv-specialist-findings", state_root=state_root)
+
+    original_events = events(state_root, "conv-specialist-findings")
+    events_path = state_root / "workflows" / "conv-specialist-findings" / "events.jsonl"
+    events_path.write_text(
+        "\n".join(
+            json.dumps(event, ensure_ascii=False, sort_keys=True)
+            for event in original_events
+            if event["event_type"] != "finding_arbitrated"
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    result = run_fail("validate", "--workflow-id", "conv-specialist-findings", state_root=state_root)
+    assert_true("finding_arbitrated event" in result["error"], "conv should require specialist arbitration event proof")
+    events_path.write_text(
+        "\n".join(json.dumps(event, ensure_ascii=False, sort_keys=True) for event in original_events) + "\n",
+        encoding="utf-8",
+    )
+
+    wrong_context = json.loads(json.dumps(wf))
+    wrong_context["conv_state"]["agent_result_refs"][0]["context_hash"] = "wrong-context"
+    write_workflow(state_root, "conv-specialist-findings", wrong_context)
+    wrong_context_result = run_fail("validate", "--workflow-id", "conv-specialist-findings", state_root=state_root)
+    assert_true(
+        "context_hash" in wrong_context_result["error"] or "terminal checkpoint" in wrong_context_result["error"],
+        "conv should reject result/request context mismatch",
+    )
+    write_workflow(state_root, "conv-specialist-findings", wf)
+
+    bad_registry = json.loads(json.dumps(wf))
+    bad_registry["conv_state"]["profile_registry_refs"][0]["kind"] = "runner"
+    write_workflow(state_root, "conv-specialist-findings", bad_registry)
+    bad_registry_result = run_fail("validate", "--workflow-id", "conv-specialist-findings", state_root=state_root)
+    assert_true(
+        "profile" in bad_registry_result["error"] or "terminal checkpoint" in bad_registry_result["error"],
+        "conv should reject malformed reviewer profile registry entries",
+    )
+    write_workflow(state_root, "conv-specialist-findings", wf)
+
+    event_drift = json.loads(json.dumps(original_events))
+    for event in event_drift:
+        if event["event_type"] == "agent_findings_recorded":
+            event["payload"]["collection_cursor"] = "stale-cursor"
+    events_path.write_text(
+        "\n".join(json.dumps(event, ensure_ascii=False, sort_keys=True) for event in event_drift) + "\n",
+        encoding="utf-8",
+    )
+    event_drift_result = run_fail("validate", "--workflow-id", "conv-specialist-findings", state_root=state_root)
+    assert_true("collection_cursor must match state" in event_drift_result["error"], "conv should bind event collection cursor to state")
+    events_path.write_text(
+        "\n".join(json.dumps(event, ensure_ascii=False, sort_keys=True) for event in original_events) + "\n",
+        encoding="utf-8",
+    )
+
+    profile_event_drift = json.loads(json.dumps(original_events))
+    for event in profile_event_drift:
+        if event["event_type"] == "agent_panel_requested":
+            event["payload"]["profile_registry_hashes"] = []
+    events_path.write_text(
+        "\n".join(json.dumps(event, ensure_ascii=False, sort_keys=True) for event in profile_event_drift) + "\n",
+        encoding="utf-8",
+    )
+    profile_event_drift_result = run_fail("validate", "--workflow-id", "conv-specialist-findings", state_root=state_root)
+    assert_true(
+        "profile_registry_hashes must match state" in profile_event_drift_result["error"],
+        "conv should bind specialist profile registry hashes to event proof",
+    )
+    events_path.write_text(
+        "\n".join(json.dumps(event, ensure_ascii=False, sort_keys=True) for event in original_events) + "\n",
+        encoding="utf-8",
+    )
+
+    block_packet = specialist_packet()
+    block_packet["findings"][0]["severity"] = "p1"
+    block_packet_path = state_root / "conv-block-specialist-findings.json"
+    block_packet_path.write_text(json.dumps(block_packet), encoding="utf-8")
+    blocked = run(
+        "conv",
+        "--text",
+        "Converge execution-required target with blocking specialist finding",
+        "--workflow-id",
+        "conv-block-specialist-findings",
+        "--owner-session-key",
+        "session:test",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        "--structured-findings-file",
+        str(block_packet_path),
+        state_root=state_root,
+    )["workflow"]
+    assert_true(blocked["status"] == "failed_unreported", "blocking specialist findings should fail closed")
+    assert_true(blocked["final_status"]["result"] == "blocked", "blocking specialist findings should not pass with risks")
+    assert_true(blocked["conv_state"]["stop_condition"] == "blocked_specialist_findings", "blocking specialist findings should bind stop condition")
+    assert_true(
+        blocked["conv_state"]["required_evidence_contract"]["terminal_status"] == "blocked",
+        "blocking specialist findings should bind Phase 5A contract to blocked terminal status",
+    )
+    run("validate", "--workflow-id", "conv-block-specialist-findings", state_root=state_root)
+
+    fix_packet = specialist_packet()
+    fix_packet["findings"][0]["severity"] = "p2"
+    fix_packet_path = state_root / "conv-fix-specialist-findings.json"
+    fix_packet_path.write_text(json.dumps(fix_packet), encoding="utf-8")
+    needs_follow_up = run(
+        "conv",
+        "--text",
+        "Converge execution-required target with accepted specialist fix",
+        "--workflow-id",
+        "conv-fix-specialist-findings",
+        "--owner-session-key",
+        "session:test",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        "--structured-findings-file",
+        str(fix_packet_path),
+        state_root=state_root,
+    )["workflow"]
+    assert_true(needs_follow_up["status"] == "failed_unreported", "accepted specialist fixes should require follow-up before completion")
+    assert_true(needs_follow_up["final_status"]["result"] == "blocked", "accepted specialist fixes should not pass before follow-up")
+    assert_true(needs_follow_up["conv_state"]["follow_up_required"] is True, "accepted specialist fixes should record follow-up required")
+    assert_true(
+        needs_follow_up["conv_state"]["stop_condition"] == "blocked_specialist_follow_up_required",
+        "accepted specialist fixes should bind follow-up stop condition",
+    )
+    assert_true(
+        needs_follow_up["conv_state"]["required_evidence_contract"]["terminal_status"] == "blocked",
+        "accepted specialist fixes should bind Phase 5A contract to blocked terminal status",
+    )
+    run("validate", "--workflow-id", "conv-fix-specialist-findings", state_root=state_root)
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory(prefix="converge-conv-mode-smoke-") as tmp:
         state_root = Path(tmp)
         assert_default_conv_contract(state_root)
+        assert_execution_required_conv_blocks_synthetic_round(state_root)
+        assert_execution_required_conv_records_real_round_evidence(state_root)
         assert_resume_preserves_progress(state_root)
         assert_material_change_and_max_round_fixtures(state_root)
         assert_conv_integrity_rejects_drift(state_root)
         assert_conv_gate_integrity_rejects_drift(state_root)
         assert_conv_preterminal_state_is_validated(state_root)
         assert_reserve_validates_conv_terminal_material_before_send(state_root)
+        assert_conv_records_structured_specialist_findings(state_root)
     return 0
+
+
+def _record_from_state(state: dict[str, Any]) -> ConvRecord:
+    return ConvRecord(
+        target=state["target"],
+        max_rounds=state["max_rounds"],
+        rounds=[
+            ConvRound(
+                round_index=item["round_index"],
+                target_ref=item["target_ref"],
+                original_target_gate=item["original_target_gate"],
+                delta_gate=item["delta_gate"],
+                findings=item["findings"],
+                material_changes=item["material_changes"],
+                follow_up_required=item["follow_up_required"],
+                evidence_sufficient=item["evidence_sufficient"],
+                summary=item["summary"],
+            )
+            for item in state["rounds"]
+        ],
+        stop_condition=state["stop_condition"],
+        stop_reason=state["stop_reason"],
+        explicit_stop_proof=state["explicit_stop_proof"],
+        residuals=state["residuals"],
+        final_report_summary=state["final_report_summary"],
+    )
+
+
+def specialist_packet() -> dict[str, Any]:
+    return {
+        "panel_id": "conv-phase4a-panel",
+        "risk_level": "medium",
+        "profiles": [
+            {
+                "profile_id": "reviewer-integrity",
+                "role": "execution integrity reviewer",
+                "expertise": ["evidence binding", "state validation"],
+                "likely_failure_modes": ["missing arbitration proof"],
+                "prohibited_actions": ["visible_messages", "target_mutation"],
+            },
+            {
+                "profile_id": "reviewer-regression",
+                "role": "regression reviewer",
+                "expertise": ["phase regression", "schema compatibility"],
+                "likely_failure_modes": ["missing arbitration proof"],
+                "prohibited_actions": ["external_actions", "push_or_pr"],
+            },
+            {
+                "profile_id": "reviewer-ops",
+                "role": "operations boundary reviewer",
+                "expertise": ["side-effect containment", "report proof"],
+                "likely_failure_modes": ["unsafe side effects"],
+                "prohibited_actions": ["service_restart", "workflow_state_mutation"],
+            },
+        ],
+        "findings": [
+            {
+                "finding_id": "conv-finding-arbitration-event",
+                "profile_id": "reviewer-integrity",
+                "finding": "Conv must require an arbitration event for structured specialist evidence.",
+                "severity": "p3",
+                "evidence": "events.jsonl finding_arbitrated",
+                "why_it_matters": "A missing arbitration event would allow unclassified findings into the verdict.",
+                "minimal_fix_or_test": "Remove finding_arbitrated and expect validate failure.",
+                "scope_risk": "Low, validation-only proof requirement.",
+                "confidence": 0.87,
+                "failure_mode": "missing arbitration proof",
+                "source_provenance": "runner_provided",
+            },
+            {
+                "finding_id": "conv-finding-dedupe",
+                "profile_id": "reviewer-regression",
+                "finding": "Duplicate failure-mode findings must collapse into one arbitration group.",
+                "severity": "p3",
+                "evidence": "conv_state.raw_finding_to_group_map",
+                "why_it_matters": "Duplicate findings should not inflate convergence severity.",
+                "minimal_fix_or_test": "Assert both raw findings map to the same failure-mode group.",
+                "scope_risk": "Low, adapter-local grouping.",
+                "confidence": 0.82,
+                "failure_mode": "missing arbitration proof",
+                "source_provenance": "runner_provided",
+            },
+        ],
+        "side_effects_performed": [],
+    }
 
 
 if __name__ == "__main__":

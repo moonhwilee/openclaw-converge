@@ -317,9 +317,22 @@ EXPECTED_REQUIRED_PACKET_FIELDS = [
     "route_retirement_plan.cleanup_removal_boundary",
     "route_retirement_plan.cleanup_removal_plan",
     "route_retirement_plan.live_route_replacement_readiness_plan",
+    "production_route_parity.status",
+    "production_route_parity.command_adapter_only_evidence_allowed",
+    "production_route_parity.requires_installed_or_fresh_route_context",
     "converge_invocation.argv",
     "blocked_without_approval",
 ]
+
+EXPECTED_PRODUCTION_ROUTE_PARITY = {
+    "status": "not_proven_by_command_adapter",
+    "cli_only_evidence_allowed": False,
+    "command_adapter_only_evidence_allowed": False,
+    "requires_installed_or_fresh_route_context": True,
+    "requires_visible_delivery_proof": True,
+    "requires_single_route_owner_proof": True,
+    "requires_no_duplicate_legacy_report_proof": True,
+}
 
 CLEANUP_REMOVAL_SURFACES: tuple[dict[str, Any], ...] = (
     {
@@ -434,6 +447,7 @@ def build_dry_run_packet(
         },
         "adapter_contract": build_adapter_contract(command=f"/{command}", mode=mode),
         "route_retirement_plan": build_route_retirement_plan(),
+        "production_route_parity": dict(EXPECTED_PRODUCTION_ROUTE_PARITY),
         "converge_invocation": {
             "argv": converge_argv,
             "display": " ".join(_shell_quote(part) for part in converge_argv),
@@ -652,11 +666,14 @@ def validate_dry_run_packet(packet: dict[str, Any]) -> None:
     contract = _expect_mapping(packet, "adapter_contract")
     metadata = _expect_mapping(contract, "command_metadata")
     route_plan = _expect_mapping(packet, "route_retirement_plan")
+    production_route_parity = _expect_mapping(packet, "production_route_parity")
 
     if contract.get("version") != C7_1_CONTRACT_VERSION:
         raise ValueError(f"C7.1 contract version must be {C7_1_CONTRACT_VERSION!r}")
     if contract.get("route_free_flags") != ROUTE_FREE_FLAGS:
         raise ValueError("C7.1 contract route-free flags must match packet route-free flags")
+    if production_route_parity != EXPECTED_PRODUCTION_ROUTE_PARITY:
+        raise ValueError("Phase 6 production route parity must not be claimed by command-adapter evidence")
 
     required_packet_fields = contract.get("required_packet_fields")
     if required_packet_fields != EXPECTED_REQUIRED_PACKET_FIELDS:

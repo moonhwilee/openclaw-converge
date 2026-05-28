@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -13,14 +14,28 @@ from typing import Any
 
 from .acceptance import validate_acceptance_payload
 from .checkpoint import record_checkpoint, validate_evidence_artifact_refs, validate_evidence_object
-from .command_adapter import build_dry_run_packet
+from .command_adapter import EXPECTED_PRODUCTION_ROUTE_PARITY, build_dry_run_packet
 from .continuation import TERMINAL_CONTINUATION_TARGETS, current_cursor, default_continuation_plan
 from .messages import VALID_VERDICTS, lint_verdict_residuals, normalize_residuals, progress_block
 from .modes.conv import CONV_REPORT_ARTIFACT_ID, ConvHandler, ConvRecord, ConvRound, render_conv_report, validate_conv_state
-from .modes.goal import GOAL_PLAN_ARTIFACT_ID, GoalHandler, GoalRecord, render_goal_plan, validate_goal_state
+from .modes.conv_execution import CONV_LOCAL_RUNNER_REF, CONV_ROUND_EXECUTION_ARTIFACT_ID
+from .modes.evidence_contract import validate_phase5a_evidence_contract
+from .modes.goal import (
+    GOAL_PLAN_ARTIFACT_ID,
+    PHASE5B_PARENT_SUMMARY_MODE,
+    PHASE5B_OWNER_WAIVER_MODE,
+    GoalHandler,
+    GoalRecord,
+    phase5b_child_delivery_mode,
+    render_goal_plan,
+    validate_goal_state,
+    validate_phase5b_child_delivery_state,
+)
 from .modes.plan import PlanHandler
 from .modes.verify import VERIFY_REPORT_ARTIFACT_ID, VerifyHandler, VerifyRecord, render_verify_report
+from .modes.specialist_panel import SPECIALIST_REVIEW_RUNNER_REF, load_specialist_packet, specialist_artifact_id, validate_specialist_state
 from .recovery import recover_workflow, scan_workflows, watchdog_check
+from .route_parity import validate_phase6_route_parity_evidence
 from .artifacts import now_iso, record_workflow_artifact, sha256_file, validate_manifest_entry
 from .schema import SchemaError, validate_bundled_schemas, validate_named, validate_next_safe_action
 from .store import WorkflowStore, structured_next_action
@@ -137,6 +152,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
             return 0
     verify = VerifyHandler(store).finalize_verify(
         workflow["workflow_id"],
+        specialist_findings=load_specialist_packet(getattr(args, "structured_findings_file", None)),
         recovery_lease_id=args.recovery_lease_id,
         recovery_lease_holder=args.recovery_lease_holder,
     )
@@ -169,6 +185,7 @@ def cmd_conv(args: argparse.Namespace) -> int:
             return 0
     conv = ConvHandler(store).finalize_conv(
         workflow["workflow_id"],
+        specialist_findings=load_specialist_packet(getattr(args, "structured_findings_file", None)),
         recovery_lease_id=args.recovery_lease_id,
         recovery_lease_holder=args.recovery_lease_holder,
     )
@@ -221,6 +238,222 @@ def cmd_command_dry_run(args: argparse.Namespace) -> int:
             state_root=args.state_root,
         )
     )
+    return 0
+
+
+def _workflow_ids(state_root: Path) -> set[str]:
+    workflows = state_root / "workflows"
+    if not workflows.exists():
+        return set()
+    return {path.name for path in workflows.iterdir() if path.is_dir()}
+
+
+def _run_route_parity_dry_run(
+    *,
+    converge_bin: str | None,
+    state_root: Path,
+    raw_message: str,
+    owner_session_key: str,
+    visible_delivery: dict[str, Any],
+    workflow_id: str,
+) -> dict[str, Any]:
+    if not converge_bin:
+        return build_dry_run_packet(
+            raw_message=raw_message,
+            owner_session_key=owner_session_key,
+            visible_delivery=visible_delivery,
+            workflow_id=workflow_id,
+            state_root=state_root,
+        )
+
+    result = subprocess.run(
+        [
+            converge_bin,
+            "--state-root",
+            str(state_root),
+            "command-dry-run",
+            "--raw-message",
+            raw_message,
+            "--workflow-id",
+            workflow_id,
+            "--owner-session-key",
+            owner_session_key,
+            "--visible-delivery",
+            json.dumps(visible_delivery, ensure_ascii=False, sort_keys=True),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise ValueError(
+            f"route parity dry-run failed for {raw_message!r}: "
+            f"returncode={result.returncode} stdout={result.stdout!r} stderr={result.stderr!r}"
+        )
+    try:
+        packet = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"route parity dry-run returned non-JSON output for {raw_message!r}") from exc
+    if not isinstance(packet, dict):
+        raise ValueError(f"route parity dry-run returned non-object JSON for {raw_message!r}")
+    return packet
+
+
+def _summarize_route_parity_packet(
+    *,
+    packet: dict[str, Any],
+    command: str,
+    expected_mode: str,
+    expected_alias_status: str,
+    owner_session_key: str,
+    visible_delivery: dict[str, Any],
+    state_root: Path,
+    workflows_before: set[str],
+    workflows_after: set[str],
+) -> dict[str, Any]:
+    route = packet.get("route") if isinstance(packet.get("route"), dict) else {}
+    route_free = {
+        "dry_run": packet.get("dry_run") is True,
+        "workflow_created": packet.get("workflow_created") is False,
+        "live_route_changed": packet.get("live_route_changed") is False,
+        "live_traffic_observed": packet.get("live_traffic_observed") is False,
+        "shadow_routing_enabled": packet.get("shadow_routing_enabled") is False,
+        "external_action_performed": packet.get("external_action_performed") is False,
+        "gateway_restart_required": packet.get("gateway_restart_required") is False,
+        "legacy_data_deleted": packet.get("legacy_data_deleted") is False,
+    }
+    metadata = {
+        "command": route.get("current_command") == command,
+        "mode": route.get("converge_mode") == expected_mode,
+        "alias_status": route.get("alias_status") == expected_alias_status,
+        "owner_session": route.get("owner_session_key") == owner_session_key,
+        "visible_delivery": route.get("visible_delivery") == visible_delivery,
+        "state_root": route.get("state_root") == str(state_root),
+    }
+    production_route_parity = {
+        "non_proof_shape": packet.get("production_route_parity") == EXPECTED_PRODUCTION_ROUTE_PARITY,
+    }
+    workflows_unchanged = workflows_before == workflows_after
+    ok = bool(
+        packet.get("ok") is True
+        and all(route_free.values())
+        and all(metadata.values())
+        and all(production_route_parity.values())
+        and workflows_unchanged
+    )
+    return {
+        "ok": ok,
+        "route_free": route_free,
+        "metadata": metadata,
+        "production_route_parity": production_route_parity,
+        "workflow_state_unchanged": workflows_unchanged,
+        "new_workflow_ids": sorted(workflows_after - workflows_before),
+    }
+
+
+def cmd_route_parity_check(args: argparse.Namespace) -> int:
+    if args.visible_delivery:
+        _validate_visible_delivery_arg(args.visible_delivery)
+    owner_session_key = args.owner_session_key or ""
+    if not owner_session_key:
+        print_json({"ok": False, "error": "route-parity-check requires non-empty owner_session_key"})
+        return 2
+    visible_delivery = args.visible_delivery or {}
+    commands = {
+        "/goal": ("goal", "primary", "/goal phase6 route parity smoke"),
+        "/verify": ("verify", "primary", "/verify phase6 route parity smoke"),
+        "/conv": ("conv", "primary", "/conv phase6 route parity smoke"),
+    }
+    alias = ("/converge", "conv", "deprecated_alias", "/converge phase6 alias boundary smoke")
+    results: dict[str, Any] = {}
+    before_all = _workflow_ids(args.state_root)
+    for command, (mode, alias_status, raw_message) in commands.items():
+        before = _workflow_ids(args.state_root)
+        packet = _run_route_parity_dry_run(
+            converge_bin=args.converge_bin,
+            state_root=args.state_root,
+            raw_message=raw_message,
+            owner_session_key=owner_session_key,
+            visible_delivery=visible_delivery,
+            workflow_id=f"phase6-{mode}-dry-run",
+        )
+        after = _workflow_ids(args.state_root)
+        results[command] = _summarize_route_parity_packet(
+            packet=packet,
+            command=command,
+            expected_mode=mode,
+            expected_alias_status=alias_status,
+            owner_session_key=owner_session_key,
+            visible_delivery=visible_delivery,
+            state_root=args.state_root,
+            workflows_before=before,
+            workflows_after=after,
+        )
+
+    alias_command, alias_mode, alias_status, alias_raw = alias
+    before = _workflow_ids(args.state_root)
+    alias_packet = _run_route_parity_dry_run(
+        converge_bin=args.converge_bin,
+        state_root=args.state_root,
+        raw_message=alias_raw,
+        owner_session_key=owner_session_key,
+        visible_delivery=visible_delivery,
+        workflow_id="phase6-converge-alias-dry-run",
+    )
+    after = _workflow_ids(args.state_root)
+    alias_result = _summarize_route_parity_packet(
+        packet=alias_packet,
+        command=alias_command,
+        expected_mode=alias_mode,
+        expected_alias_status=alias_status,
+        owner_session_key=owner_session_key,
+        visible_delivery=visible_delivery,
+        state_root=args.state_root,
+        workflows_before=before,
+        workflows_after=after,
+    )
+    workflows_after_all = _workflow_ids(args.state_root)
+    managed_ok = all(item["ok"] for item in results.values())
+    alias_ok = bool(alias_result["ok"])
+    no_state_creation = before_all == workflows_after_all
+    packet = {
+        "ok": managed_ok and alias_ok and no_state_creation,
+        "phase": "phase6_production_route_parity",
+        "proof_level": "route_dry_run_gate",
+        "production_route_parity_proven": False,
+        "route_change_performed": False,
+        "gateway_restart_performed": False,
+        "external_action_performed": False,
+        "cleanup_or_legacy_removal_performed": False,
+        "converge_bin": args.converge_bin or "current-python-module",
+        "state_root": str(args.state_root),
+        "managed_commands": results,
+        "legacy_alias_boundary": {alias_command: alias_result},
+        "completion_gate": {
+            "ready_for_live_replacement_completion": False,
+            "blocked_until": [
+                "fresh-session exact /goal visible route proof",
+                "fresh-session exact /verify visible route proof",
+                "fresh-session exact /conv visible route proof",
+                "single route owner proof with no duplicate legacy visible report",
+                "reserve-delivery/report-proof/complete-reported proof in the real delivery channel",
+            ],
+        },
+    }
+    print_json(packet)
+    return 0 if packet["ok"] else 1
+
+
+def cmd_route_parity_verify(args: argparse.Namespace) -> int:
+    try:
+        evidence = json.loads(Path(args.evidence_file).read_text(encoding="utf-8"))
+        if not isinstance(evidence, dict):
+            raise ValueError("route parity evidence file must contain a JSON object")
+        result = validate_phase6_route_parity_evidence(evidence, expected_state_root=str(args.state_root))
+    except Exception as exc:
+        print_json({"ok": False, "error": str(exc)})
+        return 1
+    print_json(result)
     return 0
 
 
@@ -349,6 +582,10 @@ def cmd_reserve_delivery(args: argparse.Namespace) -> int:
     _validate_delivery_lease_seconds(args.lease_seconds)
     store = WorkflowStore(args.state_root)
     workflow = store.load_workflow(args.workflow_id)
+    child_report_block = _child_visible_report_block_reason(store, workflow)
+    if child_report_block:
+        print_json(_delivery_no_send_payload(args, reason="duplicate_child_report_guard", terminal_status=workflow.get("status"), error=child_report_block))
+        return 0
     route_mismatch = _delivery_route_mismatch(workflow, args.visible_delivery)
     if route_mismatch:
         print_json(_delivery_no_send_payload(args, reason="visible_delivery_mismatch", error=route_mismatch))
@@ -681,6 +918,16 @@ def cmd_complete_reported(args: argparse.Namespace) -> int:
     _validate_delivery_message_id(args.delivery_message_id)
     _validate_visible_delivery_arg(args.visible_delivery)
     store = WorkflowStore(args.state_root)
+    with store.lock(args.workflow_id):
+        preflight_workflow = store.load_workflow(args.workflow_id)
+        if preflight_workflow.get("kind") == "goal" and preflight_workflow.get("status") in {
+            "completed_unreported",
+            "failed_unreported",
+        }:
+            reported_preflight = json.loads(json.dumps(preflight_workflow))
+            reported_preflight["status"] = "reported"
+            reported_preflight["phase"] = "reported"
+            _validate_reported_goal_child_integrity(store, reported_preflight)
     proof = _record_report_proof(
         store,
         workflow_id=args.workflow_id,
@@ -760,7 +1007,10 @@ def cmd_complete_reported(args: argparse.Namespace) -> int:
             "source_of_truth": "converge.workflow",
         }
         _validate_report_payload(reported_payload, timestamp_key="reported_at", label="report_sent")
-        _apply_reported_transition(workflow, reported_payload)
+        reported_workflow = json.loads(json.dumps(workflow))
+        _apply_reported_transition(reported_workflow, reported_payload)
+        if reported_workflow.get("kind") == "goal":
+            _validate_reported_goal_child_integrity(store, reported_workflow)
         store.append_event(
             args.workflow_id,
             _report_sent_event(
@@ -771,8 +1021,7 @@ def cmd_complete_reported(args: argparse.Namespace) -> int:
             ),
             locked=True,
         )
-        _validate_workflow_integrity(store, workflow, validate_material=False)
-        store.save_workflow(workflow)
+        store.save_workflow(reported_workflow)
     print_json({"ok": True, "workflow_id": args.workflow_id, "status": "reported", "event_id": event_id, "proof": proof})
     return 0
 
@@ -1084,6 +1333,9 @@ def _record_report_proof(
     recorded_at = now_iso()
     with store.lock(workflow_id):
         workflow = store.load_workflow(workflow_id)
+        child_report_block = _child_visible_report_block_reason(store, workflow)
+        if child_report_block:
+            raise ValueError(child_report_block)
         existing = workflow.setdefault("visible_delivery_state", {}).get("report_proof")
         if existing:
             events = _workflow_events(store, workflow_id)
@@ -1467,6 +1719,8 @@ def _validate_workflow_integrity(store: WorkflowStore, workflow: dict[str, Any],
             expected_cursor = checkpoint_index[latest_checkpoint_id].get("cursor_after") or expected_cursor
         if next_cursor != expected_cursor:
             raise ValueError(f"next_safe_action cursor {next_cursor!r} does not match current cursor {expected_cursor!r}")
+    if workflow.get("kind") == "goal" and workflow.get("status") == "reported":
+        _validate_reported_goal_child_integrity(store, workflow)
     if validate_material:
         _validate_plan_state_integrity(workflow)
         _validate_goal_state_integrity(store, workflow)
@@ -1724,9 +1978,16 @@ def _validate_goal_state_integrity(store: WorkflowStore, workflow: dict[str, Any
         for ref in evidence.get("artifact_refs") or []
     ]:
         raise ValueError("terminal goal workflow evidence must reference final_plan_artifact_id")
+    events = _read_workflow_events(store, workflow["workflow_id"])
+    if state.get("execution_performed") is True:
+        _validate_goal_child_execution(store, workflow, state, events=events)
+        validate_phase5b_child_delivery_state(state, terminal=terminal_goal, parent_workflow_id=workflow["workflow_id"])
+        _validate_phase5b_owner_waiver_events(state, events)
+    if terminal_goal:
+        validate_phase5a_evidence_contract("goal", workflow=workflow, state=state)
     plan_accepted_events = [
         event
-        for event in _read_workflow_events(store, workflow["workflow_id"])
+        for event in events
         if event.get("event_type") == "plan_accepted"
     ]
     matching_acceptance = [
@@ -1756,6 +2017,274 @@ def _validate_goal_state_integrity(store: WorkflowStore, workflow: dict[str, Any
     )
     if Path(artifact["path"]).read_text(encoding="utf-8") != expected_plan:
         raise ValueError("goal plan artifact must match goal_state")
+
+
+def _validate_goal_child_execution(
+    store: WorkflowStore,
+    workflow: dict[str, Any],
+    state: dict[str, Any],
+    *,
+    events: list[dict[str, Any]],
+) -> None:
+    refs = state.get("execution_evidence_refs")
+    if not isinstance(refs, list) or not refs:
+        raise ValueError("goal execution_performed=true requires execution_evidence_refs")
+    if state.get("execution_capability") != "child_workflows":
+        raise ValueError("goal execution_performed=true requires child_workflows capability")
+    if state.get("synthetic_report") is not False:
+        raise ValueError("goal execution_performed=true requires synthetic_report=false")
+    if state.get("runner_ref") != "trusted-goal-child-workflow-collector-v1":
+        raise ValueError("goal execution_performed=true has untrusted runner_ref")
+    child_refs = state.get("child_workflow_refs") or []
+    child_ids = [item.get("workflow_id") for item in child_refs if isinstance(item, dict)]
+    _require_unique_strings(refs, "goal execution_evidence_refs")
+    _require_unique_strings(child_ids, "goal child_workflow_refs workflow_id")
+    _require_unique_strings(workflow.get("child_workflow_ids") or [], "goal workflow child_workflow_ids")
+    if sorted(refs) != sorted(child_ids):
+        raise ValueError("goal execution evidence refs must match child_workflow_refs")
+    if sorted(workflow.get("child_workflow_ids") or []) != sorted(child_ids):
+        raise ValueError("goal workflow child_workflow_ids must match child_workflow_refs")
+    linked_child_ids = _workflow_ids_with_parent(store, workflow["workflow_id"])
+    if sorted(linked_child_ids) != sorted(child_ids):
+        raise ValueError("goal parent linked child workflows must match child_workflow_refs")
+    parent_child_event_ids = [
+        (event.get("payload") or {}).get("child_workflow_id")
+        for event in events
+        if event.get("event_type") in {"child_creation_intent", "child_workflow_created", "child_workflow_collected"}
+    ]
+    if any(not isinstance(value, str) or not value for value in parent_child_event_ids):
+        raise ValueError("goal parent child workflow event ids must contain non-empty strings")
+    if not set(parent_child_event_ids).issubset(set(child_ids)):
+        raise ValueError("goal parent child workflow events must match child_workflow_refs")
+    collection = state.get("child_collection_status")
+    if not isinstance(collection, dict) or collection.get("complete") is not True:
+        raise ValueError("goal execution_performed=true requires complete child_collection_status")
+    _require_unique_strings(collection.get("required_child_workflow_ids") or [], "goal child_collection_status required ids")
+    _require_unique_strings(collection.get("collected_child_workflow_ids") or [], "goal child_collection_status collected ids")
+    if sorted(collection.get("required_child_workflow_ids") or []) != sorted(child_ids):
+        raise ValueError("goal child_collection_status required ids must match child refs")
+    if sorted(collection.get("collected_child_workflow_ids") or []) != sorted(child_ids):
+        raise ValueError("goal child_collection_status collected ids must match child refs")
+    collection_children = collection.get("children") or []
+    collection_child_ids = [
+        item.get("workflow_id")
+        for item in collection_children
+        if isinstance(item, dict)
+    ]
+    _require_unique_strings(collection_child_ids, "goal child_collection_status children workflow_id")
+    if sorted(collection_child_ids) != sorted(child_ids):
+        raise ValueError("goal child_collection_status children must match child refs")
+    for child_ref in child_refs:
+        child_id = child_ref["workflow_id"]
+        child = store.load_workflow(child_id)
+        collection_child = next(
+            item
+            for item in collection_children
+            if isinstance(item, dict) and item.get("workflow_id") == child_id
+        )
+        if child.get("parent_workflow_id") != workflow["workflow_id"]:
+            raise ValueError("goal child workflow parent_workflow_id must point to parent")
+        if child.get("kind") != child_ref["kind"]:
+            raise ValueError("goal child workflow kind must match child_workflow_refs")
+        if child.get("owner_session_key") != (workflow.get("owner_session_key") or ""):
+            raise ValueError("goal child workflow owner_session_key must match parent")
+        if child.get("visible_delivery") != (workflow.get("visible_delivery") or {}):
+            raise ValueError("goal child workflow visible_delivery must match parent")
+        if child.get("source_request") != _expected_goal_child_request(workflow, role=child_ref["kind"]):
+            raise ValueError("goal child workflow source_request must match deterministic child request")
+        if child.get("status") not in {"completed_unreported", "failed_unreported", "reported"}:
+            raise ValueError("goal child workflow collection requires terminal child status")
+        terminal_status = child_ref.get("terminal_status")
+        if terminal_status not in {"completed_unreported", "failed_unreported", "reported"}:
+            raise ValueError("goal child workflow terminal_status must be terminal")
+        if child.get("status") != terminal_status and not (
+            child.get("status") == "reported"
+            and terminal_status in {"completed_unreported", "failed_unreported"}
+        ):
+            raise ValueError("goal child workflow terminal_status must match child workflow")
+        result = (child.get("final_status") or {}).get("result")
+        if result != child_ref.get("result"):
+            raise ValueError("goal child workflow result must match child_workflow_refs")
+        expected_status = "completed" if terminal_status in {"completed_unreported", "reported"} and result in {"pass", "pass_with_risks"} else "blocked"
+        if child_ref.get("status") != expected_status:
+            raise ValueError("goal child workflow ref status must match child terminal result")
+        if child_ref.get("final_status") != child.get("final_status"):
+            raise ValueError("goal child workflow ref final_status must match child workflow")
+        expected_evidence_refs = [
+            ref
+            for evidence in (child.get("verification") or {}).get("evidence") or []
+            if isinstance(evidence, dict)
+            for ref in evidence.get("artifact_refs") or []
+        ]
+        if child_ref.get("evidence_refs") != expected_evidence_refs:
+            raise ValueError("goal child workflow ref evidence_refs must match child workflow")
+        intent_events = [
+            event
+            for event in events
+            if event.get("event_type") == "child_creation_intent"
+            and (event.get("payload") or {}).get("child_workflow_id") == child_id
+        ]
+        created_events = [
+            event
+            for event in events
+            if event.get("event_type") == "child_workflow_created"
+            and (event.get("payload") or {}).get("child_workflow_id") == child_id
+        ]
+        collected_events = [
+            event
+            for event in events
+            if event.get("event_type") == "child_workflow_collected"
+            and (event.get("payload") or {}).get("child_workflow_id") == child_id
+        ]
+        if len(intent_events) != 1:
+            raise ValueError("goal requires exactly one child_creation_intent event per child")
+        if len(created_events) != 1:
+            raise ValueError("goal requires exactly one child_workflow_created event per child")
+        if len(collected_events) != 1:
+            raise ValueError("goal requires exactly one child_workflow_collected event per child")
+        event_ids = [event.get("event_id") for event in events]
+        if not (
+            event_ids.index(intent_events[0]["event_id"])
+            < event_ids.index(created_events[0]["event_id"])
+            < event_ids.index(collected_events[0]["event_id"])
+        ):
+            raise ValueError("goal child workflow events must be ordered intent -> created -> collected")
+        intent_payload = intent_events[0].get("payload") or {}
+        created_payload = created_events[0].get("payload") or {}
+        collected_payload = collected_events[0].get("payload") or {}
+        if intent_payload.get("child_role") != child_ref["kind"]:
+            raise ValueError("goal child_creation_intent child_role must match child ref")
+        if intent_payload.get("required_for_parent_completion") is not True:
+            raise ValueError("goal child_creation_intent must mark required_for_parent_completion=true")
+        if created_payload.get("child_role") != child_ref["kind"]:
+            raise ValueError("goal child_workflow_created child_role must match child ref")
+        if created_payload.get("required_for_parent_completion") is not True:
+            raise ValueError("goal child_workflow_created must mark required_for_parent_completion=true")
+        if collected_payload.get("child_role") != child_ref["kind"]:
+            raise ValueError("goal child_workflow_collected child_role must match child ref")
+        if collected_payload.get("terminal_status") != terminal_status:
+            raise ValueError("goal child_workflow_collected terminal_status must match child ref")
+        if collected_payload.get("result") != result:
+            raise ValueError("goal child_workflow_collected result must match child workflow")
+        if collection_child.get("kind") != child_ref["kind"]:
+            raise ValueError("goal child_collection_status child kind must match child ref")
+        if collection_child.get("terminal_status") != terminal_status:
+            raise ValueError("goal child_collection_status child terminal_status must match child ref")
+        if collection_child.get("result") != result:
+            raise ValueError("goal child_collection_status child result must match child workflow")
+        child_linked_events = [
+            event
+            for event in _read_workflow_events(store, child_id)
+            if event.get("event_type") == "parent_linked"
+            and (event.get("payload") or {}).get("parent_workflow_id") == workflow["workflow_id"]
+        ]
+        if len(child_linked_events) != 1:
+            raise ValueError("goal child workflow requires exactly one parent_linked event")
+        child_linked_payload = child_linked_events[0].get("payload") or {}
+        if child_linked_payload.get("child_role") != child_ref["kind"]:
+            raise ValueError("goal child parent_linked child_role must match child ref")
+        if child_linked_payload.get("required_for_parent_completion") is not True:
+            raise ValueError("goal child parent_linked must mark required_for_parent_completion=true")
+        child_delivery_mode = phase5b_child_delivery_mode(state, child_id)
+        if workflow.get("status") == "reported":
+            if child_delivery_mode == PHASE5B_PARENT_SUMMARY_MODE:
+                if child.get("status") == "reported":
+                    raise ValueError("reported goal parent_summary_only child must not be separately reported")
+            elif child_delivery_mode == PHASE5B_OWNER_WAIVER_MODE:
+                if child.get("status") == "reported":
+                    raise ValueError("reported goal waived child must not be separately reported")
+            elif child.get("status") != "reported":
+                raise ValueError("reported goal cannot have unreported required child workflows")
+
+
+def _expected_goal_child_request(parent: dict[str, Any], *, role: str) -> str:
+    text = parent.get("source_request") or parent.get("objective") or ""
+    if role == "verify":
+        return f"Verify required goal child evidence for: {text}"
+    return f"Converge required goal child execution for: {text}"
+
+
+def _workflow_ids_with_parent(store: WorkflowStore, parent_id: str) -> list[str]:
+    workflows_dir = store.root / "workflows"
+    if not workflows_dir.exists():
+        return []
+    linked: list[str] = []
+    for path in workflows_dir.glob("*/workflow.json"):
+        try:
+            workflow = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        if workflow.get("parent_workflow_id") == parent_id:
+            linked.append(workflow.get("workflow_id"))
+    return linked
+
+
+def _require_unique_strings(values: list[Any], label: str) -> None:
+    if any(not isinstance(value, str) or not value for value in values):
+        raise ValueError(f"{label} must contain non-empty strings")
+    if len(values) != len(set(values)):
+        raise ValueError(f"{label} must be unique")
+
+
+def _validate_reported_goal_child_integrity(store: WorkflowStore, workflow: dict[str, Any]) -> None:
+    state = workflow.get("goal_state")
+    if not isinstance(state, dict) or state.get("execution_performed") is not True:
+        return
+    _validate_goal_child_execution(store, workflow, state, events=_read_workflow_events(store, workflow["workflow_id"]))
+
+
+def _validate_phase5b_owner_waiver_events(state: dict[str, Any], events: list[dict[str, Any]]) -> None:
+    transitions = state.get("child_delivery_mode_transitions") or []
+    waiver_transitions = [
+        transition
+        for transition in transitions
+        if isinstance(transition, dict) and transition.get("to_mode") == "waived_with_owner_proof"
+    ]
+    if not waiver_transitions:
+        return
+    events_by_id = {
+        event.get("event_id"): event
+        for event in events
+        if isinstance(event, dict) and isinstance(event.get("event_id"), str)
+    }
+    for transition in waiver_transitions:
+        waiver_ref = transition.get("owner_waiver_ref")
+        event = events_by_id.get(waiver_ref)
+        if not isinstance(event, dict) or event.get("event_type") != "owner_decision":
+            raise ValueError("goal Phase 5B waived child delivery requires matching owner_decision event")
+        payload = event.get("payload") or {}
+        if payload.get("decision") != "waive_child_visible_report":
+            raise ValueError("goal Phase 5B owner waiver decision must waive child visible report")
+        if payload.get("child_workflow_id") != transition.get("workflow_id"):
+            raise ValueError("goal Phase 5B owner waiver child_workflow_id must match transition")
+        if not isinstance(payload.get("reason"), str) or not payload["reason"]:
+            raise ValueError("goal Phase 5B owner waiver requires reason")
+        if not isinstance(payload.get("residual_handling"), str) or not payload["residual_handling"]:
+            raise ValueError("goal Phase 5B owner waiver requires residual_handling")
+
+
+def _child_visible_report_block_reason(store: WorkflowStore, workflow: dict[str, Any]) -> str | None:
+    parent_id = workflow.get("parent_workflow_id")
+    if not isinstance(parent_id, str) or not parent_id:
+        return None
+    if workflow.get("status") not in {"completed_unreported", "failed_unreported"}:
+        return None
+    try:
+        parent = store.load_workflow(parent_id)
+    except FileNotFoundError:
+        return None
+    if parent.get("kind") != "goal":
+        return None
+    state = parent.get("goal_state")
+    if not isinstance(state, dict):
+        return None
+    delivery_mode = phase5b_child_delivery_mode(state, workflow["workflow_id"])
+    if delivery_mode not in {PHASE5B_PARENT_SUMMARY_MODE, PHASE5B_OWNER_WAIVER_MODE}:
+        return None
+    guard = state.get("duplicate_report_guard")
+    if isinstance(guard, dict) and guard.get("parent_must_not_duplicate_child_reports") is True:
+        return f"Phase 5B duplicate_report_guard blocks child visible report under {delivery_mode}"
+    return None
 
 
 def _read_workflow_events(store: WorkflowStore, workflow_id: str) -> list[dict[str, Any]]:
@@ -1820,6 +2349,8 @@ def _validate_verify_state_integrity(store: WorkflowStore, workflow: dict[str, A
         raise ValueError("terminal verify workflow requires evidence")
     if terminal_verify and not any(artifact_id in (evidence.get("artifact_refs") or []) for evidence in state["evidence"] if isinstance(evidence, dict)):
         raise ValueError("terminal verify workflow evidence must reference final_report_artifact_id")
+    if terminal_verify:
+        validate_phase5a_evidence_contract("verify", workflow=workflow, state=state)
     for key in ("target", "verdict", "final_report_summary"):
         if not isinstance(state.get(key), str) or not state.get(key):
             raise ValueError(f"verify_state {key} must be a non-empty string")
@@ -1840,6 +2371,8 @@ def _validate_verify_state_integrity(store: WorkflowStore, workflow: dict[str, A
             raise ValueError("verify_state evidence entries must be objects")
         validate_evidence_object(evidence)
         validate_evidence_artifact_refs(workflow, evidence, worklog_text=worklog_text)
+    if state.get("execution_performed") is True:
+        _validate_verify_execution_evidence(store, workflow, state, worklog_text=worklog_text)
     if terminal_verify:
         report_evidence = [
             evidence
@@ -1860,6 +2393,182 @@ def _validate_verify_state_integrity(store: WorkflowStore, workflow: dict[str, A
         )
         if Path(artifact["path"]).read_text(encoding="utf-8") != expected_report:
             raise ValueError("verify report artifact must match verify_state")
+
+
+def _validate_verify_execution_evidence(
+    store: WorkflowStore,
+    workflow: dict[str, Any],
+    state: dict[str, Any],
+    *,
+    worklog_text: str,
+) -> None:
+    refs = state.get("execution_evidence_refs")
+    if not isinstance(refs, list) or not refs:
+        raise ValueError("verify execution_performed=true requires execution_evidence_refs")
+    if state.get("synthetic_report") is not False:
+        raise ValueError("verify execution_performed=true requires synthetic_report=false")
+    if state.get("execution_capability") == "delegated_agents":
+        _validate_specialist_execution_evidence(store, workflow, state, mode="verify", worklog_text=worklog_text)
+        return
+    if "verify-deterministic-checks" not in refs:
+        raise ValueError("verify execution evidence refs must include verify-deterministic-checks")
+    if state.get("execution_capability") != "local_checks":
+        raise ValueError("verify execution_performed=true requires local_checks capability")
+    deterministic_evidence = [
+        evidence
+        for evidence in state.get("evidence", [])
+        if isinstance(evidence, dict) and "verify-deterministic-checks" in (evidence.get("artifact_refs") or [])
+    ]
+    if not deterministic_evidence:
+        raise ValueError("verify execution_performed=true requires deterministic evidence record")
+    for evidence in deterministic_evidence:
+        validate_evidence_artifact_refs(workflow, evidence, worklog_text=worklog_text)
+    events = _read_workflow_events(store, workflow["workflow_id"])
+    deterministic_events = [
+        event
+        for event in events
+        if event.get("event_type") == "deterministic_check_recorded"
+        and (event.get("payload") or {}).get("artifact_id") == "verify-deterministic-checks"
+    ]
+    if not deterministic_events:
+        raise ValueError("verify execution_performed=true requires deterministic_check_recorded event")
+    if len(deterministic_events) != 1:
+        raise ValueError("verify execution_performed=true requires exactly one deterministic_check_recorded event")
+    payload = deterministic_events[0].get("payload") or {}
+    if payload.get("runner_ref") != "trusted-local-verify-file-inspection-v1":
+        raise ValueError("verify deterministic_check_recorded event has untrusted runner_ref")
+    if payload.get("status") != "pass":
+        raise ValueError("verify deterministic_check_recorded event must record pass status")
+    artifact = next(
+        (
+            item
+            for item in workflow.get("artifacts", [])
+            if isinstance(item, dict) and item.get("artifact_id") == "verify-deterministic-checks"
+        ),
+        None,
+    )
+    if not artifact or artifact.get("kind") != "evidence":
+        raise ValueError("verify execution evidence artifact must be registered as evidence")
+    artifact_payload = json.loads(Path(artifact["path"]).read_text(encoding="utf-8"))
+    if artifact_payload.get("runner_ref") != payload.get("runner_ref"):
+        raise ValueError("verify execution evidence artifact runner_ref must match event")
+    checks = artifact_payload.get("checks")
+    if not isinstance(checks, list) or not checks:
+        raise ValueError("verify execution evidence artifact must contain checks")
+    if payload.get("check_count") != len(checks):
+        raise ValueError("verify deterministic_check_recorded check_count must match evidence artifact")
+    if any(not isinstance(check, dict) or check.get("status") != "pass" for check in checks):
+        raise ValueError("verify deterministic evidence checks must all pass")
+    for check in checks:
+        if check.get("kind") != "file_inspection":
+            raise ValueError("verify deterministic evidence checks must be file inspections")
+        path = check.get("path")
+        if not isinstance(path, str) or not path:
+            raise ValueError("verify deterministic evidence check path must be non-empty")
+        target_path = Path(path)
+        if not target_path.is_file():
+            raise ValueError("verify deterministic evidence check path is missing")
+        if sha256_file(target_path) != check.get("sha256"):
+            raise ValueError("verify deterministic evidence check hash is stale")
+
+
+def _validate_specialist_execution_evidence(
+    store: WorkflowStore,
+    workflow: dict[str, Any],
+    state: dict[str, Any],
+    *,
+    mode: str,
+    worklog_text: str | None = None,
+) -> None:
+    artifact_id = specialist_artifact_id(mode)
+    refs = state.get("execution_evidence_refs")
+    if not isinstance(refs, list) or artifact_id not in refs:
+        raise ValueError(f"{mode} specialist execution evidence refs must include {artifact_id}")
+    if state.get("runner_ref") != SPECIALIST_REVIEW_RUNNER_REF:
+        raise ValueError(f"{mode} specialist execution has untrusted runner_ref")
+    specialist_state = _specialist_state_from_mode_state(state)
+    validate_specialist_state(specialist_state)
+    evidence = [
+        item
+        for item in state.get("evidence", [])
+        if isinstance(item, dict) and artifact_id in (item.get("artifact_refs") or [])
+    ]
+    if len(evidence) != 1:
+        raise ValueError(f"{mode} specialist execution requires exactly one specialist evidence record")
+    if worklog_text is not None:
+        validate_evidence_artifact_refs(workflow, evidence[0], worklog_text=worklog_text)
+    artifacts = [
+        item
+        for item in workflow.get("artifacts", [])
+        if isinstance(item, dict) and item.get("artifact_id") == artifact_id
+    ]
+    if len(artifacts) != 1 or artifacts[0].get("kind") != "evidence":
+        raise ValueError(f"{mode} specialist execution artifact must be registered exactly once as evidence")
+    artifact_payload = json.loads(Path(artifacts[0]["path"]).read_text(encoding="utf-8"))
+    if artifact_payload.get("specialist_review") != specialist_state:
+        raise ValueError(f"{mode} specialist artifact must match mode state")
+    events = _read_workflow_events(store, workflow["workflow_id"])
+    for event_type in ("agent_panel_requested", "agent_findings_recorded", "finding_arbitrated"):
+        matches = [
+            event
+            for event in events
+            if event.get("event_type") == event_type
+            and (event.get("payload") or {}).get("artifact_id") == artifact_id
+        ]
+        if len(matches) != 1:
+            raise ValueError(f"{mode} specialist execution requires exactly one {event_type} event")
+        payload = matches[0].get("payload") or {}
+        if payload.get("runner_ref") != SPECIALIST_REVIEW_RUNNER_REF:
+            raise ValueError(f"{mode} specialist event has untrusted runner_ref")
+        if payload.get("mode") != mode:
+            raise ValueError(f"{mode} specialist event mode must match")
+        if payload.get("finding_count") != len(specialist_state["agent_finding_refs"]):
+            raise ValueError(f"{mode} specialist event finding_count must match state")
+        if payload.get("arbitration_count") != len(specialist_state["finding_arbitration"]):
+            raise ValueError(f"{mode} specialist event arbitration_count must match state")
+        if payload.get("profile_registry_ids") != [item["profile_id"] for item in specialist_state["profile_registry_refs"]]:
+            raise ValueError(f"{mode} specialist event profile_registry_ids must match state")
+        if payload.get("profile_registry_hashes") != [item["context_hash"] for item in specialist_state["profile_registry_refs"]]:
+            raise ValueError(f"{mode} specialist event profile_registry_hashes must match state")
+        if payload.get("request_ids") != [item["request_id"] for item in specialist_state["agent_request_refs"]]:
+            raise ValueError(f"{mode} specialist event request_ids must match state")
+        if payload.get("result_ids") != [item["result_id"] for item in specialist_state["agent_result_refs"]]:
+            raise ValueError(f"{mode} specialist event result_ids must match state")
+        if payload.get("idempotency_keys") != specialist_state["agent_result_idempotency_keys"]:
+            raise ValueError(f"{mode} specialist event idempotency_keys must match state")
+        collection_status = specialist_state["agent_result_collection_status"]
+        if payload.get("collection_status") != collection_status["status"]:
+            raise ValueError(f"{mode} specialist event collection_status must match state")
+        if payload.get("collection_cursor") != collection_status["collection_cursor"]:
+            raise ValueError(f"{mode} specialist event collection_cursor must match state")
+        if payload.get("recovery_resume_cursor") != specialist_state["recovery_resume_cursor"]:
+            raise ValueError(f"{mode} specialist event recovery_resume_cursor must match state")
+
+
+def _specialist_state_from_mode_state(state: dict[str, Any]) -> dict[str, Any]:
+    return {key: state[key] for key in (
+        "review_panel_spec",
+        "deterministic_check_results",
+        "agent_finding_refs",
+        "raw_finding_to_group_map",
+        "finding_arbitration",
+        "accepted_change_refs",
+        "original_target_gate",
+        "delta_regression_gate",
+        "follow_up_round_required",
+        "max_rounds_default",
+        "max_rounds",
+        "round_index",
+        "stop_reason",
+        "owner_stop_ref",
+        "round_stop_proof",
+        "profile_registry_refs",
+        "agent_request_refs",
+        "agent_result_refs",
+        "agent_result_idempotency_keys",
+        "agent_result_collection_status",
+        "recovery_resume_cursor",
+    )}
 
 
 def _validate_conv_state_integrity(store: WorkflowStore, workflow: dict[str, Any]) -> None:
@@ -1900,6 +2609,8 @@ def _validate_conv_state_integrity(store: WorkflowStore, workflow: dict[str, Any
         for ref in evidence.get("artifact_refs") or []
     ]:
         raise ValueError("terminal conv workflow evidence must reference final_report_artifact_id")
+    if terminal_conv:
+        validate_phase5a_evidence_contract("conv", workflow=workflow, state=state)
     expected_report = render_conv_report(
         ConvRecord(
             target=state["target"],
@@ -1927,6 +2638,112 @@ def _validate_conv_state_integrity(store: WorkflowStore, workflow: dict[str, Any
     )
     if Path(artifact["path"]).read_text(encoding="utf-8") != expected_report:
         raise ValueError("conv report artifact must match conv_state")
+    if state.get("execution_performed") is True:
+        _validate_conv_execution_evidence(store, workflow, state)
+
+
+def _validate_conv_execution_evidence(store: WorkflowStore, workflow: dict[str, Any], state: dict[str, Any]) -> None:
+    refs = state.get("execution_evidence_refs")
+    if not isinstance(refs, list) or not refs:
+        raise ValueError("conv execution_performed=true requires execution_evidence_refs")
+    if state.get("execution_capability") == "delegated_agents":
+        _validate_specialist_execution_evidence(store, workflow, state, mode="conv")
+        return
+    if CONV_ROUND_EXECUTION_ARTIFACT_ID not in refs:
+        raise ValueError("conv execution evidence refs must include conv-round-execution")
+    if state.get("execution_capability") != "local_rounds":
+        raise ValueError("conv execution_performed=true requires local_rounds capability")
+    if state.get("synthetic_report") is not False:
+        raise ValueError("conv execution_performed=true requires synthetic_report=false")
+    if state.get("runner_ref") != CONV_LOCAL_RUNNER_REF:
+        raise ValueError("conv execution_performed=true has untrusted runner_ref")
+    artifacts = [
+        artifact
+        for artifact in workflow.get("artifacts", [])
+        if isinstance(artifact, dict) and artifact.get("artifact_id") == CONV_ROUND_EXECUTION_ARTIFACT_ID
+    ]
+    if len(artifacts) != 1:
+        raise ValueError("conv execution evidence artifact must be registered exactly once")
+    artifact = artifacts[0]
+    if artifact.get("kind") != "evidence":
+        raise ValueError("conv execution evidence artifact must be registered as evidence")
+    artifact_payload = json.loads(Path(artifact["path"]).read_text(encoding="utf-8"))
+    if artifact_payload.get("runner_ref") != CONV_LOCAL_RUNNER_REF:
+        raise ValueError("conv execution evidence artifact has untrusted runner_ref")
+    artifact_rounds = artifact_payload.get("rounds")
+    if not isinstance(artifact_rounds, list) or not artifact_rounds:
+        raise ValueError("conv execution evidence artifact must contain rounds")
+    if len(artifact_rounds) != state.get("round_count"):
+        raise ValueError("conv execution evidence round_count must match conv_state")
+    for artifact_round, state_round in zip(artifact_rounds, state.get("rounds") or [], strict=True):
+        for key in (
+            "round_index",
+            "target_ref",
+            "original_target_gate",
+            "delta_gate",
+            "findings",
+            "material_changes",
+            "follow_up_required",
+            "evidence_sufficient",
+            "summary",
+        ):
+            if artifact_round.get(key) != state_round.get(key):
+                raise ValueError("conv execution evidence rounds must match conv_state")
+        checks = artifact_round.get("target_checks")
+        if not isinstance(checks, list) or not checks:
+            raise ValueError("conv execution evidence round must contain target_checks")
+        if any(not isinstance(check, dict) or check.get("status") != "pass" for check in checks):
+            raise ValueError("conv execution evidence target checks must all pass")
+        for check in checks:
+            if check.get("kind") != "file_inspection":
+                raise ValueError("conv execution evidence target checks must be file inspections")
+            path = check.get("path")
+            if not isinstance(path, str) or not path:
+                raise ValueError("conv execution evidence target check path must be non-empty")
+            target_path = Path(path)
+            if not target_path.is_file():
+                raise ValueError("conv execution evidence target check path is missing")
+            if sha256_file(target_path) != check.get("sha256"):
+                raise ValueError("conv execution evidence target check hash is stale")
+    events = _read_workflow_events(store, workflow["workflow_id"])
+    for round_state in state.get("rounds") or []:
+        round_index = round_state["round_index"]
+        starts = [
+            event
+            for event in events
+            if event.get("event_type") == "round_start"
+            and (event.get("payload") or {}).get("artifact_id") == CONV_ROUND_EXECUTION_ARTIFACT_ID
+            and (event.get("payload") or {}).get("round_index") == round_index
+        ]
+        summaries = [
+            event
+            for event in events
+            if event.get("event_type") == "round_summary"
+            and (event.get("payload") or {}).get("artifact_id") == CONV_ROUND_EXECUTION_ARTIFACT_ID
+            and (event.get("payload") or {}).get("round_index") == round_index
+        ]
+        if len(starts) != 1:
+            raise ValueError("conv execution_performed=true requires exactly one round_start event per round")
+        if len(summaries) != 1:
+            raise ValueError("conv execution_performed=true requires exactly one round_summary event per round")
+        start_payload = starts[0].get("payload") or {}
+        summary_payload = summaries[0].get("payload") or {}
+        if start_payload.get("runner_ref") != CONV_LOCAL_RUNNER_REF:
+            raise ValueError("conv round_start event has untrusted runner_ref")
+        if start_payload.get("target_ref") != round_state["target_ref"]:
+            raise ValueError("conv round_start target_ref must match conv_state")
+        if start_payload.get("original_target_gate") != round_state["original_target_gate"]:
+            raise ValueError("conv round_start original_target_gate must match conv_state")
+        if summary_payload.get("runner_ref") != CONV_LOCAL_RUNNER_REF:
+            raise ValueError("conv round_summary event has untrusted runner_ref")
+        if summary_payload.get("status") != "pass":
+            raise ValueError("conv round_summary event must record pass status")
+        if summary_payload.get("material_changes") != round_state["material_changes"]:
+            raise ValueError("conv round_summary material_changes must match conv_state")
+        if summary_payload.get("follow_up_required") != round_state["follow_up_required"]:
+            raise ValueError("conv round_summary follow_up_required must match conv_state")
+        if summary_payload.get("evidence_sufficient") != round_state["evidence_sufficient"]:
+            raise ValueError("conv round_summary evidence_sufficient must match conv_state")
 
 
 def _validate_report_event_integrity(
@@ -2071,6 +2888,7 @@ def build_parser() -> argparse.ArgumentParser:
     verify.add_argument("--workflow-id")
     verify.add_argument("--owner-session-key")
     verify.add_argument("--visible-delivery", type=parse_json)
+    verify.add_argument("--structured-findings-file")
     verify.add_argument("--recovery-lease-id")
     verify.add_argument("--recovery-lease-holder")
     verify.add_argument("--json", action="store_true", help=json_help)
@@ -2091,6 +2909,7 @@ def build_parser() -> argparse.ArgumentParser:
     conv.add_argument("--workflow-id")
     conv.add_argument("--owner-session-key")
     conv.add_argument("--visible-delivery", type=parse_json)
+    conv.add_argument("--structured-findings-file")
     conv.add_argument("--recovery-lease-id")
     conv.add_argument("--recovery-lease-holder")
     conv.add_argument("--json", action="store_true", help=json_help)
@@ -2103,6 +2922,18 @@ def build_parser() -> argparse.ArgumentParser:
     command_dry_run.add_argument("--visible-delivery", type=parse_json)
     command_dry_run.add_argument("--json", action="store_true", help=json_help)
     command_dry_run.set_defaults(func=cmd_command_dry_run)
+
+    route_parity_check = sub.add_parser("route-parity-check")
+    route_parity_check.add_argument("--converge-bin")
+    route_parity_check.add_argument("--owner-session-key")
+    route_parity_check.add_argument("--visible-delivery", type=parse_json)
+    route_parity_check.add_argument("--json", action="store_true", help=json_help)
+    route_parity_check.set_defaults(func=cmd_route_parity_check)
+
+    route_parity_verify = sub.add_parser("route-parity-verify")
+    route_parity_verify.add_argument("--evidence-file", required=True)
+    route_parity_verify.add_argument("--json", action="store_true", help=json_help)
+    route_parity_verify.set_defaults(func=cmd_route_parity_verify)
 
     status = sub.add_parser("status")
     status.add_argument("--workflow-id", required=True)

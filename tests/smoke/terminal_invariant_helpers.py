@@ -16,7 +16,7 @@ def finalize_mode(state_root: Path, *, kind: str, workflow_id: str) -> dict[str,
     return run(
         kind,
         "--text",
-        f"Terminal invariant fixture for {kind}",
+        f"plan-only Terminal invariant fixture for {kind}",
         "--workflow-id",
         workflow_id,
         "--owner-session-key",

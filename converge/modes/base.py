@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from copy import deepcopy
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -164,6 +165,7 @@ class ModeHandler:
 
     def record_outcome(self, workflow_id: str, outcome: ModeOutcome) -> dict[str, Any]:
         workflow = self.load_workflow(workflow_id)
+        outcome = _apply_execution_terminal_gate(workflow, outcome)
         _validate_current_status(workflow, outcome)
         cursor_before = current_cursor(workflow)
         return record_checkpoint(
@@ -231,6 +233,164 @@ def _validate_current_status(workflow: dict[str, Any], outcome: ModeOutcome) -> 
     status = workflow.get("status")
     if status in {"completed_unreported", "failed_unreported", "reported", "abandoned"}:
         raise ValueError(f"mode outcomes cannot continue workflow in terminal status: {status!r}")
+
+
+EXECUTION_GATED_KINDS = {"goal", "verify", "conv"}
+SUCCESS_FINAL_RESULTS = {"pass", "pass_with_risks"}
+EXECUTION_TRUTH_FIELDS = ("execution_required", "execution_performed", "synthetic_report")
+
+
+def apply_execution_truth_block(
+    kind: str,
+    state: dict[str, Any],
+    *,
+    residuals: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], dict[str, list[str]], str | None]:
+    """Return a blocked mode state when terminal success lacks execution proof."""
+
+    blocked_state = deepcopy(state)
+    blockers = _execution_gate_blockers(kind, blocked_state)
+    normalized_residuals = normalize_residuals(residuals or blocked_state.get("residuals"))
+    if not blockers:
+        return blocked_state, normalized_residuals, None
+
+    reason = _execution_block_reason(kind, blocked_state)
+    normalized_residuals["blocking_remaining"] = _unique([*normalized_residuals["blocking_remaining"], *blockers])
+    blocked_state["residuals"] = normalized_residuals
+    _mark_mode_state_blocked(kind, blocked_state, reason)
+    return blocked_state, normalized_residuals, reason
+
+
+def execution_blocked_final_status(kind: str, reason: str, residuals: dict[str, list[str]]) -> dict[str, Any]:
+    return {
+        "result": "blocked",
+        "stop_reason": reason,
+        "done": [
+            "Recorded scaffold or synthetic mode output",
+            "Applied the shared execution truth gate before terminal success",
+        ],
+        "checked": [
+            "execution_required/execution_performed/synthetic_report markers",
+            "No trusted runner evidence recorded for this workflow",
+            "Visible delivery remains gated by reserve-delivery/report-proof/complete-reported",
+        ],
+        "residuals": residuals,
+    }
+
+
+def _apply_execution_terminal_gate(workflow: dict[str, Any], outcome: ModeOutcome) -> ModeOutcome:
+    """Block scaffold or synthetic terminal success for execution-required modes."""
+
+    kind = workflow.get("kind")
+    if kind not in EXECUTION_GATED_KINDS:
+        return outcome
+    if outcome.checkpoint_type != "terminal" or outcome.event_type != "complete":
+        return outcome
+    final_status = outcome.final_status or {}
+    if final_status.get("result") not in SUCCESS_FINAL_RESULTS:
+        return outcome
+
+    active_state = outcome.mode_state_update or workflow.get(f"{kind}_state") or {}
+    has_mode_state = bool(active_state)
+    state, residuals, reason = apply_execution_truth_block(kind, active_state, residuals=outcome.residuals)
+    if reason is None:
+        return outcome
+    mode_state_update = None
+    if has_mode_state:
+        mode_state_update = state
+
+    return replace(
+        outcome,
+        summary=f"{kind} terminal success blocked because execution evidence is missing.",
+        status_after="failed_unreported",
+        event_type="fail",
+        residuals=residuals,
+        mode_state_update=mode_state_update,
+        final_status=execution_blocked_final_status(kind, reason, residuals),
+        failure_reason=reason,
+    )
+
+
+def _execution_gate_blockers(kind: str, state: dict[str, Any]) -> list[str]:
+    blockers: list[str] = []
+    missing = [field for field in EXECUTION_TRUTH_FIELDS if field not in state]
+    if missing:
+        blockers.append(f"Missing execution truth markers: {', '.join(missing)}.")
+        return blockers
+
+    execution_required = state.get("execution_required")
+    execution_performed = state.get("execution_performed")
+    synthetic_report = state.get("synthetic_report")
+    if execution_required is not False and execution_required is not True:
+        blockers.append("execution_required must be explicit true or false.")
+    if execution_performed is not False and execution_performed is not True:
+        blockers.append("execution_performed must be explicit true or false.")
+    if synthetic_report is not False and synthetic_report is not True:
+        blockers.append("synthetic_report must be explicit true or false.")
+    if blockers:
+        return blockers
+
+    if execution_required is True and execution_performed is not True:
+        blockers.append("Execution is required but no trusted runner evidence set execution_performed=true.")
+    if execution_required is True and execution_performed is True and not state.get("execution_evidence_refs"):
+        blockers.append("Execution was marked performed without execution evidence refs.")
+    if synthetic_report is True and execution_required is not False:
+        blockers.append("Synthetic or scaffold report cannot complete an execution-required workflow.")
+    if kind == "goal" and execution_required is True:
+        planned_refs = [
+            item.get("workflow_id", "<unknown>")
+            for item in state.get("child_workflow_refs", [])
+            if isinstance(item, dict) and item.get("status") == "planned_reference"
+        ]
+        if planned_refs:
+            blockers.append(f"Goal child workflows are planned references only: {', '.join(planned_refs)}.")
+    if (
+        kind == "conv"
+        and execution_required is True
+        and state.get("evidence_sufficient") is True
+        and (execution_performed is not True or synthetic_report is not False or not state.get("execution_evidence_refs"))
+    ):
+        blockers.append("Convergence evidence sufficiency is synthetic until a real round runner records execution proof.")
+    return blockers
+
+
+def _execution_block_reason(kind: str, state: dict[str, Any]) -> str:
+    if any(field not in state for field in EXECUTION_TRUTH_FIELDS):
+        return "blocked_missing_execution_truth_markers"
+    if kind == "goal" and any(
+        isinstance(item, dict) and item.get("status") == "planned_reference"
+        for item in state.get("child_workflow_refs", [])
+    ):
+        return "blocked_child_workflows_not_run"
+    return "blocked_no_execution_evidence"
+
+
+def _mark_mode_state_blocked(kind: str, state: dict[str, Any], reason: str) -> None:
+    state["execution_blocked"] = True
+    state["execution_block_reason"] = reason
+    if kind == "verify":
+        state["verdict"] = "blocked"
+        state["final_report_summary"] = "Verification is blocked because required execution evidence is missing."
+    elif kind == "conv":
+        state["stop_condition"] = reason
+        state["stop_reason"] = reason
+        state["evidence_sufficient"] = False
+        state["final_report_summary"] = "Convergence is blocked because required round execution evidence is missing."
+    elif kind == "goal":
+        if reason == "blocked_child_workflows_not_run":
+            state["final_report_summary"] = "Goal execution is blocked because child workflows were not run."
+        else:
+            state["final_report_summary"] = "Goal execution is blocked because required execution truth markers are missing."
+
+
+def _unique(items: list[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        if item not in seen:
+            result.append(item)
+            seen.add(item)
+    return result
 
 
 def _parse_utc(value: Any) -> datetime:

@@ -113,6 +113,10 @@ def main() -> None:
         result = route_parity_verify(state_root, evidence_file)
         assert_true(result["ok"] is True, "valid fresh-route evidence should pass")
         assert_true(
+            result["fresh_route_evidence_bundle_shape_valid"] is True,
+            "fresh-route evidence bundle should expose shape-only validity",
+        )
+        assert_true(
             result["fresh_route_evidence_bundle_valid"] is True,
             "fresh-route evidence bundle should validate shape and internal binding",
         )

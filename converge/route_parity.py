@@ -164,6 +164,7 @@ def validate_phase6_route_parity_evidence(evidence: dict[str, Any], *, expected_
         "proof_level": "fresh_route_evidence_bundle",
         "verified_scope": "evidence_bundle_shape_and_internal_binding",
         "managed_commands": MANAGED_COMMANDS,
+        "fresh_route_evidence_bundle_shape_valid": True,
         "fresh_route_evidence_bundle_valid": True,
         "production_route_parity_proven": False,
         "completion_gate": {

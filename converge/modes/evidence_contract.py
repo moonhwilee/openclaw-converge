@@ -49,6 +49,7 @@ def validate_phase5a_evidence_contract(kind: str, *, workflow: dict[str, Any], s
     if contract.get("terminal_status") != _terminal_status(kind, state, workflow=workflow):
         raise ValueError(f"{kind} Phase 5A terminal status contract is stale")
     current_accepted_changes = _accepted_change_ids(state)
+    terminal_status = contract.get("terminal_status")
     if freshness.get("accepted_change_ids") != current_accepted_changes:
         raise ValueError(f"{kind} Phase 5A evidence freshness accepted changes are stale")
     if freshness.get("fresh") is not True:
@@ -67,7 +68,7 @@ def validate_phase5a_evidence_contract(kind: str, *, workflow: dict[str, Any], s
         if not _required_kind_matches_entry(item.get("evidence_kind"), entry):
             raise ValueError(f"{kind} Phase 5A required evidence kind is stale: {gate_id!r}")
         produced_after = entry.get("produced_after_change_refs") or []
-        if any(change_id not in produced_after for change_id in current_accepted_changes):
+        if _terminal_status_requires_fresh_post_change_evidence(terminal_status) and any(change_id not in produced_after for change_id in current_accepted_changes):
             raise ValueError(f"{kind} Phase 5A evidence predates accepted material changes: {gate_id!r}")
         stale_if = entry.get("stale_if_change_refs") or []
         if any(change_id in stale_if for change_id in current_accepted_changes):
@@ -107,7 +108,7 @@ def _evidence_map(workflow: dict[str, Any], evidence_entries: list[dict[str, Any
     }
     entries: dict[str, dict[str, Any]] = {}
     for evidence in evidence_entries:
-        produced_after = _accepted_change_ids(state)
+        produced_after = _produced_after_change_refs(evidence)
         for ref in evidence.get("artifact_refs") or []:
             artifact = artifacts.get(ref)
             gate_id = f"terminal:{ref}" if evidence.get("kind") in {"artifact", "report"} else f"evidence:{ref}"
@@ -132,7 +133,7 @@ def _evidence_map(workflow: dict[str, Any], evidence_entries: list[dict[str, Any
                 "workflow_ref": None if artifact else ref,
                 "artifact_hash_or_revision": artifact.get("sha256") if artifact else f"workflow-ref:{ref}",
                 "round_id": state.get("round_index") or state.get("round_count"),
-                "produced_after_change_refs": _accepted_change_ids(state),
+                "produced_after_change_refs": _produced_after_change_refs({"artifact_refs": [ref]}),
                 "valid_for_stop_status": True,
                 "stale_if_change_refs": [],
             }
@@ -144,7 +145,7 @@ def _evidence_map(workflow: dict[str, Any], evidence_entries: list[dict[str, Any
                 "artifact_ref": ref,
                 "artifact_hash_or_revision": artifact.get("sha256") if artifact else f"workflow-ref:{ref}",
                 "round_id": state.get("round_index") or state.get("round_count"),
-                "produced_after_change_refs": _accepted_change_ids(state),
+                "produced_after_change_refs": _produced_after_change_refs({"artifact_refs": [ref]}),
                 "valid_for_stop_status": True,
                 "stale_if_change_refs": [],
             }
@@ -190,6 +191,17 @@ def _accepted_change_ids(state: dict[str, Any]) -> list[str]:
         for item in state.get("accepted_change_refs") or []
         if isinstance(item, dict) and (item.get("change_ref") or item.get("accepted_change_id"))
     ]
+
+
+def _produced_after_change_refs(evidence: dict[str, Any]) -> list[str]:
+    refs = evidence.get("produced_after_change_refs")
+    if not isinstance(refs, list):
+        return []
+    return [item for item in refs if isinstance(item, str) and item]
+
+
+def _terminal_status_requires_fresh_post_change_evidence(terminal_status: Any) -> bool:
+    return terminal_status in {"pass", "pass_with_risks", "evidence_sufficient"}
 
 
 def _terminal_status(kind: str, state: dict[str, Any], *, workflow: dict[str, Any]) -> str:

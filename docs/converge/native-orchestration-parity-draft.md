@@ -62,7 +62,7 @@ What exists in the current Phase C implementation:
 - `/verify` has an explicit opt-in OpenClaw CLI native panel path.
 - `/conv` has the same explicit opt-in OpenClaw CLI native panel path for a
   single bounded specialist round.
-- Each `/verify` native CLI child uses an explicit `agent:converge:<workflow>`
+- Each `/verify` native CLI child uses an explicit `agent:main:converge-<workflow>`
   style `session_key`.
 - Native CLI child output is accepted only when the child reports passed
   tool-smoke evidence bound to that exact explicit session ref.

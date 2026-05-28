@@ -386,7 +386,7 @@ def main() -> int:
         assert_true(len(native_state["agent_request_refs"]) == 3, "native verify should launch exactly three child requests")
         assert_true(len(native_state["agent_result_refs"]) == 3, "native verify should collect one result per child")
         assert_true(
-            all(item["session_key"].startswith("agent:converge:") for item in native_state["agent_request_refs"]),
+            all(item["session_key"].startswith("agent:main:converge-") for item in native_state["agent_request_refs"]),
             "native verify should persist explicit child session keys",
         )
         assert_true(
@@ -517,7 +517,7 @@ def main() -> int:
         write_workflow(state_root, "verify-native-panel", native_verify)
 
         tampered_cli = json.loads(json.dumps(native_cli_verify["workflow"]))
-        tampered_cli["verify_state"]["agent_result_refs"][0]["tool_smoke_evidence"]["session_store_proof"]["session_key"] = "agent:converge:other"
+        tampered_cli["verify_state"]["agent_result_refs"][0]["tool_smoke_evidence"]["session_store_proof"]["session_key"] = "agent:main:converge-other"
         write_workflow(state_root, "verify-native-cli-panel", tampered_cli)
         tampered_cli_result = run_fail("validate", "--workflow-id", "verify-native-cli-panel", state_root=state_root)
         assert_true(
@@ -1394,10 +1394,10 @@ if len(sys.argv) > 1 and sys.argv[1:3] == ["sessions", "--json"]:
         for workflow_id in workflow_ids:
             for index in range(1, 4):
                 sessions.append({{
-                    "key": f"agent:converge:{{workflow_id}}-{{index}}",
+                    "key": f"agent:main:converge-{{workflow_id}}-{{index}}",
                     "sessionId": f"fake-session-{{workflow_id}}-{{index}}",
                     "updatedAt": 1779981795923 + index,
-                    "agentId": "converge",
+                    "agentId": "main",
                     "kind": "spawn-child",
                 }})
     print(json.dumps({{"sessions": sessions}}, sort_keys=True))

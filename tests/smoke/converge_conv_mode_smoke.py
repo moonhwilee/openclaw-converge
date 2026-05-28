@@ -1324,7 +1324,7 @@ def assert_conv_records_native_specialist_panel(state_root: Path) -> None:
     assert_true(len(native_state["agent_request_refs"]) == 3, "native conv should launch exactly three child requests")
     assert_true(len(native_state["agent_result_refs"]) == 3, "native conv should collect one result per child")
     assert_true(
-        all(item["session_key"].startswith("agent:converge:") for item in native_state["agent_request_refs"]),
+        all(item["session_key"].startswith("agent:main:converge-") for item in native_state["agent_request_refs"]),
         "native conv should persist explicit child session keys",
     )
     assert_true(

@@ -732,7 +732,7 @@ def assert_goal_collects_native_child_panel_evidence(state_root: Path) -> None:
     assert_phase5a_contract(wf, "goal_state")
 
     forged = json.loads(json.dumps(wf))
-    forged["goal_state"]["child_workflow_refs"][0]["native_agent_panel_proof"]["session_keys"][0] = "agent:converge:forged"
+    forged["goal_state"]["child_workflow_refs"][0]["native_agent_panel_proof"]["session_keys"][0] = "agent:main:converge-forged"
     persist_goal_state(state_root, "goal-native-child-panel", forged)
     result = run_fail("validate", "--workflow-id", "goal-native-child-panel", state_root=state_root)
     assert_true("native_agent_panel_proof" in result["error"], "goal validate should reject forged parent native proof")
@@ -811,7 +811,7 @@ def assert_goal_collects_native_child_panel_evidence(state_root: Path) -> None:
             "goal CLI native proof should preserve per-result trajectory proof",
         )
         assert_true(
-            all(session_key.startswith("agent:converge:") for session_key in proof["session_keys"]),
+            all(session_key.startswith("agent:main:converge-") for session_key in proof["session_keys"]),
             "goal CLI native proof should expose explicit native child session keys",
         )
     run("validate", "--workflow-id", cli_workflow_id, state_root=state_root)

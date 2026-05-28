@@ -1188,7 +1188,7 @@ def _native_conv_requests(*, workflow_id: str, target: str) -> list[NativeLaunch
             idempotency_key=stable_hash({"workflow_id": workflow_id, "profile_ref": profile_ref, "round": 1}),
             output_schema={"schema_ref": "structured_specialist_finding.v1"},
             tool_policy=dict(DEFAULT_TOOL_POLICY),
-            session_key=f"agent:converge:{workflow_id}-{index + 1}",
+            session_key=f"agent:main:converge-{workflow_id}-{index + 1}",
             request_id=f"conv-native-{workflow_id}-{index + 1}",
             profile_context_refs=[{"kind": "native_profile", "id": profile_ref}],
         )

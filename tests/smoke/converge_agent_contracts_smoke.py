@@ -478,6 +478,10 @@ def assert_openclaw_cli_backend_uses_explicit_session_and_structured_result() ->
         '"session_key": "agent:main:child-a"' in prompt and '"agent_session_ref": "agent:main:child-a"' in prompt,
         "child prompt should provide exact session refs for tool-smoke evidence",
     )
+    assert_true(
+        "at least one structured finding" in prompt and "p3 informational finding" in prompt,
+        "child prompt should make native finding shape explicit",
+    )
 
     missing_smoke = subprocess.CompletedProcess(
         ["openclaw"],

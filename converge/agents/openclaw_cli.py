@@ -291,7 +291,12 @@ def build_child_prompt(request: NativeLaunchRequest) -> str:
         "after an allowed file or artifact read and a harmless status/shell "
         "check when shell is in scope. tool_smoke_evidence must include status, "
         "kind, checked_at, session_key, and agent_session_ref. Set session_key "
-        "and agent_session_ref exactly to REQUEST_JSON.session_key.\n"
+        "and agent_session_ref exactly to REQUEST_JSON.session_key. findings "
+        "must contain at least one structured finding. If no defect is found, "
+        "return one p3 informational finding that records the passed inspection. "
+        "Each finding must include: finding_id, finding, severity, confidence, "
+        "evidence, why_it_matters, minimal_fix_or_test, scope_risk, and "
+        "failure_mode.\n"
         f"REQUEST_JSON:\n{json.dumps(payload, ensure_ascii=True, sort_keys=True)}\n"
     )
 

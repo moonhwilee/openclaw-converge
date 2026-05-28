@@ -87,6 +87,7 @@ class GoalHandler(ModeHandler):
         self,
         workflow_id: str,
         *,
+        native_agent_backend: Any | None = None,
         recovery_lease_id: str | None = None,
         recovery_lease_holder: str | None = None,
     ) -> dict[str, Any]:
@@ -98,7 +99,7 @@ class GoalHandler(ModeHandler):
         workflow = self.load_workflow(workflow_id)
         existing_plan_accepted = _existing_plan_accepted_payload(self.store, workflow_id)
         record = build_goal_record(workflow, accepted_at=existing_plan_accepted.get("accepted_at") if existing_plan_accepted else None)
-        child_collection = _ensure_goal_children(self, workflow, record)
+        child_collection = _ensure_goal_children(self, workflow, record, native_agent_backend=native_agent_backend)
         if child_collection is not None:
             record = _record_with_child_collection(record, child_collection)
         artifact_path = (self.store.workflow_dir(workflow_id) / "artifacts" / "goal-plan.md").expanduser().resolve()
@@ -383,7 +384,13 @@ def _validate_existing_plan_acceptance_scope(workflow: dict[str, Any], existing:
         raise ValueError("existing goal plan_accepted event payload does not match current accepted plan")
 
 
-def _ensure_goal_children(handler: GoalHandler, workflow: dict[str, Any], record: GoalRecord) -> dict[str, Any] | None:
+def _ensure_goal_children(
+    handler: GoalHandler,
+    workflow: dict[str, Any],
+    record: GoalRecord,
+    *,
+    native_agent_backend: Any | None = None,
+) -> dict[str, Any] | None:
     markers = classify_execution_markers(record.objective, capability="planned_child_refs_only")
     if markers.get("execution_required") is not True:
         return None
@@ -397,9 +404,9 @@ def _ensure_goal_children(handler: GoalHandler, workflow: dict[str, Any], record
         child = _create_or_link_child(handler, workflow, child_id=child_id, role=role)
         if child.get("status") == "running":
             if role == "verify":
-                child_handler.finalize_verify(child_id)
+                child_handler.finalize_verify(child_id, native_agent_backend=native_agent_backend)
             else:
-                child_handler.finalize_conv(child_id)
+                child_handler.finalize_conv(child_id, native_agent_backend=native_agent_backend)
         child = handler.store.load_workflow(child_id)
         if child.get("status") not in {"completed_unreported", "failed_unreported", "reported"}:
             raise ValueError(f"required child workflow is not terminal: {child_id}")
@@ -972,6 +979,7 @@ def _child_blocked_final_status(reason: str | None, residuals: dict[str, list[st
 def _child_ref_from_workflow(child: dict[str, Any], *, role: str) -> dict[str, Any]:
     result = (child.get("final_status") or {}).get("result")
     status = "completed" if child.get("status") in {"completed_unreported", "reported"} and result in {"pass", "pass_with_risks"} else "blocked"
+    native_proof = _native_child_panel_proof(child, role=role)
     return {
         "workflow_id": child["workflow_id"],
         "kind": role,
@@ -991,6 +999,49 @@ def _child_ref_from_workflow(child: dict[str, Any], *, role: str) -> dict[str, A
         "visible_delivery_policy": child.get("visible_delivery") or {},
         "parent_id": child.get("parent_workflow_id"),
         "created_at": child.get("created_at"),
+        "native_agent_panel_proof": native_proof,
+    }
+
+
+def _native_child_panel_proof(child: dict[str, Any], *, role: str) -> dict[str, Any] | None:
+    state = child.get(f"{role}_state")
+    if not isinstance(state, dict) or state.get("execution_source") != "native_agent_panel":
+        return None
+    requests = state.get("agent_request_refs") or []
+    results = state.get("agent_result_refs") or []
+    if not isinstance(requests, list) or not isinstance(results, list) or not requests or len(requests) != len(results):
+        return None
+    if not all(isinstance(item, dict) for item in [*requests, *results]):
+        return None
+    session_keys = [item.get("session_key") for item in results if isinstance(item, dict)]
+    request_ids = [item.get("request_id") for item in requests if isinstance(item, dict)]
+    if any(not isinstance(value, str) or not value for value in [*session_keys, *request_ids]):
+        return None
+    if any((item.get("tool_smoke_status") != "passed" or not item.get("tool_smoke_evidence")) for item in results if isinstance(item, dict)):
+        return None
+    tool_smoke_proofs = [
+        {
+            "result_id": item.get("result_id"),
+            "session_key": item.get("session_key"),
+            "agent_session_ref": item.get("agent_session_ref"),
+            "tool_smoke_evidence": item.get("tool_smoke_evidence"),
+        }
+        for item in results
+    ]
+    return {
+        "source": "native_agent_panel",
+        "satisfies_native_agent_panel": state.get("satisfies_native_agent_panel") is True,
+        "agent_session_refs": [item.get("agent_session_ref") for item in results],
+        "session_keys": session_keys,
+        "request_ids": request_ids,
+        "result_ids": [item.get("result_id") for item in results],
+        "profile_refs": [item.get("profile_ref") for item in requests],
+        "tool_smoke_status": "passed",
+        "tool_smoke_proofs": tool_smoke_proofs,
+        "finding_count": len(state.get("agent_finding_refs") or []),
+        "evidence_refs": list(state.get("execution_evidence_refs") or []),
+        "started_at": state.get("execution_started_at"),
+        "completed_at": state.get("execution_completed_at"),
     }
 
 

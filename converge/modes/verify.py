@@ -19,12 +19,18 @@ from .verify_execution import (
     write_deterministic_check_artifact,
 )
 from .specialist_panel import (
+    NATIVE_PANEL_RUNNER_REF,
+    SOURCE_NATIVE_AGENT_PANEL,
+    SOURCE_RUNNER_PROVIDED_PACKET,
     SPECIALIST_REVIEW_RUNNER_REF,
+    build_native_specialist_review,
     build_specialist_review,
     specialist_artifact_id,
+    validate_native_specialist_state,
     validate_specialist_state,
     write_specialist_artifact,
 )
+from ..agents.contracts import NativeLaunchRequest, stable_hash
 from ..artifacts import now_iso
 from ..messages import normalize_residuals
 
@@ -97,7 +103,16 @@ def validate_verify_state(
     if terminal and not state["evidence"]:
         raise ValueError("terminal verify workflow requires evidence")
     if "review_panel_spec" in state:
-        validate_specialist_state(_specialist_state_from_verify(state))
+        if state.get("execution_source") == SOURCE_RUNNER_PROVIDED_PACKET:
+            if state.get("satisfies_native_agent_panel") is not False:
+                raise ValueError("runner-provided specialist verify evidence must not satisfy native_agent_panel parity")
+            validate_specialist_state(_specialist_state_from_verify(state))
+        elif state.get("execution_source") == SOURCE_NATIVE_AGENT_PANEL:
+            if state.get("satisfies_native_agent_panel") is not True:
+                raise ValueError("native specialist verify evidence must satisfy native_agent_panel parity")
+            validate_native_specialist_state(_specialist_state_from_verify(state))
+        else:
+            raise ValueError("specialist verify evidence has unknown execution_source")
     for key in ("final_report_artifact_id", "final_report_artifact_path", "target", "verdict", "final_report_summary"):
         if not isinstance(state.get(key), str) or not state.get(key):
             raise ValueError(f"verify_state {key} must be a non-empty string")
@@ -122,6 +137,7 @@ class VerifyHandler(ModeHandler):
         workflow_id: str,
         *,
         specialist_findings: dict[str, Any] | None = None,
+        native_agent_backend: Any | None = None,
         recovery_lease_id: str | None = None,
         recovery_lease_holder: str | None = None,
     ) -> dict[str, Any]:
@@ -151,7 +167,16 @@ class VerifyHandler(ModeHandler):
         evidence_records = [*record.evidence_records]
         if deterministic_evidence:
             evidence_records.append(deterministic_evidence)
+        if specialist_findings is not None and native_agent_backend is not None:
+            raise ValueError("verify cannot combine runner-provided and native panel findings")
         specialist_review = _record_specialist_review(self, workflow_id, mode="verify", target=record.target, packet=specialist_findings)
+        if native_agent_backend is not None:
+            specialist_review = _record_native_specialist_review(
+                self,
+                workflow_id,
+                target=record.target,
+                native_agent_backend=native_agent_backend,
+            )
         specialist_state = None
         if specialist_review:
             specialist_state = specialist_review["state"]
@@ -415,6 +440,66 @@ def _record_specialist_review(
     return review
 
 
+def _record_native_specialist_review(
+    handler: ModeHandler,
+    workflow_id: str,
+    *,
+    target: str,
+    native_agent_backend: Any,
+) -> dict[str, Any]:
+    artifact_id = specialist_artifact_id("verify")
+    requests = _native_verify_requests(workflow_id=workflow_id, target=target)
+    results = native_agent_backend.run_panel(requests)
+    review = build_native_specialist_review(
+        results,
+        mode="verify",
+        target=target,
+        artifact_id=artifact_id,
+        panel_id=f"native-verify-panel-{workflow_id}",
+    )
+    artifact_path = handler.store.workflow_dir(workflow_id) / "artifacts" / "verify-native-specialist-findings.json"
+    workflow = handler.load_workflow(workflow_id)
+    matches = [
+        artifact
+        for artifact in workflow.get("artifacts", [])
+        if isinstance(artifact, dict) and artifact.get("artifact_id") == artifact_id
+    ]
+    if matches:
+        if len(matches) > 1:
+            raise ValueError(f"duplicate specialist findings artifact id: {artifact_id}")
+        artifact = matches[0]
+    else:
+        write_specialist_artifact(artifact_path, {"native_results": [item.as_dict() for item in results], "specialist_review": review["state"]})
+        artifact = handler.record_artifact(
+            workflow_id,
+            kind="evidence",
+            artifact_id=artifact_id,
+            path=artifact_path,
+            note="validated native OpenClaw specialist findings",
+        )["artifact"]
+    _record_specialist_events(handler, workflow_id, mode="verify", review=review, artifact_id=artifact["artifact_id"])
+    return review
+
+
+def _native_verify_requests(*, workflow_id: str, target: str) -> list[NativeLaunchRequest]:
+    profile_refs = ["native-verify-architecture", "native-verify-contracts", "native-verify-ops"]
+    return [
+        NativeLaunchRequest(
+            mode="verify",
+            objective=target,
+            target_refs=[{"kind": "verify_target", "text": target}],
+            profile_ref=profile_ref,
+            context_hash=stable_hash({"workflow_id": workflow_id, "target": target, "profile_ref": profile_ref}),
+            idempotency_key=stable_hash({"workflow_id": workflow_id, "profile_ref": profile_ref, "round": 1}),
+            output_schema={"schema_ref": "structured_specialist_finding.v1"},
+            session_key=f"agent:converge:{workflow_id}-{index + 1}",
+            request_id=f"verify-native-{workflow_id}-{index + 1}",
+            profile_context_refs=[{"kind": "native_profile", "id": profile_ref}],
+        )
+        for index, profile_ref in enumerate(profile_refs)
+    ]
+
+
 def _record_specialist_events(handler: ModeHandler, workflow_id: str, *, mode: str, review: dict[str, Any], artifact_id: str) -> None:
     existing = _specialist_event_types(handler, workflow_id, artifact_id=artifact_id)
     for event_type in ("agent_panel_requested", "agent_findings_recorded", "finding_arbitrated"):
@@ -428,9 +513,9 @@ def _record_specialist_events(handler: ModeHandler, workflow_id: str, *, mode: s
                 "workflow_id": workflow_id,
                 "event_type": event_type,
                 "created_at": now_iso(),
-                "note": "validated runner-provided specialist review evidence",
+                "note": "validated specialist review evidence",
                 "payload": {
-                    "runner_ref": SPECIALIST_REVIEW_RUNNER_REF,
+                    "runner_ref": review["state"]["review_panel_spec"].get("runner_ref") or SPECIALIST_REVIEW_RUNNER_REF,
                     "artifact_id": artifact_id,
                     "mode": mode,
                     "finding_count": len(review["state"]["agent_finding_refs"]),
@@ -464,8 +549,23 @@ def _specialist_event_types(handler: ModeHandler, workflow_id: str, *, artifact_
 
 
 def _specialist_execution_markers(state: dict[str, Any], *, artifact_id: str) -> dict[str, Any]:
+    if state["review_panel_spec"].get("runner_ref") == NATIVE_PANEL_RUNNER_REF:
+        return {
+            "execution_capability": "delegated_agents",
+            "execution_source": SOURCE_NATIVE_AGENT_PANEL,
+            "satisfies_native_agent_panel": True,
+            "execution_performed": True,
+            "synthetic_report": False,
+            "runner_ref": NATIVE_PANEL_RUNNER_REF,
+            "execution_evidence_refs": [artifact_id],
+            "execution_started_at": now_iso(),
+            "execution_completed_at": now_iso(),
+            "execution_classification_reason": "native OpenClaw specialist child sessions collected",
+        }
     return {
         "execution_capability": "delegated_agents",
+        "execution_source": SOURCE_RUNNER_PROVIDED_PACKET,
+        "satisfies_native_agent_panel": False,
         "execution_performed": True,
         "synthetic_report": False,
         "runner_ref": SPECIALIST_REVIEW_RUNNER_REF,
@@ -482,12 +582,18 @@ def _verify_specialist_residuals(base: dict[str, list[str]], state: dict[str, An
         residuals["blocking_remaining"] = [
             "Specialist findings require accepted fixes or explicit owner risk acceptance before pass.",
         ]
-    residuals["accepted_risks"] = [
-        "Phase 4A accepts runner-provided structured findings; native agent launch is deferred.",
-    ]
-    residuals["implementation_backlog"] = [
-        "Phase 4B adds native Converge specialist panel launch and recovery-safe result collection.",
-    ]
+    if state["review_panel_spec"].get("runner_ref") == NATIVE_PANEL_RUNNER_REF:
+        residuals["accepted_risks"] = []
+        residuals["implementation_backlog"] = [
+            "Wire the same native panel adapter into /conv after /verify native panel validation holds.",
+        ]
+    else:
+        residuals["accepted_risks"] = [
+            "Phase 4A accepts runner-provided structured findings; native agent launch is deferred.",
+        ]
+        residuals["implementation_backlog"] = [
+            "Phase 4B adds native Converge specialist panel launch and recovery-safe result collection.",
+        ]
     residuals["deferred_scope"] = [
         "Specialist agents cannot send visible messages, mutate workflow state, restart services, push, or open PRs.",
     ]

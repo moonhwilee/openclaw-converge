@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -18,11 +19,24 @@ from .conv_execution import (
 from .evidence_contract import attach_phase5a_evidence_contract
 from .execution_truth import classify_execution_markers
 from .specialist_panel import (
+    NATIVE_PANEL_RUNNER_REF,
+    SOURCE_NATIVE_AGENT_PANEL,
+    SOURCE_RUNNER_PROVIDED_PACKET,
     SPECIALIST_REVIEW_RUNNER_REF,
+    build_native_specialist_review,
     build_specialist_review,
     specialist_artifact_id,
+    validate_native_specialist_state,
     validate_specialist_state,
     write_specialist_artifact,
+)
+from ..agents.contracts import (
+    DEFAULT_TOOL_POLICY,
+    NativeLaunchRequest,
+    SOURCE_FIX_RUNNER,
+    stable_hash,
+    validate_fix_runner_request,
+    validate_fix_runner_result,
 )
 from ..artifacts import now_iso
 from ..messages import normalize_residuals
@@ -42,6 +56,18 @@ CONV_SEVERITY = {"p0", "p1", "p2", "p3", "none"}
 CONV_OBJECTIVE_IMPACT = {"changes_objective", "preserves_objective", "none"}
 CONV_EVIDENCE_QUALITY = {"direct", "inferred", "insufficient", "none"}
 CONV_DISPOSITIONS = {"accepted_change", "accepted_risk", "implementation_backlog", "deferred_scope", "no_action"}
+FIX_RUNNER_TOOL_POLICY = {
+    "policy_id": "conv-fix-runner-bounded-v1",
+    "filesystem": "workspace_write",
+    "target_mutation": "bounded_by_accepted_change_refs",
+    "visible_messages": "forbidden",
+    "workflow_state_mutation": "forbidden",
+    "service_restart": "forbidden",
+    "external_actions": "forbidden",
+    "push_or_pr": "forbidden",
+    "release": "forbidden",
+    "allowed_actions": ["apply_accepted_changes", "run_focused_checks"],
+}
 
 
 @dataclass(frozen=True)
@@ -107,6 +133,8 @@ class ConvRecord:
         }
         if specialist_state:
             state.update(specialist_state)
+            state["specialist_max_rounds"] = specialist_state["max_rounds"]
+            state["max_rounds"] = self.max_rounds
             state["evidence"] = [specialist_evidence] if specialist_evidence else []
         state.update(classify_execution_markers(self.target, capability="synthetic_round_only"))
         return state
@@ -122,6 +150,9 @@ class ConvHandler(ModeHandler):
         workflow_id: str,
         *,
         specialist_findings: dict[str, Any] | None = None,
+        native_agent_backend: Any | None = None,
+        fix_runner_result: dict[str, Any] | None = None,
+        fix_runner_source_root: Path | None = None,
         recovery_lease_id: str | None = None,
         recovery_lease_holder: str | None = None,
     ) -> dict[str, Any]:
@@ -133,8 +164,27 @@ class ConvHandler(ModeHandler):
         workflow = self.load_workflow(workflow_id)
         artifact_path = (self.store.workflow_dir(workflow_id) / "artifacts" / "conv-report.md").expanduser().resolve()
         text = workflow.get("source_request") or workflow.get("objective") or ""
+        if specialist_findings is not None and native_agent_backend is not None:
+            raise ValueError("conv cannot combine runner-provided and native panel findings")
         specialist_review = _record_specialist_review(self, workflow_id, target=text, packet=specialist_findings)
+        if native_agent_backend is not None:
+            specialist_review = _record_native_specialist_review(
+                self,
+                workflow_id,
+                target=text,
+                native_agent_backend=native_agent_backend,
+            )
         specialist_state = specialist_review["state"] if specialist_review else None
+        if specialist_state:
+            specialist_state = _attach_fix_runner_state(
+                specialist_state,
+                workflow_id=workflow_id,
+                target=text,
+                result_packet=fix_runner_result,
+                source_root=fix_runner_source_root,
+            )
+        elif fix_runner_result is not None:
+            raise ValueError("fix_runner result requires specialist accepted changes")
         execution_result = run_conv_round_execution(text, source_root=Path.cwd()) if not specialist_state else {}
         execution_artifact = _record_conv_round_execution_artifact(self, workflow_id, result=execution_result) if not specialist_state else None
         if specialist_state:
@@ -152,9 +202,11 @@ class ConvHandler(ModeHandler):
         if execution_artifact:
             state.update(conv_execution_markers(execution_result, artifact_id=execution_artifact["artifact_id"]))
         if specialist_state and not execution_artifact:
-            state.update(_specialist_execution_markers(artifact_id=specialist_artifact_id("conv")))
+            state.update(_specialist_execution_markers(specialist_state, artifact_id=specialist_artifact_id("conv")))
+            _record_fix_runner_events(self, workflow_id, state=state)
+            _append_fix_runner_evidence(state)
         state, residuals, block_reason = apply_execution_truth_block("conv", state, residuals=record.residuals)
-        if specialist_state and (residuals.get("blocking_remaining") or state.get("follow_up_required")):
+        if specialist_state and (residuals.get("blocking_remaining") or _fix_runner_follow_up_pending(state)):
             specialist_block_reason = (
                 "blocked_specialist_findings"
                 if residuals.get("blocking_remaining")
@@ -192,14 +244,25 @@ class ConvHandler(ModeHandler):
             final_report_summary=state["final_report_summary"],
         )
         rendered_report = render_conv_report(render_record)
-        artifact = _existing_conv_artifact(workflow, expected_path=artifact_path, rendered_report=rendered_report)
+        pending_fix_runner_follow_up = block_reason == "blocked_specialist_follow_up_required"
+        report_artifact_id = (
+            f"{CONV_REPORT_ARTIFACT_ID}-pending-follow-up" if pending_fix_runner_follow_up else CONV_REPORT_ARTIFACT_ID
+        )
+        if pending_fix_runner_follow_up:
+            artifact_path = (self.store.workflow_dir(workflow_id) / "artifacts" / "conv-pending-follow-up-report.md").expanduser().resolve()
+        artifact = _existing_conv_artifact(
+            workflow,
+            artifact_id=report_artifact_id,
+            expected_path=artifact_path,
+            rendered_report=rendered_report,
+        )
         if artifact is None:
             artifact_path.parent.mkdir(parents=True, exist_ok=True)
             artifact_path.write_text(rendered_report, encoding="utf-8")
             artifact = self.record_artifact(
                 workflow_id,
                 kind="report",
-                artifact_id=CONV_REPORT_ARTIFACT_ID,
+                artifact_id=report_artifact_id,
                 path=artifact_path,
                 note="final convergence report artifact",
             )["artifact"]
@@ -211,6 +274,12 @@ class ConvHandler(ModeHandler):
             "summary": "Final convergence report registered through the shared artifact path.",
             "artifact_refs": [artifact_ref],
         }
+        if state.get("accepted_change_refs") and not _fix_runner_follow_up_pending(state):
+            evidence["produced_after_change_refs"] = [
+                item["change_ref"]
+                for item in state["accepted_change_refs"]
+                if isinstance(item, dict) and item.get("change_ref")
+            ]
         state["final_report_artifact_id"] = artifact_ref
         state["final_report_artifact_path"] = artifact_path
         state = attach_phase5a_evidence_contract(
@@ -220,47 +289,54 @@ class ConvHandler(ModeHandler):
             terminal_evidence=evidence,
             terminal_status_override="blocked" if block_reason else None,
         )
+        terminal = not pending_fix_runner_follow_up
+        success_final_status = {
+            "result": "pass_with_risks" if any(record.residuals.values()) else "pass",
+            "stop_reason": record.stop_condition,
+            "done": [
+                "Recorded bounded convergence round metadata",
+                "Classified findings through original-target and delta gates",
+                "Bound structured specialist findings when provided",
+                "Stopped through evidence sufficiency or max-round proof",
+            ],
+            "checked": [
+                "Conv mode used shared artifact and checkpoint contracts",
+                "Visible delivery remains gated by reserve-delivery/report-proof/complete-reported",
+            ],
+            "residuals": record.residuals,
+        }
         checkpoint = self.record_outcome(
             workflow_id,
             ModeOutcome(
                 summary=(
-                    "Convergence terminal success blocked because execution evidence is missing."
+                    "Convergence is blocked pending bounded fix runner follow-up."
+                    if pending_fix_runner_follow_up
+                    else "Convergence terminal success blocked because execution evidence is missing."
                     if block_reason
                     else "Final convergence record is ready for visible delivery."
                 ),
-                status_after="failed_unreported" if block_reason else "completed_unreported",
-                phase_after="terminal",
-                checkpoint_type="terminal",
-                event_type="fail" if block_reason else "complete",
-                worklog_block_kind="terminal_summary",
-                step_result="terminal",
+                status_after="running" if pending_fix_runner_follow_up else "failed_unreported" if block_reason else "completed_unreported",
+                phase_after="fix_runner_pending" if pending_fix_runner_follow_up else "terminal",
+                checkpoint_type="checkpoint" if pending_fix_runner_follow_up else "terminal",
+                event_type="checkpoint" if pending_fix_runner_follow_up else "fail" if block_reason else "complete",
+                worklog_block_kind="checkpoint_summary" if pending_fix_runner_follow_up else "terminal_summary",
+                step_result="blocked" if pending_fix_runner_follow_up else "terminal",
                 residuals=residuals,
-                terminal_evidence=evidence,
+                evidence=evidence if pending_fix_runner_follow_up else None,
+                terminal_evidence=None if pending_fix_runner_follow_up else evidence,
                 mode_state_update=state,
                 recovery_lease_id=recovery_lease_id,
                 recovery_lease_holder=recovery_lease_holder,
                 final_status=(
-                    _specialist_blocked_final_status(residuals)
-                    if block_reason in {"blocked_specialist_findings", "blocked_specialist_follow_up_required"}
+                    None
+                    if pending_fix_runner_follow_up
+                    else _specialist_blocked_final_status(residuals)
+                    if block_reason == "blocked_specialist_findings"
                     else execution_blocked_final_status("conv", block_reason, residuals)
                     if block_reason
-                    else {
-                        "result": "pass_with_risks" if any(record.residuals.values()) else "pass",
-                        "stop_reason": record.stop_condition,
-                        "done": [
-                            "Recorded bounded convergence round metadata",
-                            "Classified findings through original-target and delta gates",
-                            "Bound structured specialist findings when provided",
-                            "Stopped through evidence sufficiency or max-round proof",
-                        ],
-                        "checked": [
-                            "Conv mode used shared artifact and checkpoint contracts",
-                            "Visible delivery remains gated by reserve-delivery/report-proof/complete-reported",
-                        ],
-                        "residuals": record.residuals,
-                    }
+                    else success_final_status
                 ),
-                failure_reason=block_reason,
+                failure_reason=None if not terminal else block_reason,
             ),
         )
         return {"workflow_id": workflow_id, "artifact": artifact, "checkpoint": checkpoint, "conv": state}
@@ -313,10 +389,20 @@ def build_conv_record_from_execution(text: str, result: dict[str, Any]) -> ConvR
 
 def build_conv_record_from_specialist(text: str, specialist_state: dict[str, Any]) -> ConvRecord:
     target = _compact(text) or "Converge on the supplied target with bounded specialist evidence."
-    validate_specialist_state(specialist_state)
+    native_panel = specialist_state["review_panel_spec"].get("runner_ref") == NATIVE_PANEL_RUNNER_REF
+    if native_panel:
+        validate_native_specialist_state(specialist_state)
+    else:
+        validate_specialist_state(specialist_state)
     findings = [_conv_finding_from_arbitration(item) for item in specialist_state["finding_arbitration"]]
     material_changes = any(item["material_change_required"] for item in findings)
     follow_up_required = bool(specialist_state["follow_up_round_required"])
+    fix_runner_status = specialist_state.get("fix_runner_collection_status") or {}
+    follow_up_closed = (
+        bool(follow_up_required)
+        and fix_runner_status.get("status") == "complete"
+        and bool(specialist_state.get("fix_runner_result_refs"))
+    )
     residuals = {
         "blocking_remaining": [
             item["reason"]
@@ -331,34 +417,77 @@ def build_conv_record_from_specialist(text: str, specialist_state: dict[str, Any
         "implementation_backlog": [
             item["reason"]
             for item in specialist_state["finding_arbitration"]
-            if item["decision"] in {"fix", "defer"}
+            if item["decision"] == "defer" or (item["decision"] == "fix" and not follow_up_closed)
         ],
         "deferred_scope": [
-            "Phase 4A binds runner-provided structured findings; native specialist launch and fix-runner application remain later slices.",
+            (
+                "Native specialist panel was collected; fix-runner application and multi-round material-change follow-up remain later slices."
+                if native_panel and not follow_up_closed
+                else "Native specialist panel was collected; coordinator fix-runner result and follow-up round were bounded to accepted changes."
+                if native_panel
+                else "Runner-provided structured findings were bound; coordinator fix-runner result and follow-up round were bounded to accepted changes."
+                if follow_up_closed
+                else "Phase 4A binds runner-provided structured findings; native specialist launch and fix-runner application remain later slices."
+            ),
         ],
     }
-    evidence_sufficient = not residuals["blocking_remaining"] and not follow_up_required
+    evidence_sufficient = not residuals["blocking_remaining"] and (not follow_up_required or follow_up_closed)
+    rounds = [
+        ConvRound(
+            round_index=specialist_state["round_index"],
+            target_ref="original-target",
+            original_target_gate=specialist_state["original_target_gate"],
+            delta_gate=specialist_state["delta_regression_gate"],
+            findings=findings,
+            material_changes=material_changes,
+            follow_up_required=follow_up_required,
+            evidence_sufficient=not follow_up_required and evidence_sufficient,
+            summary=(
+                "Native specialist findings were collected, deduped, and arbitrated as a bounded convergence round."
+                if native_panel
+                else "Runner-provided specialist findings were deduped and arbitrated as a bounded convergence round."
+            ),
+        )
+    ]
+    if follow_up_closed:
+        rounds.append(
+            ConvRound(
+                round_index=specialist_state["round_index"] + 1,
+                target_ref="original-target",
+                original_target_gate="within_original_target",
+                delta_gate="no_delta",
+                findings=[],
+                material_changes=False,
+                follow_up_required=False,
+                evidence_sufficient=True,
+                summary="Follow-up round verified the bounded fix-runner result and found no remaining material delta.",
+            )
+        )
     return ConvRecord(
         target=target,
-        max_rounds=specialist_state["max_rounds"],
-        rounds=[
-            ConvRound(
-                round_index=specialist_state["round_index"],
-                target_ref="original-target",
-                original_target_gate=specialist_state["original_target_gate"],
-                delta_gate=specialist_state["delta_regression_gate"],
-                findings=findings,
-                material_changes=material_changes,
-                follow_up_required=follow_up_required,
-                evidence_sufficient=evidence_sufficient,
-                summary="Runner-provided specialist findings were deduped and arbitrated as a bounded convergence round.",
-            )
-        ],
+        max_rounds=max(specialist_state["max_rounds"], len(rounds)),
+        rounds=rounds,
         stop_condition="evidence_sufficient" if evidence_sufficient else "blocked_no_execution_evidence",
-        stop_reason="structured_specialist_findings_bound",
-        explicit_stop_proof=specialist_state["round_stop_proof"],
+        stop_reason=(
+            "fix_runner_follow_up_evidence_sufficient"
+            if follow_up_closed
+            else "native_specialist_panel_collected"
+            if native_panel
+            else "structured_specialist_findings_bound"
+        ),
+        explicit_stop_proof=(
+            "Coordinator fix-runner result is complete and round 2 follow-up verified no remaining material delta."
+            if follow_up_closed
+            else specialist_state["round_stop_proof"]
+        ),
         residuals=residuals,
-        final_report_summary="Convergence bound structured specialist findings without allowing specialist side effects.",
+        final_report_summary=(
+            "Convergence applied accepted local changes through the coordinator fix-runner and verified the follow-up round."
+            if follow_up_closed
+            else "Convergence collected native specialist findings without allowing child side effects."
+            if native_panel
+            else "Convergence bound structured specialist findings without allowing specialist side effects."
+        ),
     )
 
 
@@ -435,7 +564,17 @@ def validate_conv_state(state: dict[str, Any], *, terminal: bool, final_status: 
     if missing:
         raise ValueError(f"conv_state is missing required fields: {missing!r}")
     if "review_panel_spec" in state:
-        validate_specialist_state(_specialist_state_from_conv(state))
+        if state.get("execution_source") == SOURCE_RUNNER_PROVIDED_PACKET:
+            if state.get("satisfies_native_agent_panel") is not False:
+                raise ValueError("runner-provided specialist conv evidence must not satisfy native_agent_panel parity")
+            validate_specialist_state(_specialist_state_from_conv(state))
+        elif state.get("execution_source") == SOURCE_NATIVE_AGENT_PANEL:
+            if state.get("satisfies_native_agent_panel") is not True:
+                raise ValueError("native specialist conv evidence must satisfy native_agent_panel parity")
+            validate_native_specialist_state(_specialist_state_from_conv(state))
+        else:
+            raise ValueError("specialist conv evidence has unknown execution_source")
+    _validate_fix_runner_state(state)
     max_rounds = state["max_rounds"]
     round_count = state["round_count"]
     rounds = state["rounds"]
@@ -551,6 +690,83 @@ def _validate_finding(finding: dict[str, Any]) -> None:
     for key in ("finding_id", "summary"):
         if not isinstance(finding[key], str) or not finding[key]:
             raise ValueError(f"conv_state finding {key} must be non-empty")
+
+
+def _validate_fix_runner_state(state: dict[str, Any]) -> None:
+    if "review_panel_spec" not in state:
+        return
+    accepted_changes = state.get("accepted_change_refs") or []
+    required = bool(accepted_changes)
+    if state.get("fix_runner_required", required) is not required:
+        raise ValueError("conv_state fix_runner_required must reflect accepted changes")
+    requests = state.get("fix_runner_request_refs") or []
+    results = state.get("fix_runner_result_refs") or []
+    status = state.get("fix_runner_collection_status") or {
+        "status": "not_required",
+        "pending_request_ids": [],
+        "completed_result_count": 0,
+        "source": SOURCE_FIX_RUNNER,
+        "requires_follow_up_round": False,
+    }
+    if not isinstance(requests, list) or not isinstance(results, list) or not isinstance(status, dict):
+        raise ValueError("conv_state fix_runner refs and status must be structured")
+    if not required:
+        if requests or results or status.get("status") not in {"not_required", None}:
+            raise ValueError("conv_state must not carry fix_runner work without accepted changes")
+        return
+    if not requests:
+        raise ValueError("conv_state accepted changes require fix_runner_request_refs")
+    accepted_ids = [item.get("change_ref") for item in accepted_changes if isinstance(item, dict)]
+    for request in requests:
+        validate_fix_runner_request(request)
+        request_changes = request.get("accepted_change_refs") or []
+        request_ids = [item.get("change_ref") for item in request_changes if isinstance(item, dict)]
+        if request_ids != accepted_ids:
+            raise ValueError("conv_state fix_runner request must bind exactly the accepted change refs")
+        if request.get("status") not in {"pending", "completed"}:
+            raise ValueError("conv_state fix_runner request status is invalid")
+    if status.get("source") != SOURCE_FIX_RUNNER:
+        raise ValueError("conv_state fix_runner status must use fix_runner source")
+    if not results:
+        if status.get("status") != "pending":
+            raise ValueError("conv_state accepted changes require pending fix_runner status without results")
+        if status.get("pending_request_ids") != [item["runner_id"] for item in requests]:
+            raise ValueError("conv_state fix_runner pending ids must match request refs")
+        if status.get("completed_result_count") != 0 or status.get("requires_follow_up_round") is not True:
+            raise ValueError("conv_state fix_runner status must require follow-up before completion")
+        return
+    request_by_id = {item["runner_id"]: item for item in requests}
+    if len(results) != len(requests):
+        raise ValueError("conv_state fix_runner results must match request count")
+    for result in results:
+        validate_fix_runner_result(result)
+        request = request_by_id.get(result["runner_id"])
+        if not request:
+            raise ValueError("conv_state fix_runner result runner_id must match request refs")
+        result_ids = [item.get("change_ref") for item in result["accepted_change_refs"] if isinstance(item, dict)]
+        if result_ids != accepted_ids:
+            raise ValueError("conv_state fix_runner result must bind exactly the accepted change refs")
+        if result.get("tool_policy") != request.get("tool_policy"):
+            raise ValueError("conv_state fix_runner result tool_policy must match request")
+    if status.get("status") != "complete":
+        raise ValueError("conv_state completed fix_runner results require complete status")
+    if status.get("pending_request_ids") != []:
+        raise ValueError("conv_state completed fix_runner results require no pending request ids")
+    if status.get("completed_result_count") != len(results):
+        raise ValueError("conv_state fix_runner completed_result_count must match results")
+    if status.get("completed_result_ids") != [item["result_id"] for item in results]:
+        raise ValueError("conv_state fix_runner completed_result_ids must match result refs")
+    if status.get("requires_follow_up_round") is not True or status.get("follow_up_completed") is not True:
+        raise ValueError("conv_state completed fix_runner status must prove follow-up completion")
+
+
+def _fix_runner_follow_up_pending(state: dict[str, Any]) -> bool:
+    if not state.get("follow_up_required"):
+        return False
+    if not state.get("fix_runner_required"):
+        return True
+    status = state.get("fix_runner_collection_status") or {}
+    return status.get("status") != "complete" or status.get("follow_up_completed") is not True
 
 
 def _conv_finding_from_arbitration(item: dict[str, Any]) -> dict[str, Any]:
@@ -747,16 +963,22 @@ def _finding(
     }
 
 
-def _existing_conv_artifact(workflow: dict[str, Any], *, expected_path: Path, rendered_report: str) -> dict[str, Any] | None:
+def _existing_conv_artifact(
+    workflow: dict[str, Any],
+    *,
+    artifact_id: str,
+    expected_path: Path,
+    rendered_report: str,
+) -> dict[str, Any] | None:
     matches = [
         artifact
         for artifact in workflow.get("artifacts", [])
-        if isinstance(artifact, dict) and artifact.get("artifact_id") == CONV_REPORT_ARTIFACT_ID
+        if isinstance(artifact, dict) and artifact.get("artifact_id") == artifact_id
     ]
     if not matches:
         return None
     if len(matches) > 1:
-        raise ValueError(f"duplicate conv report artifact id: {CONV_REPORT_ARTIFACT_ID}")
+        raise ValueError(f"duplicate conv report artifact id: {artifact_id}")
     artifact = matches[0]
     if artifact.get("kind") != "report":
         raise ValueError(f"conv report artifact id has wrong kind: {artifact.get('kind')!r}")
@@ -911,6 +1133,362 @@ def _record_specialist_review(
     return review
 
 
+def _record_native_specialist_review(
+    handler: ModeHandler,
+    workflow_id: str,
+    *,
+    target: str,
+    native_agent_backend: Any,
+) -> dict[str, Any]:
+    artifact_id = specialist_artifact_id("conv")
+    requests = _native_conv_requests(workflow_id=workflow_id, target=target)
+    results = native_agent_backend.run_panel(requests)
+    review = build_native_specialist_review(
+        results,
+        mode="conv",
+        target=target,
+        artifact_id=artifact_id,
+        panel_id=f"native-conv-panel-{workflow_id}",
+    )
+    artifact_path = handler.store.workflow_dir(workflow_id) / "artifacts" / "conv-native-specialist-findings.json"
+    workflow = handler.load_workflow(workflow_id)
+    existing = [
+        artifact
+        for artifact in workflow.get("artifacts", [])
+        if isinstance(artifact, dict) and artifact.get("artifact_id") == artifact_id
+    ]
+    if existing:
+        if len(existing) > 1:
+            raise ValueError(f"duplicate specialist findings artifact id: {artifact_id}")
+        artifact = existing[0]
+        if artifact.get("kind") != "evidence":
+            raise ValueError("native specialist findings artifact must use evidence kind")
+    else:
+        write_specialist_artifact(artifact_path, {"native_results": [item.as_dict() for item in results], "specialist_review": review["state"]})
+        artifact = handler.record_artifact(
+            workflow_id,
+            kind="evidence",
+            artifact_id=artifact_id,
+            path=artifact_path,
+            note="validated native OpenClaw conv specialist findings",
+        )["artifact"]
+    _record_specialist_events(handler, workflow_id, review=review, artifact_id=artifact["artifact_id"])
+    return review
+
+
+def _native_conv_requests(*, workflow_id: str, target: str) -> list[NativeLaunchRequest]:
+    profile_refs = ["native-conv-integrity", "native-conv-regression", "native-conv-ops"]
+    return [
+        NativeLaunchRequest(
+            mode="conv",
+            objective=target,
+            target_refs=[{"kind": "conv_target", "text": target}],
+            profile_ref=profile_ref,
+            context_hash=stable_hash({"workflow_id": workflow_id, "target": target, "profile_ref": profile_ref}),
+            idempotency_key=stable_hash({"workflow_id": workflow_id, "profile_ref": profile_ref, "round": 1}),
+            output_schema={"schema_ref": "structured_specialist_finding.v1"},
+            tool_policy=dict(DEFAULT_TOOL_POLICY),
+            session_key=f"agent:converge:{workflow_id}-{index + 1}",
+            request_id=f"conv-native-{workflow_id}-{index + 1}",
+            profile_context_refs=[{"kind": "native_profile", "id": profile_ref}],
+        )
+        for index, profile_ref in enumerate(profile_refs)
+    ]
+
+
+def _attach_fix_runner_state(
+    specialist_state: dict[str, Any],
+    *,
+    workflow_id: str,
+    target: str,
+    result_packet: dict[str, Any] | None = None,
+    source_root: Path | None = None,
+) -> dict[str, Any]:
+    state = dict(specialist_state)
+    accepted_changes = list(state.get("accepted_change_refs") or [])
+    if not accepted_changes:
+        state.update(
+            {
+                "fix_runner_required": False,
+                "fix_runner_request_refs": [],
+                "fix_runner_result_refs": [],
+                "fix_runner_collection_status": {
+                    "status": "not_required",
+                    "pending_request_ids": [],
+                    "completed_result_count": 0,
+                    "source": SOURCE_FIX_RUNNER,
+                    "requires_follow_up_round": False,
+                },
+            }
+        )
+        return state
+    for change in accepted_changes:
+        if not isinstance(change.get("local_file_edits"), list) or not change["local_file_edits"]:
+            raise ValueError("fix_runner accepted changes require bounded local_file_edits")
+    runner_id = f"conv-fix-runner-{workflow_id}-round-{state['round_index']}"
+    request_status = "completed" if result_packet is not None else "pending"
+    request = {
+        "runner_id": runner_id,
+        "mode": "conv",
+        "objective": "Apply only accepted local convergence changes, then run focused checks.",
+        "workflow_id": workflow_id,
+        "target_ref": "original-target",
+        "target": target,
+        "source_classification": SOURCE_FIX_RUNNER,
+        "status": request_status,
+        "accepted_change_refs": accepted_changes,
+        "artifact_refs": [specialist_artifact_id("conv")],
+        "tool_policy": dict(FIX_RUNNER_TOOL_POLICY),
+        "agent_session_ref": None,
+        "idempotency_key": stable_hash(
+            {
+                "workflow_id": workflow_id,
+                "round_index": state["round_index"],
+                "accepted_change_refs": accepted_changes,
+                "source": SOURCE_FIX_RUNNER,
+            }
+        ),
+    }
+    validate_fix_runner_request(request)
+    result_refs = []
+    collection_status = {
+        "status": "pending",
+        "pending_request_ids": [runner_id],
+        "completed_result_count": 0,
+        "source": SOURCE_FIX_RUNNER,
+        "requires_follow_up_round": True,
+        "follow_up_completed": False,
+        "relaunch_required": False,
+        "collection_cursor": stable_hash(
+            {
+                "workflow_id": workflow_id,
+                "runner_id": runner_id,
+                "accepted_change_refs": accepted_changes,
+            }
+        ),
+    }
+    if result_packet is not None:
+        result = _normalize_fix_runner_result(
+            result_packet,
+            request=request,
+            workflow_id=workflow_id,
+            accepted_changes=accepted_changes,
+            source_root=source_root,
+        )
+        validate_fix_runner_result(result)
+        result_refs = [result]
+        collection_status = {
+            "status": "complete",
+            "pending_request_ids": [],
+            "completed_result_count": 1,
+            "completed_result_ids": [result["result_id"]],
+            "source": SOURCE_FIX_RUNNER,
+            "requires_follow_up_round": True,
+            "follow_up_completed": True,
+            "relaunch_required": False,
+            "collection_cursor": stable_hash(
+                {
+                    "workflow_id": workflow_id,
+                    "runner_id": runner_id,
+                    "result_id": result["result_id"],
+                    "accepted_change_refs": accepted_changes,
+                }
+            ),
+        }
+    state.update(
+        {
+            "fix_runner_required": True,
+            "fix_runner_request_refs": [request],
+            "fix_runner_result_refs": result_refs,
+            "fix_runner_collection_status": collection_status,
+        }
+    )
+    return state
+
+
+def _normalize_fix_runner_result(
+    result: dict[str, Any],
+    *,
+    request: dict[str, Any],
+    workflow_id: str,
+    accepted_changes: list[dict[str, Any]],
+    source_root: Path | None,
+) -> dict[str, Any]:
+    payload = dict(result)
+    if payload.get("runner_id") != request["runner_id"]:
+        raise ValueError("fix_runner result runner_id must match request")
+    if payload.get("workflow_id") != workflow_id:
+        raise ValueError("fix_runner result workflow_id must match workflow")
+    if payload.get("accepted_change_refs") != accepted_changes:
+        raise ValueError("fix_runner result accepted_change_refs must match request")
+    if source_root is None:
+        raise ValueError("fix_runner result requires source_root validation")
+    _validate_fix_runner_mutation_proof(payload, source_root=source_root)
+    return payload
+
+
+def _validate_fix_runner_mutation_proof(result: dict[str, Any], *, source_root: Path) -> None:
+    root = source_root.resolve()
+    if result.get("source_root") != str(root):
+        raise ValueError("fix_runner result source_root must match supplied source root")
+    mutations = result.get("file_mutations")
+    if not isinstance(mutations, list) or not mutations:
+        raise ValueError("fix_runner result requires file_mutations proof")
+    expected_key = stable_hash(
+        {
+            "runner_id": result["runner_id"],
+            "workflow_id": result["workflow_id"],
+            "source_root": result["source_root"],
+            "accepted_change_refs": result["accepted_change_refs"],
+            "file_mutations": mutations,
+        }
+    )
+    if result.get("idempotency_key") != expected_key:
+        raise ValueError("fix_runner result idempotency_key must match mutation proof")
+    for mutation in mutations:
+        if not isinstance(mutation, dict):
+            raise ValueError("fix_runner mutation proof entries must be objects")
+        rel_path = mutation.get("path")
+        after_sha = mutation.get("after_sha256")
+        if not isinstance(rel_path, str) or not rel_path or rel_path.startswith("/") or ".." in Path(rel_path).parts:
+            raise ValueError("fix_runner mutation proof path must be safe relative")
+        if not isinstance(after_sha, str) or not after_sha:
+            raise ValueError("fix_runner mutation proof requires after_sha256")
+        target = (root / rel_path).resolve()
+        if root != target and root not in target.parents:
+            raise ValueError("fix_runner mutation proof path escapes source root")
+        if not target.is_file():
+            raise ValueError(f"fix_runner mutation proof target does not exist: {rel_path}")
+        current_sha = hashlib.sha256(target.read_bytes()).hexdigest()
+        if current_sha != after_sha:
+            raise ValueError("fix_runner mutation proof after_sha256 must match current source root")
+
+
+def _record_fix_runner_events(handler: ModeHandler, workflow_id: str, *, state: dict[str, Any]) -> None:
+    if not state.get("fix_runner_required"):
+        return
+    event_types = _fix_runner_event_types(handler, workflow_id)
+    collection_status = state["fix_runner_collection_status"]
+    if "fix_runner_requested" not in event_types:
+        handler.store.append_event(
+            workflow_id,
+            {
+                "schema_version": 1,
+                "event_id": f"evt-conv-fix-runner-requested-{workflow_id}",
+                "workflow_id": workflow_id,
+                "event_type": "fix_runner_requested",
+                "created_at": now_iso(),
+                "note": "coordinator-owned fix runner request recorded for accepted convergence changes",
+                "payload": {
+                    "mode": "conv",
+                    "source": SOURCE_FIX_RUNNER,
+                    "request_ids": [item["runner_id"] for item in state["fix_runner_request_refs"]],
+                    "accepted_change_refs": [
+                        item["change_ref"]
+                        for request in state["fix_runner_request_refs"]
+                        for item in request["accepted_change_refs"]
+                    ],
+                    "tool_policy_id": state["fix_runner_request_refs"][0]["tool_policy"]["policy_id"],
+                    "collection_status": collection_status["status"],
+                    "collection_cursor": collection_status["collection_cursor"],
+                    "requires_follow_up_round": collection_status["requires_follow_up_round"],
+                },
+            },
+        )
+    if not state.get("fix_runner_result_refs"):
+        return
+    _record_fix_runner_result_artifacts(handler, workflow_id, state=state)
+    if "fix_runner_completed" in event_types:
+        return
+    handler.store.append_event(
+        workflow_id,
+        {
+            "schema_version": 1,
+            "event_id": f"evt-conv-fix-runner-completed-{workflow_id}",
+            "workflow_id": workflow_id,
+            "event_type": "fix_runner_completed",
+            "created_at": now_iso(),
+            "note": "coordinator-owned fix runner completed bounded accepted changes before follow-up",
+            "payload": {
+                "mode": "conv",
+                "source": SOURCE_FIX_RUNNER,
+                "request_ids": [item["runner_id"] for item in state["fix_runner_request_refs"]],
+                "result_ids": [item["result_id"] for item in state["fix_runner_result_refs"]],
+                "artifact_refs": [
+                    artifact_id
+                    for result in state["fix_runner_result_refs"]
+                    for artifact_id in result["artifact_refs"]
+                ],
+                "completed_result_count": collection_status["completed_result_count"],
+                "collection_cursor": collection_status["collection_cursor"],
+                "requires_follow_up_round": collection_status["requires_follow_up_round"],
+                "follow_up_completed": collection_status["follow_up_completed"],
+            },
+        },
+    )
+
+
+def _append_fix_runner_evidence(state: dict[str, Any]) -> None:
+    evidence = state.setdefault("evidence", [])
+    for result in state.get("fix_runner_result_refs") or []:
+        artifact_refs = result.get("artifact_refs") if isinstance(result, dict) else None
+        if not artifact_refs:
+            continue
+        evidence.append(
+            {
+                "evidence_key": f"fix-runner:{result['result_id']}",
+                "kind": "fix_runner_result",
+                "summary": "Coordinator-owned fix runner result registered through bounded artifact path.",
+                "artifact_refs": artifact_refs,
+                "produced_after_change_refs": [
+                    item["change_ref"]
+                    for item in result.get("applied_change_refs", [])
+                    if isinstance(item, dict) and isinstance(item.get("change_ref"), str) and item["change_ref"]
+                ],
+            }
+        )
+
+
+def _record_fix_runner_result_artifacts(handler: ModeHandler, workflow_id: str, *, state: dict[str, Any]) -> None:
+    workflow = handler.load_workflow(workflow_id)
+    existing = {
+        artifact.get("artifact_id"): artifact
+        for artifact in workflow.get("artifacts", [])
+        if isinstance(artifact, dict)
+    }
+    for request, result in zip(state["fix_runner_request_refs"], state["fix_runner_result_refs"], strict=True):
+        artifact_id = result["artifact_refs"][0]
+        artifact_path = handler.store.workflow_dir(workflow_id) / "artifacts" / f"{artifact_id}.json"
+        payload = {"request": request, "result": result}
+        if artifact_id in existing:
+            artifact = existing[artifact_id]
+            if artifact.get("kind") != "evidence":
+                raise ValueError("fix_runner result artifact must use evidence kind")
+            if json.loads(Path(str(artifact["path"])).read_text(encoding="utf-8")) != payload:
+                raise ValueError("fix_runner result artifact must match state")
+            continue
+        artifact_path.parent.mkdir(parents=True, exist_ok=True)
+        artifact_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        handler.record_artifact(
+            workflow_id,
+            kind="evidence",
+            artifact_id=artifact_id,
+            path=artifact_path,
+            note="coordinator-owned fix runner bounded result evidence",
+        )
+
+
+def _fix_runner_event_types(handler: ModeHandler, workflow_id: str) -> set[str]:
+    path = handler.store.workflow_dir(workflow_id) / "events.jsonl"
+    if not path.exists():
+        return set()
+    return {
+        event.get("event_type")
+        for event in (json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
+        if isinstance(event, dict)
+    }
+
+
 def _record_specialist_events(handler: ModeHandler, workflow_id: str, *, review: dict[str, Any], artifact_id: str) -> None:
     existing = _specialist_event_types(handler, workflow_id, artifact_id=artifact_id)
     for event_type in ("agent_panel_requested", "agent_findings_recorded", "finding_arbitrated"):
@@ -924,11 +1502,11 @@ def _record_specialist_events(handler: ModeHandler, workflow_id: str, *, review:
                 "workflow_id": workflow_id,
                 "event_type": event_type,
                 "created_at": now_iso(),
-                "note": "validated runner-provided specialist review evidence",
+                "note": "validated specialist review evidence",
                 "payload": {
                     "artifact_id": artifact_id,
                     "mode": "conv",
-                    "runner_ref": SPECIALIST_REVIEW_RUNNER_REF,
+                    "runner_ref": review["state"]["review_panel_spec"].get("runner_ref") or SPECIALIST_REVIEW_RUNNER_REF,
                     "finding_count": len(review["state"]["agent_finding_refs"]),
                     "arbitration_count": len(review["state"]["finding_arbitration"]),
                     "profile_registry_ids": [item["profile_id"] for item in review["state"]["profile_registry_refs"]],
@@ -955,9 +1533,25 @@ def _specialist_event_types(handler: ModeHandler, workflow_id: str, *, artifact_
     }
 
 
-def _specialist_execution_markers(*, artifact_id: str) -> dict[str, Any]:
+def _specialist_execution_markers(state: dict[str, Any], *, artifact_id: str) -> dict[str, Any]:
+    if state["review_panel_spec"].get("runner_ref") == NATIVE_PANEL_RUNNER_REF:
+        return {
+            "execution_capability": "delegated_agents",
+            "execution_source": SOURCE_NATIVE_AGENT_PANEL,
+            "satisfies_native_agent_panel": True,
+            "execution_required": True,
+            "execution_performed": True,
+            "execution_evidence_refs": [artifact_id],
+            "synthetic_report": False,
+            "runner_ref": NATIVE_PANEL_RUNNER_REF,
+            "execution_started_at": now_iso(),
+            "execution_completed_at": now_iso(),
+            "execution_classification_reason": "native OpenClaw specialist child sessions collected",
+        }
     return {
         "execution_capability": "delegated_agents",
+        "execution_source": SOURCE_RUNNER_PROVIDED_PACKET,
+        "satisfies_native_agent_panel": False,
         "execution_required": True,
         "execution_performed": True,
         "execution_evidence_refs": [artifact_id],
@@ -992,7 +1586,7 @@ def _specialist_blocked_final_status(residuals: dict[str, list[str]]) -> dict[st
 
 
 def _specialist_state_from_conv(state: dict[str, Any]) -> dict[str, Any]:
-    return {key: state[key] for key in (
+    specialist_state = {key: state[key] for key in (
         "review_panel_spec",
         "deterministic_check_results",
         "agent_finding_refs",
@@ -1015,6 +1609,9 @@ def _specialist_state_from_conv(state: dict[str, Any]) -> dict[str, Any]:
         "agent_result_collection_status",
         "recovery_resume_cursor",
     )}
+    if "specialist_max_rounds" in state:
+        specialist_state["max_rounds"] = state["specialist_max_rounds"]
+    return specialist_state
 
 
 def _compact(text: str) -> str:

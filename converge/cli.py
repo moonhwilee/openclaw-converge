@@ -192,8 +192,11 @@ def _uses_structured_findings(args: argparse.Namespace) -> bool:
     return bool(getattr(args, "structured_findings_file", None))
 
 
-def _target_refs_from_args(args: argparse.Namespace) -> list[dict[str, Any]]:
-    return load_target_refs_file(getattr(args, "target_refs_file", None), source_root=Path.cwd())
+def _target_refs_from_args(args: argparse.Namespace) -> list[dict[str, Any]] | None:
+    target_refs_file = getattr(args, "target_refs_file", None)
+    if not target_refs_file:
+        return None
+    return load_target_refs_file(target_refs_file, source_root=Path.cwd())
 
 
 def _validate_verify_execution_inputs(

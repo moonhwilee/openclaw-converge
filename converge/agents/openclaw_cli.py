@@ -45,6 +45,24 @@ READ_ACTION_TOOL_NAMES = frozenset(
     }
 )
 STATUS_ACTION_TOOL_NAMES = frozenset({"bash", "exec_command", "functions.exec_command"})
+MAX_TRAJECTORY_TOOL_CALL_REFS = 80
+MAX_TRAJECTORY_ARGUMENT_TEXT_BYTES = 4_000
+
+
+@dataclass(frozen=True)
+class OpenClawToolCallRef:
+    name: str
+    cwd: str | None
+    argument_text: str
+
+    def as_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "name": self.name,
+            "argument_text": self.argument_text,
+        }
+        if self.cwd:
+            payload["cwd"] = self.cwd
+        return payload
 
 
 @dataclass(frozen=True)
@@ -103,6 +121,7 @@ class OpenClawTrajectoryProof:
     tool_call_count: int
     tool_result_count: int
     tool_names: list[str]
+    tool_call_refs: list[OpenClawToolCallRef] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -114,6 +133,7 @@ class OpenClawTrajectoryProof:
             "tool_call_count": self.tool_call_count,
             "tool_result_count": self.tool_result_count,
             "tool_names": self.tool_names,
+            "tool_call_refs": [item.as_dict() for item in self.tool_call_refs],
         }
 
 
@@ -212,6 +232,7 @@ class OpenClawTrajectoryProofChecker:
         tool_call_count = 0
         tool_result_count = 0
         tool_names: set[str] = set()
+        tool_call_refs: list[OpenClawToolCallRef] = []
         session_key_seen = False
         for raw_line in events_path.read_text(encoding="utf-8").splitlines():
             if not raw_line.strip():
@@ -227,7 +248,17 @@ class OpenClawTrajectoryProofChecker:
                 tool_call_count += 1
                 data = event.get("data")
                 if isinstance(data, dict) and isinstance(data.get("name"), str) and data["name"].strip():
-                    tool_names.add(data["name"])
+                    tool_name = data["name"]
+                    tool_names.add(tool_name)
+                    if len(tool_call_refs) < MAX_TRAJECTORY_TOOL_CALL_REFS:
+                        arguments = data.get("arguments")
+                        tool_call_refs.append(
+                            OpenClawToolCallRef(
+                                name=tool_name,
+                                cwd=_tool_call_cwd(arguments),
+                                argument_text=_tool_call_argument_text(arguments),
+                            )
+                        )
             elif event_type == "tool.result":
                 tool_result_count += 1
         if not session_key_seen:
@@ -243,6 +274,7 @@ class OpenClawTrajectoryProofChecker:
             tool_call_count=tool_call_count,
             tool_result_count=tool_result_count,
             tool_names=sorted(tool_names),
+            tool_call_refs=tool_call_refs,
         )
 
 
@@ -539,7 +571,12 @@ def coordinator_verified_tool_smoke_evidence(
     if trajectory_proof.session_key != request.session_key:
         raise ValueError("native CLI trajectory proof session_key must match requested session_key")
     now = _format_time(datetime.now(timezone.utc))
-    action_binding = _validate_trajectory_supports_child_actions(trajectory_proof, evidence)
+    read_manifest = _validate_child_read_manifest(request, evidence)
+    action_binding = _validate_trajectory_supports_child_actions(
+        trajectory_proof,
+        evidence,
+        read_manifest=read_manifest,
+    )
     return {
         "status": TOOL_SMOKE_PASSED,
         "kind": "coordinator_verified_child_tool_smoke_session_and_trajectory_binding",
@@ -556,7 +593,7 @@ def coordinator_verified_tool_smoke_evidence(
         "status_action": evidence["status_action"],
         "child_read_action": evidence["read_action"],
         "child_status_action": evidence["status_action"],
-        "target_ref_read_manifest": _validate_child_read_manifest(request, evidence),
+        "target_ref_read_manifest": read_manifest,
         "trajectory_action_binding": action_binding,
         "session_store_proof": session_proof.as_dict(),
         "trajectory_proof": trajectory_proof.as_dict(),
@@ -642,6 +679,8 @@ def _validate_child_read_manifest(request: NativeLaunchRequest, evidence: dict[s
 def _validate_trajectory_supports_child_actions(
     trajectory_proof: OpenClawTrajectoryProof,
     evidence: dict[str, Any],
+    *,
+    read_manifest: dict[str, Any],
 ) -> dict[str, Any]:
     tool_names = set(trajectory_proof.tool_names)
     if not tool_names:
@@ -655,13 +694,94 @@ def _validate_trajectory_supports_child_actions(
         raise ValueError("native CLI trajectory proof lacks a tool event compatible with read_files/read_artifacts")
     if not status_supported:
         raise ValueError("native CLI trajectory proof lacks a tool event compatible with shell_status")
+    target_ref_read_binding = _validate_trajectory_read_manifest(trajectory_proof, read_manifest)
     return {
         "read_action": read_action,
         "status_action": evidence["status_action"],
         "tool_names": sorted(tool_names),
         "read_action_bound_by_tool_names": read_supported,
         "status_action_bound_by_tool_names": status_supported,
+        "target_ref_read_binding": target_ref_read_binding,
     }
+
+
+def _validate_trajectory_read_manifest(
+    trajectory_proof: OpenClawTrajectoryProof,
+    read_manifest: dict[str, Any],
+) -> dict[str, Any]:
+    required_refs = read_manifest.get("read_target_refs")
+    if not isinstance(required_refs, list) or not required_refs:
+        return {"required_count": 0, "matched_count": 0, "missing": []}
+    read_calls = [
+        item
+        for item in trajectory_proof.tool_call_refs
+        if item.name in READ_ACTION_TOOL_NAMES
+    ]
+    missing: list[dict[str, str]] = []
+    for item in required_refs:
+        if not isinstance(item, dict):
+            continue
+        path = item.get("path")
+        source_root = item.get("source_root")
+        if not isinstance(path, str) or not isinstance(source_root, str):
+            continue
+        if not any(_tool_call_ref_covers_target_ref(call, path=path, source_root=source_root) for call in read_calls):
+            missing.append({"path": path, "source_root": source_root})
+    if missing:
+        missing_paths = ", ".join(item["path"] for item in missing[:5])
+        raise ValueError(f"native CLI trajectory proof lacks target_ref read argument: {missing_paths}")
+    return {
+        "required_count": len(required_refs),
+        "matched_count": len(required_refs),
+        "missing": [],
+        "proof": "read_tool_call_arguments",
+    }
+
+
+def _tool_call_ref_covers_target_ref(call: OpenClawToolCallRef, *, path: str, source_root: str) -> bool:
+    argument_text = call.argument_text
+    cwd = call.cwd or ""
+    combined = f"{cwd}\n{argument_text}"
+    if path not in combined:
+        return False
+    if source_root in combined:
+        return True
+    if _source_root_placeholder(source_root) in combined:
+        return True
+    try:
+        return bool(cwd) and Path(cwd).expanduser().resolve() == Path(source_root).expanduser().resolve()
+    except (OSError, RuntimeError):
+        return False
+
+
+def _source_root_placeholder(source_root: str) -> str:
+    normalized = source_root.rstrip("/")
+    if normalized.endswith("/.openclaw/converge"):
+        return "$OPENCLAW_STATE_DIR/converge"
+    if normalized.endswith("/.openclaw/workspace"):
+        return "$WORKSPACE_DIR"
+    return source_root
+
+
+def _tool_call_cwd(arguments: Any) -> str | None:
+    if isinstance(arguments, dict):
+        value = arguments.get("cwd") or arguments.get("workdir")
+        if isinstance(value, str) and value.strip():
+            return value
+    return None
+
+
+def _tool_call_argument_text(arguments: Any) -> str:
+    if isinstance(arguments, (dict, list)):
+        text = json.dumps(arguments, ensure_ascii=False, sort_keys=True)
+    elif arguments is None:
+        text = ""
+    else:
+        text = str(arguments)
+    encoded = text.encode("utf-8")
+    if len(encoded) <= MAX_TRAJECTORY_ARGUMENT_TEXT_BYTES:
+        return text
+    return encoded[:MAX_TRAJECTORY_ARGUMENT_TEXT_BYTES].decode("utf-8", errors="ignore")
 
 
 def validate_openclaw_agent_session_key(value: str) -> None:

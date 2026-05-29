@@ -1540,7 +1540,14 @@ if len(sys.argv) > 2 and sys.argv[1:3] == ["sessions", "export-trajectory"]:
             "source": "transcript",
             "type": "tool.call",
             "sessionKey": session_key,
-            "data": {{"toolCallId": "call-1", "name": "exec_command", "arguments": {{"cmd": "pwd"}}}},
+            "data": {{
+                "toolCallId": "call-1",
+                "name": "exec_command",
+                "arguments": {{
+                    "cmd": "sed -n '1,80p' converge/modes/verify.py && sed -n '1,80p' converge/modes/conv.py && sed -n '1,80p' converge/modes/goal.py && git status --short",
+                    "cwd": {str(ROOT.resolve())!r},
+                }},
+            }},
         }},
         {{
             "traceSchema": "openclaw-trajectory",

@@ -867,9 +867,11 @@ def assert_openclaw_native_panel_cli_backend_requires_coordinator_verified_smoke
             and item.tool_smoke_evidence["target_ref_read_manifest"]["missing"] == []
             and item.tool_smoke_evidence["trajectory_action_binding"]["read_action_bound_by_tool_names"] is True
             and item.tool_smoke_evidence["trajectory_action_binding"]["status_action_bound_by_tool_names"] is True
+            and item.tool_smoke_evidence["trajectory_action_binding"]["target_ref_read_binding"]["proof"] == "read_tool_call_arguments"
             and item.tool_smoke_evidence["session_store_proof"]["session_key"] == item.session_key
             and item.tool_smoke_evidence["trajectory_proof"]["session_key"] == item.session_key
             and item.tool_smoke_evidence["trajectory_proof"]["tool_call_count"] >= 1
+            and item.tool_smoke_evidence["trajectory_proof"]["tool_call_refs"]
             for item in results
         ),
         "native CLI panel should replace child evidence with coordinator-verified smoke, session, and trajectory proof",
@@ -933,6 +935,28 @@ def assert_openclaw_native_panel_cli_backend_requires_coordinator_verified_smoke
     )
     blocked = expect_native_panel_blocked(lambda: missing_read_manifest.run_panel(requests), "read_target_refs missing requested target refs")
     assert_true(blocked.reason == "subagent_proof_failed", "missing requested target refs should block coordinator acceptance")
+
+    false_read_manifest_trajectory = OpenClawNativePanelCliBackend(
+        child_backend=OpenClawAgentCliBackend(
+            runner=lambda command, timeout_seconds: subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=(
+                    _trajectory_completed_process(command, read_path="README.md").stdout
+                    if command[:3] == ["openclaw", "sessions", "export-trajectory"]
+                    else _sessions_stdout([request.session_key for request in requests])
+                    if command[:2] == ["openclaw", "sessions"]
+                    else _cli_child_stdout(command[3])
+                ),
+                stderr="",
+            )
+        )
+    )
+    blocked = expect_native_panel_blocked(
+        lambda: false_read_manifest_trajectory.run_panel(requests),
+        "trajectory proof lacks target_ref read argument",
+    )
+    assert_true(blocked.reason == "subagent_proof_failed", "reported read manifests require matching trajectory read arguments")
 
     failed_smoke = OpenClawNativePanelCliBackend(
         child_backend=OpenClawAgentCliBackend(
@@ -1101,6 +1125,7 @@ def _trajectory_completed_process(
     include_tool_result: bool = True,
     tool_event_session_key: str | None = None,
     tool_name: str = "exec_command",
+    read_path: str = "converge/agents/contracts.py",
 ) -> subprocess.CompletedProcess[str]:
     session_key = command[command.index("--session-key") + 1]
     tool_session_key = tool_event_session_key or session_key
@@ -1123,7 +1148,14 @@ def _trajectory_completed_process(
             "source": "transcript",
             "type": "tool.call",
             "sessionKey": tool_session_key,
-            "data": {"toolCallId": "call-1", "name": tool_name, "arguments": {"cmd": "pwd"}},
+            "data": {
+                "toolCallId": "call-1",
+                "name": tool_name,
+                "arguments": {
+                    "cmd": f"sed -n '1,80p' {read_path} && git status --short",
+                    "cwd": str(Path.cwd().resolve()),
+                },
+            },
         },
     ]
     if include_tool_result:

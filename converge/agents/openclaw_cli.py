@@ -801,6 +801,9 @@ def _validate_trajectory_has_no_unexpected_tool_calls(
         if call.name in READ_ACTION_TOOL_NAMES and _tool_call_ref_is_allowed_startup_read(call):
             allowed_count += 1
             continue
+        if call.name in READ_ACTION_TOOL_NAMES and _tool_call_ref_is_allowed_readonly_search(call, read_manifest):
+            allowed_count += 1
+            continue
         if call.name in READ_ACTION_TOOL_NAMES and _tool_call_ref_covers_any_read_target(call, read_manifest):
             allowed_count += 1
             continue
@@ -860,6 +863,65 @@ def _tool_call_ref_is_allowed_startup_read(call: OpenClawToolCallRef) -> bool:
     if any(path in text for path in allowed_exact):
         return True
     return re.search(r"memory/20\d{2}-\d{2}-\d{2}\.md", text) is not None
+
+
+def _tool_call_ref_is_allowed_readonly_search(call: OpenClawToolCallRef, read_manifest: dict[str, Any]) -> bool:
+    if not _tool_call_ref_is_readonly_search(call):
+        return False
+    roots = _allowed_target_search_roots(read_manifest)
+    if not roots:
+        return False
+    text = call.argument_text
+    cwd = call.cwd or ""
+    combined = f"{cwd}\n{text}"
+    for source_root, prefixes in roots.items():
+        if source_root not in combined and _source_root_placeholder(source_root) not in combined:
+            continue
+        if any(_search_prefix_is_in_call(prefix, text) for prefix in prefixes):
+            return True
+    return False
+
+
+def _tool_call_ref_is_readonly_search(call: OpenClawToolCallRef) -> bool:
+    text = call.argument_text.lower()
+    if "rg " not in text and "grep " not in text and "grep -" not in text:
+        return False
+    blocked_markers = (
+        ">",
+        ">>",
+        "apply_patch",
+        "curl ",
+        "git push",
+        "launchctl",
+        "npm publish",
+        "openclaw update",
+        "rm ",
+        "trash ",
+        "sed -i",
+        "tee ",
+    )
+    return not any(marker in text for marker in blocked_markers)
+
+
+def _allowed_target_search_roots(read_manifest: dict[str, Any]) -> dict[str, set[str]]:
+    read_refs = read_manifest.get("read_target_refs")
+    if not isinstance(read_refs, list):
+        return {}
+    roots: dict[str, set[str]] = {}
+    for item in read_refs:
+        if not isinstance(item, dict):
+            continue
+        path = item.get("path")
+        source_root = item.get("source_root")
+        if not isinstance(path, str) or not path.strip() or not isinstance(source_root, str) or not source_root.strip():
+            continue
+        prefix = path.split("/", 1)[0]
+        roots.setdefault(source_root, set()).add(prefix)
+    return roots
+
+
+def _search_prefix_is_in_call(prefix: str, text: str) -> bool:
+    return re.search(rf"(?<![\w./-]){re.escape(prefix)}(?:/|\b)", text) is not None
 
 
 def _tool_call_ref_covers_target_ref(call: OpenClawToolCallRef, *, path: str, source_root: str) -> bool:

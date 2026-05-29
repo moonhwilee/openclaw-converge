@@ -343,8 +343,9 @@ def build_child_prompt(request: NativeLaunchRequest) -> str:
     }
     return (
         "You are a read-only Converge native specialist child session.\n"
-        "Inspect only the provided target refs. The first target ref is the "
-        "inline objective; file target refs are relative to their source_root. "
+        "Inspect only the provided target refs. The first target ref is a "
+        "brief inline objective, not document content; documents must be "
+        "inspected through file refs relative to their source_root. "
         "Do not send visible messages, "
         "mutate files, restart services, push, open PRs, release, or perform "
         "external actions.\n"

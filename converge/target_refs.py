@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from .agents.contracts import DEFAULT_BUDGET_POLICY
+from .agents.contracts import DEFAULT_BUDGET_POLICY, NATIVE_INLINE_TARGET_MAX_BYTES, NATIVE_INLINE_TARGET_MAX_LINES
 
 
 MAX_TARGET_REFS = 50
@@ -79,6 +79,7 @@ def merge_inline_target_ref(
         raise ValueError("inline target mode must be verify or conv")
     if not isinstance(text, str) or not text.strip():
         raise ValueError("inline target requires non-empty text")
+    _validate_inline_target_text(text)
     root = (source_root or Path.cwd()).expanduser().resolve()
     merged: list[dict[str, Any]] = [{"kind": f"{mode}_target", "text": text, "source_root": str(root)}]
     for item in refs or []:
@@ -98,3 +99,10 @@ def merge_inline_target_ref(
             ref["source_root"] = str(root)
         merged.append(ref)
     return merged
+
+
+def _validate_inline_target_text(text: str) -> None:
+    if len(text.encode("utf-8")) > NATIVE_INLINE_TARGET_MAX_BYTES:
+        raise ValueError("inline target is too large; store documents as files and pass refs")
+    if text.count("\n") + 1 > NATIVE_INLINE_TARGET_MAX_LINES:
+        raise ValueError("inline target has too many lines; store documents as files and pass refs")

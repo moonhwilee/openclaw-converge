@@ -858,7 +858,7 @@ def build_native_agent_pending_collection_state(
 
 
 def _native_blocked_collection_status(blocked_reason: str) -> str:
-    if blocked_reason in {"subagent_capacity_exhausted", "subagent_spawn_timeout", "subagent_spawn_failed"}:
+    if blocked_reason in {"subagent_capacity_exhausted", "subagent_spawn_timeout"}:
         return "waiting_subagent_capacity"
     return "blocked_native_panel_contract"
 

@@ -43,7 +43,7 @@ from ..agents.contracts import (
 )
 from ..artifacts import now_iso
 from ..messages import normalize_residuals
-from ..target_refs import merge_inline_target_ref
+from ..target_refs import default_converge_target_refs, merge_inline_target_ref
 
 
 CONV_REPORT_ARTIFACT_ID = "conv-final-report"
@@ -1362,7 +1362,11 @@ def _native_conv_requests(
     source_root: Path | None = None,
 ) -> list[NativeLaunchRequest]:
     profile_refs = ["native-conv-integrity", "native-conv-regression", "native-conv-ops"]
-    merged_target_refs = merge_inline_target_ref("conv", target, target_refs, source_root=source_root or Path.cwd())
+    root = source_root or Path.cwd()
+    effective_target_refs = target_refs
+    if effective_target_refs is None:
+        effective_target_refs = default_converge_target_refs("conv", source_root=root)
+    merged_target_refs = merge_inline_target_ref("conv", target, effective_target_refs, source_root=root)
     return [
         NativeLaunchRequest(
             mode="conv",

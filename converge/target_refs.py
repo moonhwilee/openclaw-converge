@@ -12,6 +12,18 @@ from .agents.contracts import DEFAULT_BUDGET_POLICY, NATIVE_INLINE_TARGET_MAX_BY
 MAX_TARGET_REFS = 50
 INLINE_TARGET_KINDS = {"verify_target", "conv_target"}
 MANIFEST_TARGET_KINDS = {"file"}
+DEFAULT_CONVERGE_TARGET_REF_PATHS = {
+    "conv": [
+        ("converge/modes/conv.py", "mode"),
+        ("converge/agents/openclaw_cli.py", "native-launch"),
+        ("converge/target_refs.py", "target-refs"),
+    ],
+    "verify": [
+        ("converge/modes/verify.py", "mode"),
+        ("converge/modes/specialist_panel.py", "native-panel"),
+        ("converge/target_refs.py", "target-refs"),
+    ],
+}
 
 
 def load_target_refs_file(path: str | Path | None, *, source_root: Path | None = None) -> list[dict[str, Any]]:
@@ -66,6 +78,20 @@ def validate_target_refs(refs: list[Any], *, source_root: Path | None = None) ->
             normalized_ref["role"] = role
         normalized.append(normalized_ref)
     return normalized
+
+
+def default_converge_target_refs(mode: str, *, source_root: Path | None = None) -> list[dict[str, Any]]:
+    """Return a bounded default file-ref set for broad Converge self-review."""
+    if mode not in DEFAULT_CONVERGE_TARGET_REF_PATHS:
+        raise ValueError("default converge target refs mode must be verify or conv")
+    root = (source_root or Path.cwd()).expanduser().resolve()
+    refs: list[dict[str, Any]] = []
+    for rel_path, role in DEFAULT_CONVERGE_TARGET_REF_PATHS[mode]:
+        if (root / rel_path).is_file():
+            refs.append({"kind": "file", "path": rel_path, "source_root": str(root), "role": role})
+    if not refs:
+        return []
+    return validate_target_refs(refs, source_root=root)
 
 
 def merge_inline_target_ref(

@@ -1384,7 +1384,8 @@ def assert_conv_records_native_specialist_panel(state_root: Path) -> None:
         owner_session_key="session:test",
         visible_delivery={"channel": "telegram", "target": "test"},
     )
-    ConvHandler(native_store).finalize_conv(native_workflow["workflow_id"], native_agent_backend=FakeNativePanelBackend())
+    native_backend = FakeNativePanelBackend()
+    ConvHandler(native_store).finalize_conv(native_workflow["workflow_id"], native_agent_backend=native_backend)
     native_conv = workflow(state_root, "conv-native-panel")
     native_state = native_conv["conv_state"]
     assert_true(native_conv["status"] == "completed_unreported", "native conv panel should allow completion")
@@ -1420,6 +1421,13 @@ def assert_conv_records_native_specialist_panel(state_root: Path) -> None:
         ),
         "native conv should force native finding profile/provenance onto child findings",
     )
+    assert_true(
+        all(
+            any(ref.get("kind") == "file" and ref.get("path") == "converge/modes/conv.py" for ref in request.target_refs)
+            for request in native_backend.requests
+        ),
+        "broad native conv should provide concrete file refs by default",
+    )
     assert_conv_report_matches_state(native_conv)
     run("validate", "--workflow-id", "conv-native-panel", state_root=state_root)
 
@@ -1452,6 +1460,30 @@ def assert_conv_records_native_specialist_panel(state_root: Path) -> None:
         "blocked native conv should keep recovery cursor bound to collection status",
     )
     run("validate", "--workflow-id", "conv-native-panel-blocked", state_root=state_root)
+
+    generic_failed_workflow = native_store.create_workflow(
+        kind="conv",
+        text="Converge with generic native OpenClaw child spawn failure",
+        workflow_id="conv-native-panel-spawn-failed",
+        owner_session_key="session:test",
+        visible_delivery={"channel": "telegram", "target": "test"},
+    )
+    ConvHandler(native_store).finalize_conv(
+        generic_failed_workflow["workflow_id"],
+        native_agent_backend=BlockedNativePanelBackend("subagent_spawn_failed"),
+    )
+    generic_failed = workflow(state_root, "conv-native-panel-spawn-failed")
+    generic_state = generic_failed["conv_state"]
+    assert_true(generic_failed["status"] == "blocked", "generic native spawn failure should block terminally")
+    assert_true(
+        generic_state["agent_result_collection_status"]["status"] == "blocked_native_panel_contract",
+        "generic native spawn failure must not masquerade as capacity wait",
+    )
+    assert_true(
+        generic_state["resume_next_action"] == "inspect_native_panel_contract_failure",
+        "generic native spawn failure should route to contract inspection",
+    )
+    run("validate", "--workflow-id", "conv-native-panel-spawn-failed", state_root=state_root)
 
     target_refs_file = state_root / "conv-target-refs.json"
     target_refs_file.write_text(
@@ -1713,7 +1745,11 @@ def specialist_packet() -> dict[str, Any]:
 
 
 class FakeNativePanelBackend:
+    def __init__(self) -> None:
+        self.requests = []
+
     def run_panel(self, requests):
+        self.requests = list(requests)
         results = []
         for index, request in enumerate(requests, start=1):
             completed_at = f"2026-05-29T00:0{index}:00Z"

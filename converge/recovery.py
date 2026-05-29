@@ -19,6 +19,7 @@ ACTIVE_STATUSES = {"draft", "running", "waiting_subagent", "verifying", "blocked
 TERMINAL_UNREPORTED_STATUSES = {"completed_unreported", "failed_unreported"}
 RECOVERY_CANDIDATE_STATUSES = ACTIVE_STATUSES | TERMINAL_UNREPORTED_STATUSES | {"waiting_user"}
 RISKY_CLASSES = {"external", "destructive", "gateway_runtime", "public"}
+NATIVE_PANEL_LAUNCH_STALE_SECONDS = 360
 CONVERGE_SOURCE_OF_TRUTH = {
     "owner": "converge",
     "state": "workflow_state",
@@ -260,6 +261,7 @@ def _classify_workflow(store: WorkflowStore, workflow: dict[str, Any], *, now: d
     recovery_mismatch = _recovery_transaction_mismatch_reason(store, workflow)
     pending_checkpoint = _has_pending_checkpoint(store, workflow_id)
     active_lease = _active_recovery_lease(workflow, now=observed_at)
+    native_panel_launch_stalled = _native_panel_launch_stalled(workflow, now=observed_at)
     load_error = workflow.get("_load_error")
     if load_error:
         reason = "invalid_workflow"
@@ -307,6 +309,10 @@ def _classify_workflow(store: WorkflowStore, workflow: dict[str, Any], *, now: d
         severity = 0
     elif status == "waiting_user" and _waiting_reminder_due(workflow, now=observed_at):
         reason = "waiting_user_reminder_due"
+        needs_recovery = True
+        severity = 2
+    elif native_panel_launch_stalled:
+        reason = "native_panel_launch_stalled"
         needs_recovery = True
         severity = 2
     elif status in ACTIVE_STATUSES and stale:
@@ -402,6 +408,36 @@ def _agent_result_collection_snapshot(workflow: dict[str, Any]) -> dict[str, Any
         "idempotency_keys": state.get("agent_result_idempotency_keys"),
         "relaunch_required": collection_status.get("relaunch_required"),
     }
+
+
+def _native_panel_launch_stalled(workflow: dict[str, Any], *, now: datetime) -> bool:
+    if workflow.get("status") not in ACTIVE_STATUSES:
+        return False
+    if workflow.get("kind") not in {"verify", "conv"}:
+        return False
+    state = workflow.get("verify_state") if workflow.get("kind") == "verify" else workflow.get("conv_state")
+    if not isinstance(state, dict):
+        return False
+    collection_status = state.get("agent_result_collection_status")
+    request_refs = state.get("agent_request_refs")
+    if not isinstance(collection_status, dict) or not isinstance(request_refs, list):
+        return False
+    if state.get("native_panel_launch_status") != "launch_requested":
+        return False
+    if collection_status.get("status") != "launch_requested":
+        return False
+    if collection_status.get("accepted_result_count") not in {None, 0}:
+        return False
+    requested_at_values = [
+        _parse_iso(item.get("requested_at"))
+        for item in request_refs
+        if isinstance(item, dict)
+    ]
+    requested_at_values = [value for value in requested_at_values if value is not None]
+    launched_at = max(requested_at_values, default=_parse_iso(workflow.get("last_activity_at")))
+    if launched_at is None:
+        return True
+    return now - launched_at > timedelta(seconds=NATIVE_PANEL_LAUNCH_STALE_SECONDS)
 
 
 def _cursor_for(workflow: dict[str, Any], action: dict[str, Any]) -> str:

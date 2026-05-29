@@ -35,7 +35,7 @@ from ..agents.openclaw_cli import NativePanelBlockedError
 from ..agents.contracts import NativeLaunchRequest, stable_hash
 from ..artifacts import now_iso
 from ..messages import normalize_residuals
-from ..target_refs import merge_inline_target_ref
+from ..target_refs import default_converge_target_refs, merge_inline_target_ref
 
 
 VERIFY_REPORT_ARTIFACT_ID = "verify-final-report"
@@ -628,7 +628,11 @@ def _native_verify_requests(
     source_root: Path | None = None,
 ) -> list[NativeLaunchRequest]:
     profile_refs = ["native-verify-architecture", "native-verify-contracts", "native-verify-ops"]
-    merged_target_refs = merge_inline_target_ref("verify", target, target_refs, source_root=source_root or Path.cwd())
+    root = source_root or Path.cwd()
+    effective_target_refs = target_refs
+    if effective_target_refs is None:
+        effective_target_refs = default_converge_target_refs("verify", source_root=root)
+    merged_target_refs = merge_inline_target_ref("verify", target, effective_target_refs, source_root=root)
     return [
         NativeLaunchRequest(
             mode="verify",

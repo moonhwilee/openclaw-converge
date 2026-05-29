@@ -145,8 +145,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
     if args.visible_delivery:
         _validate_visible_delivery_arg(args.visible_delivery)
     native_agent_backend = _native_verify_backend(args)
-    if native_agent_backend is not None and getattr(args, "structured_findings_file", None):
-        raise ValueError("verify native OpenClaw CLI panel cannot be combined with runner-provided structured findings")
+    _validate_verify_execution_inputs(args, native_agent_backend=native_agent_backend)
     store = WorkflowStore(args.state_root)
     _validate_recovery_resume_target(args, store)
     try:
@@ -174,6 +173,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
         recovery_lease_holder=args.recovery_lease_holder,
     )
     workflow = store.load_workflow(workflow["workflow_id"])
+    _reject_implicit_scaffold_result(args, workflow, mode="verify")
     print_json({"ok": True, "workflow": workflow, **verify})
     return 0
 
@@ -186,12 +186,94 @@ def _native_verify_backend(args: argparse.Namespace) -> OpenClawNativePanelCliBa
     )
 
 
+def _uses_structured_findings(args: argparse.Namespace) -> bool:
+    return bool(getattr(args, "structured_findings_file", None))
+
+
+def _validate_verify_execution_inputs(
+    args: argparse.Namespace,
+    *,
+    native_agent_backend: OpenClawNativePanelCliBackend | None,
+) -> None:
+    if native_agent_backend is not None and _uses_structured_findings(args):
+        raise ValueError("verify native OpenClaw CLI panel cannot be combined with runner-provided structured findings")
+    _reject_scaffold_with_real_inputs(args, mode="verify", native_agent_backend=native_agent_backend, runner_inputs=("structured_findings_file",))
+
+
+def _validate_conv_execution_inputs(
+    args: argparse.Namespace,
+    *,
+    native_agent_backend: OpenClawNativePanelCliBackend | None,
+) -> None:
+    if native_agent_backend is not None and _uses_structured_findings(args):
+        raise ValueError("conv native OpenClaw CLI panel cannot be combined with runner-provided structured findings")
+    _reject_scaffold_with_real_inputs(
+        args,
+        mode="conv",
+        native_agent_backend=native_agent_backend,
+        runner_inputs=("structured_findings_file", "fix_runner_result_file"),
+    )
+
+
+def _validate_goal_execution_inputs(
+    args: argparse.Namespace,
+    *,
+    native_agent_backend: OpenClawNativePanelCliBackend | None,
+) -> None:
+    _reject_scaffold_with_real_inputs(args, mode="goal", native_agent_backend=native_agent_backend, runner_inputs=())
+
+
+def _reject_scaffold_with_real_inputs(
+    args: argparse.Namespace,
+    *,
+    mode: str,
+    native_agent_backend: OpenClawNativePanelCliBackend | None,
+    runner_inputs: tuple[str, ...],
+) -> None:
+    if not getattr(args, "scaffold_only", False):
+        return
+    active_runner_inputs = [name for name in runner_inputs if getattr(args, name, None)]
+    if native_agent_backend is not None or active_runner_inputs:
+        raise ValueError(f"{mode} --scaffold-only cannot be combined with real execution inputs")
+
+
+def _reject_implicit_scaffold_result(args: argparse.Namespace, workflow: dict[str, Any], *, mode: str) -> None:
+    if getattr(args, "scaffold_only", False):
+        return
+    final_status = workflow.get("final_status") or {}
+    state = workflow.get(f"{mode}_state") or {}
+    if mode == "goal":
+        child_status = state.get("child_collection_status") or {}
+        child_reasons = [
+            child.get("stop_reason")
+            for child in child_status.get("children") or []
+            if isinstance(child, dict)
+        ]
+        implicit_scaffold = final_status.get("stop_reason") == "blocked_child_workflow_failed" and "blocked_no_execution_evidence" in child_reasons
+    else:
+        implicit_scaffold = (
+            final_status.get("stop_reason") == "blocked_no_execution_evidence"
+            and state.get("execution_performed") is not True
+            and state.get("synthetic_report") is True
+        )
+    if not implicit_scaffold:
+        return
+    options = {
+        "verify": "--native-panel-openclaw-cli or --structured-findings-file",
+        "conv": "--native-panel-openclaw-cli, --structured-findings-file, or --fix-runner-result-file",
+        "goal": "--native-panel-openclaw-cli",
+    }[mode]
+    raise ValueError(
+        f"{mode} execution_backend_missing: user-facing Converge {mode} requires a real execution backend "
+        f"({options}); use --scaffold-only only for internal scaffold/report contract checks"
+    )
+
+
 def cmd_conv(args: argparse.Namespace) -> int:
     if args.visible_delivery:
         _validate_visible_delivery_arg(args.visible_delivery)
     native_agent_backend = _native_verify_backend(args)
-    if native_agent_backend is not None and getattr(args, "structured_findings_file", None):
-        raise ValueError("conv native OpenClaw CLI panel cannot be combined with runner-provided structured findings")
+    _validate_conv_execution_inputs(args, native_agent_backend=native_agent_backend)
     store = WorkflowStore(args.state_root)
     _validate_recovery_resume_target(args, store)
     try:
@@ -221,6 +303,7 @@ def cmd_conv(args: argparse.Namespace) -> int:
         recovery_lease_holder=args.recovery_lease_holder,
     )
     workflow = store.load_workflow(workflow["workflow_id"])
+    _reject_implicit_scaffold_result(args, workflow, mode="conv")
     print_json({"ok": True, "workflow": workflow, **conv})
     return 0
 
@@ -250,6 +333,7 @@ def cmd_goal(args: argparse.Namespace) -> int:
     if args.visible_delivery:
         _validate_visible_delivery_arg(args.visible_delivery)
     native_agent_backend = _native_verify_backend(args)
+    _validate_goal_execution_inputs(args, native_agent_backend=native_agent_backend)
     store = WorkflowStore(args.state_root)
     _validate_recovery_resume_target(args, store)
     try:
@@ -276,6 +360,7 @@ def cmd_goal(args: argparse.Namespace) -> int:
         recovery_lease_holder=args.recovery_lease_holder,
     )
     workflow = store.load_workflow(workflow["workflow_id"])
+    _reject_implicit_scaffold_result(args, workflow, mode="goal")
     print_json({"ok": True, "workflow": workflow, **goal})
     return 0
 
@@ -3060,6 +3145,11 @@ def build_parser() -> argparse.ArgumentParser:
     verify.add_argument("--structured-findings-file")
     verify.add_argument("--native-panel-openclaw-cli", action="store_true")
     verify.add_argument("--native-panel-openclaw-bin", default="openclaw")
+    verify.add_argument(
+        "--scaffold-only",
+        action="store_true",
+        help="internal/dev-only report scaffold mode; user-facing verify requires a real execution backend",
+    )
     verify.add_argument("--recovery-lease-id")
     verify.add_argument("--recovery-lease-holder")
     verify.add_argument("--json", action="store_true", help=json_help)
@@ -3072,6 +3162,11 @@ def build_parser() -> argparse.ArgumentParser:
     goal.add_argument("--visible-delivery", type=parse_json)
     goal.add_argument("--native-panel-openclaw-cli", action="store_true")
     goal.add_argument("--native-panel-openclaw-bin", default="openclaw")
+    goal.add_argument(
+        "--scaffold-only",
+        action="store_true",
+        help="internal/dev-only child workflow scaffold mode; user-facing goal requires a real execution backend",
+    )
     goal.add_argument("--recovery-lease-id")
     goal.add_argument("--recovery-lease-holder")
     goal.add_argument("--json", action="store_true", help=json_help)
@@ -3087,6 +3182,11 @@ def build_parser() -> argparse.ArgumentParser:
     conv.add_argument("--fix-runner-source-root", type=Path)
     conv.add_argument("--native-panel-openclaw-cli", action="store_true")
     conv.add_argument("--native-panel-openclaw-bin", default="openclaw")
+    conv.add_argument(
+        "--scaffold-only",
+        action="store_true",
+        help="internal/dev-only report scaffold mode; user-facing conv requires a real execution backend",
+    )
     conv.add_argument("--recovery-lease-id")
     conv.add_argument("--recovery-lease-holder")
     conv.add_argument("--json", action="store_true", help=json_help)

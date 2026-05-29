@@ -63,6 +63,7 @@ def main() -> int:
             "verify",
             "--text",
             "Audit execution-required target",
+            "--scaffold-only",
             "--workflow-id",
             "verify-execution-required-blocked",
             "--owner-session-key",
@@ -88,10 +89,28 @@ def main() -> int:
         )
         run("validate", "--workflow-id", "verify-execution-required-blocked", state_root=state_root)
 
+        implicit_scaffold = run_fail(
+            "verify",
+            "--text",
+            "Audit execution-required target",
+            "--workflow-id",
+            "verify-implicit-scaffold-rejected",
+            "--owner-session-key",
+            "session:test",
+            "--visible-delivery",
+            visible_delivery,
+            state_root=state_root,
+        )
+        assert_true(
+            "verify execution_backend_missing" in implicit_scaffold["error"],
+            "verify should reject implicit scaffold mode without a real execution backend",
+        )
+
         read_only_verify = run(
             "verify",
             "--text",
             "Review PR read-only with no code changes but verify execution evidence",
+            "--scaffold-only",
             "--workflow-id",
             "verify-read-only-still-execution-required",
             "--owner-session-key",

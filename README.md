@@ -54,6 +54,12 @@ python -m converge.cli --state-root /tmp/converge-dry-run command-dry-run \
 npm run smoke:command-adapter
 ```
 
+`visible_delivery` is provider-agnostic route metadata. Converge records and
+validates it as a JSON object with non-empty `channel` and `target` fields, then
+binds terminal delivery proof to that route. Telegram appears in the examples as
+sample data; actual delivery still depends on the caller's OpenClaw connector and
+Gateway configuration.
+
 ## Distribution contract
 
 For GitHub/package installs, the expected user-facing contract is:
@@ -100,9 +106,21 @@ converge --state-root /tmp/converge-install-smoke command-dry-run \
   --json
 ```
 
+Use the installer's real OpenClaw delivery route for `--visible-delivery`.
+For example, a Telegram direct chat may use
+`{"channel":"telegram","target":"343580315","chat_type":"direct"}`. Other
+connectors should pass the route shape their delivery layer actually supports.
+If no visible delivery route is configured, installation should fail or stay in
+log-only mode instead of silently pretending that terminal report proof can be
+delivered.
+
 Existing C6 local install wiring is available for the standalone CLI and
-deterministic watchdog runner only. Do not run it as part of C7.4 or route
-replacement readiness unless separately requested:
+deterministic watchdog runner only. The runner is a read-only heartbeat
+observer: it executes `watchdog-check`, appends a JSONL heartbeat, and keeps a
+small latest-check state file. It does not notify, wake sessions, route slash
+commands, restart Gateway, push, open PRs, release, or deliver externally. Do
+not run install wiring as part of C7.4 or route replacement readiness unless
+separately requested:
 
 ```bash
 scripts/install-local.sh

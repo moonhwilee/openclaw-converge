@@ -100,6 +100,7 @@ def main() -> int:
             "conv",
             "--text",
             "Recover stale conv",
+            "--scaffold-only",
             "--workflow-id",
             "stale-conv",
             "--recovery-lease-id",
@@ -120,10 +121,12 @@ def main() -> int:
             assert_true(mode_record["reason"] == "stale_active", f"{kind} interrupted/stale fixture should need recovery")
             mode_recover = run("recover", "--workflow-id", workflow_id, "--holder", "smoke", state_root=state_root)
             mode_lease = mode_recover["lease"]
+            scaffold_args = ("--scaffold-only",) if kind in {"verify", "goal"} else ()
             resumed = run(
                 kind,
                 "--text",
                 f"Recover stale {kind}",
+                *scaffold_args,
                 "--workflow-id",
                 workflow_id,
                 "--recovery-lease-id",
@@ -418,6 +421,7 @@ def main() -> int:
             "goal",
             "--text",
             "Expired lease recovery",
+            "--scaffold-only",
             "--workflow-id",
             "expired-lease-goal",
             "--recovery-lease-id",

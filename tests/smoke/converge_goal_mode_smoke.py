@@ -188,6 +188,7 @@ def assert_execution_required_goal_blocks_planned_children(state_root: Path) -> 
         "goal",
         "--text",
         "Implement execution-required goal workflow",
+        "--scaffold-only",
         "--workflow-id",
         "goal-execution-required-blocked",
         "--owner-session-key",
@@ -232,6 +233,22 @@ def assert_execution_required_goal_blocks_planned_children(state_root: Path) -> 
         "execution-required goal should fail terminally instead of completing",
     )
     run("validate", "--workflow-id", "goal-execution-required-blocked", state_root=state_root)
+    implicit_scaffold = run_fail(
+        "goal",
+        "--text",
+        "Implement execution-required goal workflow",
+        "--workflow-id",
+        "goal-implicit-planned-children-rejected",
+        "--owner-session-key",
+        "session:test",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        state_root=state_root,
+    )
+    assert_true(
+        "goal execution_backend_missing" in implicit_scaffold["error"],
+        "goal should reject implicit scaffold child workflows without a real execution backend",
+    )
 
 
 def assert_execution_required_goal_collects_child_evidence(state_root: Path) -> None:
@@ -656,6 +673,7 @@ def assert_material_goal_blocks_without_fix_runner_child(state_root: Path) -> No
         "goal",
         "--text",
         f"Implement execution-required goal workflow for {target}",
+        "--scaffold-only",
         "--workflow-id",
         "goal-execution-required-material-child-blocked",
         "--owner-session-key",
@@ -696,6 +714,23 @@ def assert_material_goal_blocks_without_fix_runner_child(state_root: Path) -> No
     )
     run("validate", "--workflow-id", "goal-execution-required-material-child-blocked", state_root=state_root)
     assert_phase5a_contract(wf, "goal_state")
+
+    implicit_scaffold = run_fail(
+        "goal",
+        "--text",
+        f"Implement execution-required goal workflow for {target}",
+        "--workflow-id",
+        "goal-implicit-scaffold-rejected",
+        "--owner-session-key",
+        "session:test",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        state_root=state_root,
+    )
+    assert_true(
+        "goal execution_backend_missing" in implicit_scaffold["error"],
+        "goal should reject implicit scaffold child workflows without a real execution backend",
+    )
 
 
 def assert_goal_collects_native_child_panel_evidence(state_root: Path) -> None:
@@ -1103,6 +1138,7 @@ def assert_completion_criteria_plan_only_wording_does_not_downgrade_goal(state_r
             "목표는 Phase 1만 완료하는 것이다. "
             "완료 기준: plan-only 케이스는 execution_required=false로 유지된다."
         ),
+        "--scaffold-only",
         "--workflow-id",
         "goal-plan-only-criteria-still-execution-required",
         "--owner-session-key",

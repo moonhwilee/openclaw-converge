@@ -132,6 +132,7 @@ def assert_execution_required_conv_blocks_synthetic_round(state_root: Path) -> N
         "conv",
         "--text",
         "Improve execution-required target until convergence",
+        "--scaffold-only",
         "--workflow-id",
         "conv-execution-required-blocked",
         "--owner-session-key",
@@ -159,6 +160,22 @@ def assert_execution_required_conv_blocks_synthetic_round(state_root: Path) -> N
         "execution-required conv should fail terminally instead of completing",
     )
     run("validate", "--workflow-id", "conv-execution-required-blocked", state_root=state_root)
+    implicit_scaffold = run_fail(
+        "conv",
+        "--text",
+        "Improve execution-required target until convergence",
+        "--workflow-id",
+        "conv-implicit-scaffold-rejected",
+        "--owner-session-key",
+        "session:test",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        state_root=state_root,
+    )
+    assert_true(
+        "conv execution_backend_missing" in implicit_scaffold["error"],
+        "conv should reject implicit scaffold mode without a real execution backend",
+    )
 
 
 def assert_execution_required_conv_records_real_round_evidence(state_root: Path) -> None:
@@ -217,6 +234,7 @@ def assert_execution_required_conv_records_real_round_evidence(state_root: Path)
         "conv",
         "--text",
         f"Improve execution-required target {target}",
+        "--scaffold-only",
         "--workflow-id",
         "conv-execution-required-material-blocked",
         "--owner-session-key",
@@ -243,6 +261,7 @@ def assert_execution_required_conv_records_real_round_evidence(state_root: Path)
         "conv",
         "--text",
         f"Review and fix execution-required target {target}",
+        "--scaffold-only",
         "--workflow-id",
         "conv-execution-required-mixed-material-blocked",
         "--owner-session-key",
@@ -265,6 +284,7 @@ def assert_execution_required_conv_records_real_round_evidence(state_root: Path)
         "conv",
         "--text",
         f"검토 후 수정 execution-required target {target}",
+        "--scaffold-only",
         "--workflow-id",
         "conv-execution-required-korean-mixed-material-blocked",
         "--owner-session-key",

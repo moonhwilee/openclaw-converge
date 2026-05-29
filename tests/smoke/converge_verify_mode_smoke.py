@@ -422,6 +422,19 @@ def main() -> int:
         )
         run("validate", "--workflow-id", "verify-native-panel", state_root=state_root)
 
+        target_refs_file = state_root / "verify-target-refs.json"
+        target_refs_file.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "target_refs": [
+                        {"kind": "file", "path": "converge/modes/verify.py", "role": "mode"},
+                    ],
+                },
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
         fake_openclaw = _write_fake_openclaw_cli(state_root / "fake-openclaw", include_tool_smoke_evidence=True)
         native_cli_verify = run(
             "verify",
@@ -433,6 +446,8 @@ def main() -> int:
             "session:test",
             "--visible-delivery",
             visible_delivery,
+            "--target-refs-file",
+            str(target_refs_file),
             "--native-panel-openclaw-cli",
             "--native-panel-openclaw-bin",
             str(fake_openclaw),
@@ -442,6 +457,13 @@ def main() -> int:
         assert_true(native_cli_verify["workflow"]["status"] == "completed_unreported", "native CLI verify panel should complete")
         assert_true(native_cli_state["execution_source"] == "native_agent_panel", "native CLI verify should carry native source")
         assert_true(native_cli_state["satisfies_native_agent_panel"] is True, "native CLI verify should satisfy panel only after coordinator smoke")
+        assert_true(
+            all(
+                {"kind": "file", "path": "converge/modes/verify.py", "role": "mode"} in item["target_refs"]
+                for item in native_cli_state["agent_request_refs"]
+            ),
+            "native CLI verify should include manifest file refs in every child request",
+        )
         assert_true(
             all(
                 item["tool_smoke_evidence"]["kind"] == "coordinator_verified_child_tool_smoke_session_and_trajectory_binding"

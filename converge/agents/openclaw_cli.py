@@ -369,6 +369,7 @@ def _result_from_completed_process(
         error=error,
         tool_smoke_evidence=tool_smoke_evidence if isinstance(tool_smoke_evidence, dict) else None,
         satisfies_native_agent_panel=satisfies_native_agent_panel and status == STATUS_COMPLETED,
+        target_refs=[dict(item) for item in request.target_refs],
     )
     validate_native_child_result(result.as_dict())
     return result

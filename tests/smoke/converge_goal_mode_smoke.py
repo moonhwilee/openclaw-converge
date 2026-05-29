@@ -800,6 +800,19 @@ def assert_goal_collects_native_child_panel_evidence(state_root: Path) -> None:
             "continuation_plan": {"steps": []},
         }
     )
+    target_refs_file = state_root / "goal-target-refs.json"
+    target_refs_file.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "target_refs": [
+                    {"kind": "file", "path": "converge/modes/goal.py", "role": "mode"},
+                ],
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
     fake_openclaw = _write_fake_openclaw_cli(
         state_root / "fake-goal-openclaw",
         include_tool_smoke_evidence=True,
@@ -818,6 +831,8 @@ def assert_goal_collects_native_child_panel_evidence(state_root: Path) -> None:
         "session:test",
         "--visible-delivery",
         VISIBLE_DELIVERY,
+        "--target-refs-file",
+        str(target_refs_file),
         "--native-panel-openclaw-cli",
         "--native-panel-openclaw-bin",
         str(fake_openclaw),
@@ -848,6 +863,15 @@ def assert_goal_collects_native_child_panel_evidence(state_root: Path) -> None:
         assert_true(
             all(session_key.startswith("agent:main:converge-") for session_key in proof["session_keys"]),
             "goal CLI native proof should expose explicit native child session keys",
+        )
+        child = workflow(state_root, child_ref["workflow_id"])
+        child_state = child[f"{child_ref['kind']}_state"]
+        assert_true(
+            all(
+                {"kind": "file", "path": "converge/modes/goal.py", "role": "mode"} in item["target_refs"]
+                for item in child_state["agent_request_refs"]
+            ),
+            "goal CLI should propagate manifest file refs into child native requests",
         )
     run("validate", "--workflow-id", cli_workflow_id, state_root=state_root)
 

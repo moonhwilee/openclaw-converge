@@ -702,6 +702,7 @@ def _build_native_agent_collection_state(
                 "result_ids": [result.result_id],
                 "session_key": result.session_key,
                 "agent_session_ref": result.agent_session_ref,
+                "target_refs": [dict(item) for item in result.target_refs],
                 "tool_smoke_status": result.tool_smoke_status,
                 "tool_smoke_evidence": result.tool_smoke_evidence,
                 "tool_policy": dict(DEFAULT_TOOL_POLICY),

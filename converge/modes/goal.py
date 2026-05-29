@@ -88,6 +88,7 @@ class GoalHandler(ModeHandler):
         workflow_id: str,
         *,
         native_agent_backend: Any | None = None,
+        target_refs: list[dict[str, Any]] | None = None,
         recovery_lease_id: str | None = None,
         recovery_lease_holder: str | None = None,
     ) -> dict[str, Any]:
@@ -99,7 +100,7 @@ class GoalHandler(ModeHandler):
         workflow = self.load_workflow(workflow_id)
         existing_plan_accepted = _existing_plan_accepted_payload(self.store, workflow_id)
         record = build_goal_record(workflow, accepted_at=existing_plan_accepted.get("accepted_at") if existing_plan_accepted else None)
-        child_collection = _ensure_goal_children(self, workflow, record, native_agent_backend=native_agent_backend)
+        child_collection = _ensure_goal_children(self, workflow, record, native_agent_backend=native_agent_backend, target_refs=target_refs)
         if child_collection is not None:
             record = _record_with_child_collection(record, child_collection)
         artifact_path = (self.store.workflow_dir(workflow_id) / "artifacts" / "goal-plan.md").expanduser().resolve()
@@ -390,6 +391,7 @@ def _ensure_goal_children(
     record: GoalRecord,
     *,
     native_agent_backend: Any | None = None,
+    target_refs: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
     markers = classify_execution_markers(record.objective, capability="planned_child_refs_only")
     if markers.get("execution_required") is not True:
@@ -404,9 +406,9 @@ def _ensure_goal_children(
         child = _create_or_link_child(handler, workflow, child_id=child_id, role=role)
         if child.get("status") == "running":
             if role == "verify":
-                child_handler.finalize_verify(child_id, native_agent_backend=native_agent_backend)
+                child_handler.finalize_verify(child_id, native_agent_backend=native_agent_backend, target_refs=target_refs)
             else:
-                child_handler.finalize_conv(child_id, native_agent_backend=native_agent_backend)
+                child_handler.finalize_conv(child_id, native_agent_backend=native_agent_backend, target_refs=target_refs)
         child = handler.store.load_workflow(child_id)
         if child.get("status") not in {"completed_unreported", "failed_unreported", "reported"}:
             raise ValueError(f"required child workflow is not terminal: {child_id}")

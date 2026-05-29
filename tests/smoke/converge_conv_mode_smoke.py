@@ -1422,6 +1422,19 @@ def assert_conv_records_native_specialist_panel(state_root: Path) -> None:
     assert_conv_report_matches_state(native_conv)
     run("validate", "--workflow-id", "conv-native-panel", state_root=state_root)
 
+    target_refs_file = state_root / "conv-target-refs.json"
+    target_refs_file.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "target_refs": [
+                    {"kind": "file", "path": "converge/modes/conv.py", "role": "mode"},
+                ],
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
     fake_openclaw = _write_fake_openclaw_cli(state_root / "fake-openclaw-conv", include_tool_smoke_evidence=True)
     native_cli_conv = run(
         "conv",
@@ -1433,6 +1446,8 @@ def assert_conv_records_native_specialist_panel(state_root: Path) -> None:
         "session:test",
         "--visible-delivery",
         VISIBLE_DELIVERY,
+        "--target-refs-file",
+        str(target_refs_file),
         "--native-panel-openclaw-cli",
         "--native-panel-openclaw-bin",
         str(fake_openclaw),
@@ -1442,6 +1457,13 @@ def assert_conv_records_native_specialist_panel(state_root: Path) -> None:
     assert_true(native_cli_conv["workflow"]["status"] == "completed_unreported", "native CLI conv panel should complete")
     assert_true(native_cli_state["execution_source"] == "native_agent_panel", "native CLI conv should carry native source")
     assert_true(native_cli_state["satisfies_native_agent_panel"] is True, "native CLI conv should satisfy native panel only after proof")
+    assert_true(
+        all(
+            {"kind": "file", "path": "converge/modes/conv.py", "role": "mode"} in item["target_refs"]
+            for item in native_cli_state["agent_request_refs"]
+        ),
+        "native CLI conv should include manifest file refs in every child request",
+    )
     assert_true(
         all(
             item["tool_smoke_evidence"]["kind"] == "coordinator_verified_child_tool_smoke_session_and_trajectory_binding"

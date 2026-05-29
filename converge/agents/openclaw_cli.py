@@ -34,6 +34,17 @@ SUBAGENT_CLI_CONTRACT_CHANGED = "subagent_cli_contract_changed"
 SUBAGENT_SPAWN_FAILED = "subagent_spawn_failed"
 SUBAGENT_PROOF_FAILED = "subagent_proof_failed"
 OPENCLAW_AGENT_COMMAND_TIMEOUT_CAP_SECONDS = 300
+READ_ACTION_TOOL_NAMES = frozenset(
+    {
+        "bash",
+        "exec_command",
+        "functions.exec_command",
+        "read",
+        "view_image",
+        "functions.view_image",
+    }
+)
+STATUS_ACTION_TOOL_NAMES = frozenset({"bash", "exec_command", "functions.exec_command"})
 
 
 @dataclass(frozen=True)
@@ -526,19 +537,24 @@ def coordinator_verified_tool_smoke_evidence(
     if trajectory_proof.session_key != request.session_key:
         raise ValueError("native CLI trajectory proof session_key must match requested session_key")
     now = _format_time(datetime.now(timezone.utc))
+    action_binding = _validate_trajectory_supports_child_actions(trajectory_proof, evidence)
     return {
         "status": TOOL_SMOKE_PASSED,
         "kind": "coordinator_verified_child_tool_smoke_session_and_trajectory_binding",
         "checked_at": now,
         "session_key": request.session_key,
         "agent_session_ref": result.agent_session_ref,
-        "verification_scope": "child_claim_bound_to_explicit_session_refs_with_openclaw_session_store_and_trajectory_tool_events",
+        "verification_scope": "child_claim_bound_to_explicit_session_refs_with_openclaw_session_store_and_action_matched_trajectory_tool_events",
+        "policy_enforcement": "prompt_and_coordinator_validation_only",
+        "lifecycle_model": "synchronous_serial_openclaw_agent_child_process",
+        "lifecycle_scope": "launch_and_collect_are_executed_by_one_bounded_openclaw_agent_command; wait is the bounded command wait",
         "child_tool_smoke_kind": evidence["kind"],
         "child_tool_smoke_checked_at": evidence["checked_at"],
         "read_action": evidence["read_action"],
         "status_action": evidence["status_action"],
         "child_read_action": evidence["read_action"],
         "child_status_action": evidence["status_action"],
+        "trajectory_action_binding": action_binding,
         "session_store_proof": session_proof.as_dict(),
         "trajectory_proof": trajectory_proof.as_dict(),
         "launch_ref": request.session_key,
@@ -572,6 +588,31 @@ def _validate_child_smoke_claim(request: NativeLaunchRequest, result: NativeChil
     if evidence.get("status_action") != "shell_status":
         raise ValueError("native CLI child tool_smoke_evidence.status_action must be shell_status")
     return evidence
+
+
+def _validate_trajectory_supports_child_actions(
+    trajectory_proof: OpenClawTrajectoryProof,
+    evidence: dict[str, Any],
+) -> dict[str, Any]:
+    tool_names = set(trajectory_proof.tool_names)
+    if not tool_names:
+        raise ValueError("native CLI trajectory proof requires named tool events")
+    read_action = evidence["read_action"]
+    if read_action not in {"read_files", "read_artifacts"}:
+        raise ValueError("native CLI child read_action must be read_files or read_artifacts")
+    read_supported = bool(tool_names & READ_ACTION_TOOL_NAMES)
+    status_supported = bool(tool_names & STATUS_ACTION_TOOL_NAMES)
+    if not read_supported:
+        raise ValueError("native CLI trajectory proof lacks a tool event compatible with read_files/read_artifacts")
+    if not status_supported:
+        raise ValueError("native CLI trajectory proof lacks a tool event compatible with shell_status")
+    return {
+        "read_action": read_action,
+        "status_action": evidence["status_action"],
+        "tool_names": sorted(tool_names),
+        "read_action_bound_by_tool_names": read_supported,
+        "status_action_bound_by_tool_names": status_supported,
+    }
 
 
 def validate_openclaw_agent_session_key(value: str) -> None:

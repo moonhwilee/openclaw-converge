@@ -845,6 +845,10 @@ def assert_openclaw_native_panel_cli_backend_requires_coordinator_verified_smoke
             and item.tool_smoke_evidence["status_action"] == "shell_status"
             and item.tool_smoke_evidence["child_read_action"] == "read_files"
             and item.tool_smoke_evidence["child_status_action"] == "shell_status"
+            and item.tool_smoke_evidence["policy_enforcement"] == "prompt_and_coordinator_validation_only"
+            and item.tool_smoke_evidence["lifecycle_model"] == "synchronous_serial_openclaw_agent_child_process"
+            and item.tool_smoke_evidence["trajectory_action_binding"]["read_action_bound_by_tool_names"] is True
+            and item.tool_smoke_evidence["trajectory_action_binding"]["status_action_bound_by_tool_names"] is True
             and item.tool_smoke_evidence["session_store_proof"]["session_key"] == item.session_key
             and item.tool_smoke_evidence["trajectory_proof"]["session_key"] == item.session_key
             and item.tool_smoke_evidence["trajectory_proof"]["tool_call_count"] >= 1
@@ -998,6 +1002,25 @@ def assert_openclaw_native_panel_cli_backend_requires_coordinator_verified_smoke
     blocked = expect_native_panel_blocked(lambda: wrong_session_tool_events.run_panel(requests), "tool.call")
     assert_true(blocked.reason == "subagent_proof_failed", "wrong-session trajectory proof should be structured blocked")
 
+    unrelated_tool_events = OpenClawNativePanelCliBackend(
+        child_backend=OpenClawAgentCliBackend(
+            runner=lambda command, timeout_seconds: subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=(
+                    _trajectory_completed_process(command, tool_name="unrelated_tool").stdout
+                    if command[:3] == ["openclaw", "sessions", "export-trajectory"]
+                    else _sessions_stdout([request.session_key for request in requests])
+                    if command[:2] == ["openclaw", "sessions"]
+                    else _cli_child_stdout(command[3])
+                ),
+                stderr="",
+            )
+        )
+    )
+    blocked = expect_native_panel_blocked(lambda: unrelated_tool_events.run_panel(requests), "read_files")
+    assert_true(blocked.reason == "subagent_proof_failed", "unrelated trajectory tools should not prove child smoke actions")
+
 
 def _sessions_stdout(session_keys: list[str]) -> str:
     return json.dumps(
@@ -1022,6 +1045,7 @@ def _trajectory_completed_process(
     *,
     include_tool_result: bool = True,
     tool_event_session_key: str | None = None,
+    tool_name: str = "exec_command",
 ) -> subprocess.CompletedProcess[str]:
     session_key = command[command.index("--session-key") + 1]
     tool_session_key = tool_event_session_key or session_key
@@ -1044,7 +1068,7 @@ def _trajectory_completed_process(
             "source": "transcript",
             "type": "tool.call",
             "sessionKey": tool_session_key,
-            "data": {"toolCallId": "call-1", "name": "exec_command", "arguments": {"cmd": "pwd"}},
+            "data": {"toolCallId": "call-1", "name": tool_name, "arguments": {"cmd": "pwd"}},
         },
     ]
     if include_tool_result:
@@ -1056,7 +1080,7 @@ def _trajectory_completed_process(
                 "source": "transcript",
                 "type": "tool.result",
                 "sessionKey": tool_session_key,
-                "data": {"toolCallId": "call-1", "name": "exec_command"},
+                "data": {"toolCallId": "call-1", "name": tool_name},
             }
         )
     (output_dir / "events.jsonl").write_text("\n".join(json.dumps(event, sort_keys=True) for event in events) + "\n", encoding="utf-8")

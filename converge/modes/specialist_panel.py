@@ -883,6 +883,17 @@ def _validate_native_session_store_evidence(item: dict[str, Any]) -> None:
         raise ValueError("native specialist evidence requires child_read_action")
     if evidence.get("child_status_action") != "shell_status":
         raise ValueError("native specialist evidence requires child_status_action=shell_status")
+    if evidence.get("policy_enforcement") != "prompt_and_coordinator_validation_only":
+        raise ValueError("native specialist evidence requires explicit policy_enforcement scope")
+    if evidence.get("lifecycle_model") != "synchronous_serial_openclaw_agent_child_process":
+        raise ValueError("native specialist evidence requires explicit lifecycle_model")
+    action_binding = evidence.get("trajectory_action_binding")
+    if not isinstance(action_binding, dict):
+        raise ValueError("native specialist evidence requires trajectory_action_binding")
+    if action_binding.get("read_action_bound_by_tool_names") is not True:
+        raise ValueError("native specialist evidence requires read_action tool-name binding")
+    if action_binding.get("status_action_bound_by_tool_names") is not True:
+        raise ValueError("native specialist evidence requires status_action tool-name binding")
     proof = evidence.get("session_store_proof")
     if not isinstance(proof, dict):
         raise ValueError("native specialist evidence requires session_store_proof")

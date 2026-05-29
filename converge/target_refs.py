@@ -18,6 +18,7 @@ DEFAULT_CONVERGE_TARGET_REF_PATHS = {
         ("converge/modes/conv.py", "mode"),
         ("converge/agents/openclaw_cli.py", "native-launch"),
         ("converge/target_refs.py", "target-refs"),
+        ("tests/smoke/converge_agent_contracts_smoke.py", "native-proof-smoke"),
     ],
     "verify": [
         ("converge/modes/verify.py", "mode"),

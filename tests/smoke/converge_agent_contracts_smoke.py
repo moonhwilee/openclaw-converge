@@ -323,10 +323,15 @@ def assert_default_converge_target_refs_are_concrete_and_bounded() -> None:
         "default Converge refs should be concrete file refs bound to source_root",
     )
     assert_true(
-        {"converge/modes/conv.py", "converge/agents/openclaw_cli.py", "converge/target_refs.py"}.issubset(
+        {
+            "converge/modes/conv.py",
+            "converge/agents/openclaw_cli.py",
+            "converge/target_refs.py",
+            "tests/smoke/converge_agent_contracts_smoke.py",
+        }.issubset(
             {item["path"] for item in conv_refs}
         ),
-        "default conv refs should cover mode, native launch, and target ref contracts",
+        "default conv refs should cover mode, native launch, target ref, and native proof contracts",
     )
     assert_true(
         {"converge/modes/verify.py", "converge/modes/specialist_panel.py", "converge/target_refs.py"}.issubset(
@@ -1091,6 +1096,50 @@ def assert_openclaw_native_panel_cli_backend_requires_coordinator_verified_smoke
     )
     assert_true(blocked.reason == "subagent_proof_failed", "extra non-policy tool calls must block native proof")
 
+    status_marker_bypass_trajectory = OpenClawNativePanelCliBackend(
+        child_backend=OpenClawAgentCliBackend(
+            runner=lambda command, timeout_seconds: subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=(
+                    _trajectory_completed_process(command, include_status_marker_bypass_call=True).stdout
+                    if command[:3] == ["openclaw", "sessions", "export-trajectory"]
+                    else _sessions_stdout([request.session_key for request in requests])
+                    if command[:2] == ["openclaw", "sessions"]
+                    else _cli_child_stdout(command[3])
+                ),
+                stderr="",
+            )
+        )
+    )
+    blocked = expect_native_panel_blocked(
+        lambda: status_marker_bypass_trajectory.run_panel(requests),
+        "unexpected tool call",
+    )
+    assert_true(blocked.reason == "subagent_proof_failed", "commands with forbidden work plus harmless markers must block native proof")
+
+    overflowing_tool_call_trajectory = OpenClawNativePanelCliBackend(
+        child_backend=OpenClawAgentCliBackend(
+            runner=lambda command, timeout_seconds: subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=(
+                    _trajectory_completed_process(command, include_overflow_tool_calls=True).stdout
+                    if command[:3] == ["openclaw", "sessions", "export-trajectory"]
+                    else _sessions_stdout([request.session_key for request in requests])
+                    if command[:2] == ["openclaw", "sessions"]
+                    else _cli_child_stdout(command[3])
+                ),
+                stderr="",
+            )
+        )
+    )
+    blocked = expect_native_panel_blocked(
+        lambda: overflowing_tool_call_trajectory.run_panel(requests),
+        "did not capture every tool call",
+    )
+    assert_true(blocked.reason == "subagent_proof_failed", "uncaptured late tool calls must block native proof")
+
     failed_smoke = OpenClawNativePanelCliBackend(
         child_backend=OpenClawAgentCliBackend(
             runner=lambda command, timeout_seconds: subprocess.CompletedProcess(
@@ -1264,6 +1313,8 @@ def _trajectory_completed_process(
     include_startup_read_call: bool = False,
     include_readonly_search_call: bool = False,
     include_readonly_related_read_call: bool = False,
+    include_status_marker_bypass_call: bool = False,
+    include_overflow_tool_calls: bool = False,
     include_unexpected_tool_call: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     session_key = command[command.index("--session-key") + 1]
@@ -1411,6 +1462,45 @@ def _trajectory_completed_process(
                 },
             }
         )
+    if include_status_marker_bypass_call:
+        events.append(
+            {
+                "traceSchema": "openclaw-trajectory",
+                "schemaVersion": 1,
+                "traceId": "trace-contract",
+                "source": "transcript",
+                "type": "tool.call",
+                "sessionKey": tool_session_key,
+                "data": {
+                    "toolCallId": "call-status-marker-bypass",
+                    "name": tool_name,
+                    "arguments": {
+                        "cmd": "rm forbidden-file || true",
+                        "cwd": str(Path.cwd().resolve()),
+                    },
+                },
+            }
+        )
+    if include_overflow_tool_calls:
+        for index in range(81):
+            events.append(
+                {
+                    "traceSchema": "openclaw-trajectory",
+                    "schemaVersion": 1,
+                    "traceId": "trace-contract",
+                    "source": "transcript",
+                    "type": "tool.call",
+                    "sessionKey": tool_session_key,
+                    "data": {
+                        "toolCallId": f"call-overflow-{index}",
+                        "name": tool_name,
+                        "arguments": {
+                            "cmd": "pwd",
+                            "cwd": str(Path.cwd().resolve()),
+                        },
+                    },
+                }
+            )
     if include_tool_result:
         call_ids = ["call-1"]
         if include_status_call:
@@ -1425,6 +1515,10 @@ def _trajectory_completed_process(
             call_ids.append("call-readonly-search")
         if include_readonly_related_read_call:
             call_ids.append("call-readonly-related-read")
+        if include_status_marker_bypass_call:
+            call_ids.append("call-status-marker-bypass")
+        if include_overflow_tool_calls:
+            call_ids.extend(f"call-overflow-{index}" for index in range(81))
         for call_id in call_ids:
             events.append(
                 {

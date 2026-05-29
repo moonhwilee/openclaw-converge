@@ -47,6 +47,72 @@ def main() -> int:
         empty_watchdog = run("watchdog-check", state_root=state_root)
         assert_true(not empty_watchdog["needs_wake"], "empty state should not wake")
 
+        run("start", "--kind", "conv", "--text", "Recover native launch stall", "--workflow-id", "native-launch-stall", *wrapper_args, state_root=state_root)
+        native_launch = workflow(state_root, "native-launch-stall")
+        native_launch["status"] = "running"
+        native_launch["phase"] = "native_panel_launch_requested"
+        native_launch["last_activity_at"] = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        native_launch["stale_after_seconds"] = 7200
+        old_request_time = old_iso(hours=1)
+        request_refs = [
+            {
+                "request_id": f"conv-native-native-launch-stall-{index}",
+                "profile_ref": f"native-conv-{index}",
+                "context_hash": f"context-{index}",
+                "status": "launch_requested",
+                "expected_result_count": 1,
+                "result_ids": [],
+                "session_key": f"agent:main:native-launch-stall-{index}",
+                "agent_session_ref": f"agent:main:native-launch-stall-{index}",
+                "target_refs": [],
+                "tool_smoke_status": "not_run",
+                "tool_smoke_evidence": None,
+                "tool_policy": {},
+                "requested_at": old_request_time,
+                "lease": {"status": "launch_requested", "source": "native_agent_panel"},
+                "collection_cursor": f"conv-native-native-launch-stall-{index}:launch_requested:0/1",
+                "terminal_decision": None,
+                "execution_source": "native_agent_panel",
+                "satisfies_native_agent_panel": False,
+                "advisory_only": False,
+            }
+            for index in range(1, 4)
+        ]
+        native_launch["conv_state"] = {
+            "agent_request_refs": request_refs,
+            "agent_result_refs": [],
+            "agent_result_idempotency_keys": [],
+            "agent_result_collection_status": {
+                "status": "launch_requested",
+                "source": "native_agent_panel",
+                "request_ids": [item["request_id"] for item in request_refs],
+                "expected_result_count": len(request_refs),
+                "accepted_result_count": 0,
+                "ignored_duplicate_result_count": 0,
+                "pending_request_ids": [item["request_id"] for item in request_refs],
+                "collection_cursor": "conv:conv-specialist-findings:launch_requested:0/3",
+                "terminal_decision": "waiting_for_native_panel",
+                "relaunch_required": False,
+                "replayed_side_effects": False,
+            },
+            "recovery_resume_cursor": "conv:conv-specialist-findings:launch_requested:0/3",
+            "native_panel_launch_status": "launch_requested",
+        }
+        write_workflow(state_root, "native-launch-stall", native_launch)
+        native_launch_scan = run("scan", state_root=state_root)
+        native_launch_record = next(item for item in native_launch_scan["workflows"] if item["workflow_id"] == "native-launch-stall")
+        assert_true(
+            native_launch_record["needs_recovery"] and native_launch_record["reason"] == "native_panel_launch_stalled",
+            "native panel launch_requested should not wait for generic stale_after_seconds when no result is collected",
+        )
+        assert_true(
+            native_launch_record["agent_result_collection"]["status"] == "launch_requested",
+            "native launch stall scan should expose pending collection state",
+        )
+        native_launch_watchdog = run("watchdog-check", state_root=state_root)
+        native_launch_packet = next(item for item in native_launch_watchdog["recoveries"] if item["workflow_id"] == "native-launch-stall")
+        assert_true(native_launch_packet["reason"] == "native_panel_launch_stalled", "watchdog should wake stalled native panel launch")
+
         run("start", "--kind", "conv", "--text", "Recover stale conv", "--workflow-id", "stale-conv", *wrapper_args, state_root=state_root)
         stale_conv = make_stale(workflow(state_root, "stale-conv"))
         write_workflow(state_root, "stale-conv", stale_conv)

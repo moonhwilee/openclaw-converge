@@ -51,7 +51,7 @@ from converge.agents.openclaw_cli import (  # noqa: E402
     build_child_prompt,
     validate_openclaw_agent_session_key,
 )
-from converge.target_refs import load_target_refs_file, merge_inline_target_ref  # noqa: E402
+from converge.target_refs import default_converge_target_refs, load_target_refs_file, merge_inline_target_ref  # noqa: E402
 
 
 def expect_error(func, contains: str) -> None:
@@ -304,6 +304,30 @@ def assert_target_refs_manifest_validation() -> None:
 
         write_refs([{"kind": "file", "path": "missing.py"}])
         expect_error(lambda: load_target_refs_file(manifest, source_root=root), "does not exist")
+
+
+def assert_default_converge_target_refs_are_concrete_and_bounded() -> None:
+    root = Path.cwd().resolve()
+    conv_refs = default_converge_target_refs("conv", source_root=root)
+    verify_refs = default_converge_target_refs("verify", source_root=root)
+    assert_true(conv_refs, "broad native conv should receive concrete default file refs")
+    assert_true(verify_refs, "broad native verify should receive concrete default file refs")
+    assert_true(
+        all(item["kind"] == "file" and item["source_root"] == str(root) for item in conv_refs + verify_refs),
+        "default Converge refs should be concrete file refs bound to source_root",
+    )
+    assert_true(
+        {"converge/modes/conv.py", "converge/agents/openclaw_cli.py", "converge/target_refs.py"}.issubset(
+            {item["path"] for item in conv_refs}
+        ),
+        "default conv refs should cover mode, native launch, and target ref contracts",
+    )
+    assert_true(
+        {"converge/modes/verify.py", "converge/modes/specialist_panel.py", "converge/target_refs.py"}.issubset(
+            {item["path"] for item in verify_refs}
+        ),
+        "default verify refs should cover mode, native panel, and target ref contracts",
+    )
 
 
 def assert_fake_backend_lifecycle_idempotency_and_timeout() -> None:
@@ -1021,6 +1045,7 @@ def main() -> None:
     assert_openclaw_session_contract_requires_explicit_session_refs()
     assert_native_result_schema_requires_tool_smoke()
     assert_target_refs_manifest_validation()
+    assert_default_converge_target_refs_are_concrete_and_bounded()
     assert_fake_backend_lifecycle_idempotency_and_timeout()
     assert_panel_collection_blocks_partial_failure()
     assert_source_and_fix_runner_contracts()

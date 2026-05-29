@@ -397,7 +397,8 @@ def main() -> int:
             owner_session_key="session:test",
             visible_delivery={"channel": "telegram", "target": "test"},
         )
-        VerifyHandler(native_store).finalize_verify(native_workflow["workflow_id"], native_agent_backend=FakeNativePanelBackend())
+        native_backend = FakeNativePanelBackend()
+        VerifyHandler(native_store).finalize_verify(native_workflow["workflow_id"], native_agent_backend=native_backend)
         native_verify = workflow(state_root, "verify-native-panel")
         native_state = native_verify["verify_state"]
         assert_true(native_verify["status"] == "completed_unreported", "native verify panel should allow completion")
@@ -420,6 +421,13 @@ def main() -> int:
                 for item in native_state["agent_finding_refs"]
             ),
             "native verify should force native finding profile/provenance onto child findings",
+        )
+        assert_true(
+            all(
+                any(ref.get("kind") == "file" and ref.get("path") == "converge/modes/verify.py" for ref in request.target_refs)
+                for request in native_backend.requests
+            ),
+            "broad native verify should provide concrete file refs by default",
         )
         run("validate", "--workflow-id", "verify-native-panel", state_root=state_root)
 
@@ -452,6 +460,30 @@ def main() -> int:
             "blocked native verify should include a resume pointer",
         )
         run("validate", "--workflow-id", "verify-native-panel-blocked", state_root=state_root)
+
+        generic_failed_workflow = native_store.create_workflow(
+            kind="verify",
+            text="Verify with generic native OpenClaw child spawn failure",
+            workflow_id="verify-native-panel-spawn-failed",
+            owner_session_key="session:test",
+            visible_delivery={"channel": "telegram", "target": "test"},
+        )
+        VerifyHandler(native_store).finalize_verify(
+            generic_failed_workflow["workflow_id"],
+            native_agent_backend=BlockedNativePanelBackend("subagent_spawn_failed"),
+        )
+        generic_failed = workflow(state_root, "verify-native-panel-spawn-failed")
+        generic_state = generic_failed["verify_state"]
+        assert_true(generic_failed["status"] == "blocked", "generic native spawn failure should block terminally")
+        assert_true(
+            generic_state["agent_result_collection_status"]["status"] == "blocked_native_panel_contract",
+            "generic native spawn failure must not masquerade as capacity wait",
+        )
+        assert_true(
+            generic_state["resume_next_action"] == "inspect_native_panel_contract_failure",
+            "generic native spawn failure should route to contract inspection",
+        )
+        run("validate", "--workflow-id", "verify-native-panel-spawn-failed", state_root=state_root)
 
         target_refs_file = state_root / "verify-target-refs.json"
         target_refs_file.write_text(
@@ -1573,7 +1605,11 @@ print(json.dumps({{"response": json.dumps(payload, sort_keys=True)}}, sort_keys=
 
 
 class FakeNativePanelBackend:
+    def __init__(self) -> None:
+        self.requests = []
+
     def run_panel(self, requests):
+        self.requests = list(requests)
         results = []
         for index, request in enumerate(requests, start=1):
             completed_at = f"2026-05-28T00:0{index}:00Z"

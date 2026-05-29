@@ -868,6 +868,7 @@ def assert_openclaw_native_panel_cli_backend_requires_coordinator_verified_smoke
             and item.tool_smoke_evidence["trajectory_action_binding"]["read_action_bound_by_tool_names"] is True
             and item.tool_smoke_evidence["trajectory_action_binding"]["status_action_bound_by_tool_names"] is True
             and item.tool_smoke_evidence["trajectory_action_binding"]["target_ref_read_binding"]["proof"] == "read_tool_call_arguments"
+            and item.tool_smoke_evidence["trajectory_action_binding"]["status_action_binding"]["proof"] == "separate_status_tool_call_argument"
             and item.tool_smoke_evidence["session_store_proof"]["session_key"] == item.session_key
             and item.tool_smoke_evidence["trajectory_proof"]["session_key"] == item.session_key
             and item.tool_smoke_evidence["trajectory_proof"]["tool_call_count"] >= 1
@@ -957,6 +958,28 @@ def assert_openclaw_native_panel_cli_backend_requires_coordinator_verified_smoke
         "trajectory proof lacks target_ref read argument",
     )
     assert_true(blocked.reason == "subagent_proof_failed", "reported read manifests require matching trajectory read arguments")
+
+    missing_separate_status_trajectory = OpenClawNativePanelCliBackend(
+        child_backend=OpenClawAgentCliBackend(
+            runner=lambda command, timeout_seconds: subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=(
+                    _trajectory_completed_process(command, include_status_call=False).stdout
+                    if command[:3] == ["openclaw", "sessions", "export-trajectory"]
+                    else _sessions_stdout([request.session_key for request in requests])
+                    if command[:2] == ["openclaw", "sessions"]
+                    else _cli_child_stdout(command[3])
+                ),
+                stderr="",
+            )
+        )
+    )
+    blocked = expect_native_panel_blocked(
+        lambda: missing_separate_status_trajectory.run_panel(requests),
+        "separate harmless shell_status",
+    )
+    assert_true(blocked.reason == "subagent_proof_failed", "read calls alone must not satisfy shell_status proof")
 
     failed_smoke = OpenClawNativePanelCliBackend(
         child_backend=OpenClawAgentCliBackend(
@@ -1126,6 +1149,7 @@ def _trajectory_completed_process(
     tool_event_session_key: str | None = None,
     tool_name: str = "exec_command",
     read_path: str = "converge/agents/contracts.py",
+    include_status_call: bool = True,
 ) -> subprocess.CompletedProcess[str]:
     session_key = command[command.index("--session-key") + 1]
     tool_session_key = tool_event_session_key or session_key
@@ -1152,24 +1176,47 @@ def _trajectory_completed_process(
                 "toolCallId": "call-1",
                 "name": tool_name,
                 "arguments": {
-                    "cmd": f"sed -n '1,80p' {read_path} && git status --short",
+                    "cmd": f"sed -n '1,80p' {read_path}",
                     "cwd": str(Path.cwd().resolve()),
                 },
             },
         },
     ]
-    if include_tool_result:
+    if include_status_call:
         events.append(
             {
                 "traceSchema": "openclaw-trajectory",
                 "schemaVersion": 1,
                 "traceId": "trace-contract",
                 "source": "transcript",
-                "type": "tool.result",
+                "type": "tool.call",
                 "sessionKey": tool_session_key,
-                "data": {"toolCallId": "call-1", "name": tool_name},
+                "data": {
+                    "toolCallId": "call-2",
+                    "name": tool_name,
+                    "arguments": {
+                        "cmd": "git status --short",
+                        "cwd": str(Path.cwd().resolve()),
+                    },
+                },
             }
         )
+    if include_tool_result:
+        call_ids = ["call-1"]
+        if include_status_call:
+            call_ids.append("call-2")
+        for call_id in call_ids:
+            events.append(
+                {
+                    "traceSchema": "openclaw-trajectory",
+                    "schemaVersion": 1,
+                    "traceId": "trace-contract",
+                    "source": "transcript",
+                    "type": "tool.result",
+                    "sessionKey": tool_session_key,
+                    "data": {"toolCallId": call_id, "name": tool_name},
+                }
+            )
     (output_dir / "events.jsonl").write_text("\n".join(json.dumps(event, sort_keys=True) for event in events) + "\n", encoding="utf-8")
     summary = {
         "outputDir": str(output_dir),

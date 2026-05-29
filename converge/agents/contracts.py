@@ -88,13 +88,13 @@ DEFAULT_TIMEOUT_POLICY = {
 }
 
 DEFAULT_BUDGET_POLICY = {
-    "policy_id": "native-panel-budget-default-v2",
+    "policy_id": "native-panel-budget-default-v3",
     "panel_size_default": 3,
     "panel_size_high_risk": 5,
     "max_rounds_default": 1,
     "max_follow_up_rounds_after_material_change": 1,
     "context_mode": "isolated_light",
-    "max_input_bytes": 384_000,
+    "max_input_bytes": 416_000,
     "max_findings_bytes": 24_000,
     "oversized_context": "reject_before_launch",
     "oversized_findings": "truncate_with_metadata",

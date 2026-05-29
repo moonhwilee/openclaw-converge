@@ -410,7 +410,7 @@ def _ensure_goal_children(
             else:
                 child_handler.finalize_conv(child_id, native_agent_backend=native_agent_backend, target_refs=target_refs)
         child = handler.store.load_workflow(child_id)
-        if child.get("status") not in {"completed_unreported", "failed_unreported", "reported"}:
+        if child.get("status") not in {"completed_unreported", "failed_unreported", "reported", "blocked"}:
             raise ValueError(f"required child workflow is not terminal: {child_id}")
         _record_child_collected(handler, parent_id, child)
         child_refs.append(_child_ref_from_workflow(child, role=role))

@@ -1161,6 +1161,83 @@ def assert_goal_does_not_collect_nonterminal_existing_child(state_root: Path) ->
     assert_true("required child workflow is not terminal" in result["error"], "goal should not collect nonterminal child workflows")
 
 
+def assert_goal_collects_blocked_existing_child_as_terminal(state_root: Path) -> None:
+    parent_id = "goal-blocked-child-terminal"
+    text = "Implement execution-required goal with preexisting blocked child"
+    verify_child_id = _child_workflow_id(parent_id, role="verify", objective=text)
+    conv_child_id = _child_workflow_id(parent_id, role="conv", objective=text)
+    for role, child_id, child_text in (
+        ("verify", verify_child_id, f"Verify required goal child evidence for: {text}"),
+        ("conv", conv_child_id, f"Converge required goal child execution for: {text}"),
+    ):
+        run(
+            "start",
+            "--kind",
+            role,
+            "--text",
+            child_text,
+            "--workflow-id",
+            child_id,
+            "--owner-session-key",
+            "session:test",
+            "--visible-delivery",
+            VISIBLE_DELIVERY,
+            state_root=state_root,
+        )
+        child = workflow(state_root, child_id)
+        child["parent_workflow_id"] = parent_id
+        child["status"] = "blocked" if role == "verify" else "completed_unreported"
+        child["phase"] = "native_panel_blocked" if role == "verify" else "terminal"
+        child["final_status"] = (
+            {
+                "result": "blocked",
+                "stop_reason": "blocked_no_execution_evidence",
+                "residuals": {
+                    "blocking_remaining": ["blocked child smoke"],
+                    "accepted_risks": [],
+                    "implementation_backlog": [],
+                    "deferred_scope": [],
+                },
+            }
+            if role == "verify"
+            else {
+                "result": "pass",
+                "stop_reason": "complete",
+                "residuals": {
+                    "blocking_remaining": [],
+                    "accepted_risks": [],
+                    "implementation_backlog": [],
+                    "deferred_scope": [],
+                },
+            }
+        )
+        write_workflow(state_root, child_id, child)
+
+    wf = run(
+        "goal",
+        "--text",
+        text,
+        "--scaffold-only",
+        "--workflow-id",
+        parent_id,
+        "--owner-session-key",
+        "session:test",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        state_root=state_root,
+    )["workflow"]
+    assert_true(wf["status"] == "failed_unreported", "goal should close when an existing required child is blocked")
+    goal_state = wf["goal_state"]
+    child_refs = {item["workflow_id"]: item for item in goal_state["child_workflow_refs"]}
+    assert_true(child_refs[verify_child_id]["status"] == "blocked", "blocked child should be collected as blocked")
+    assert_true(child_refs[verify_child_id]["terminal_status"] == "blocked", "blocked child terminal_status should be preserved")
+    assert_true(
+        goal_state["child_collection_status"]["complete"] is True,
+        "blocked terminal child should not leave parent collection incomplete",
+    )
+    run("validate", "--workflow-id", parent_id, state_root=state_root)
+
+
 def assert_completion_criteria_plan_only_wording_does_not_downgrade_goal(state_root: Path) -> None:
     wf = run(
         "goal",
@@ -1489,6 +1566,7 @@ def main() -> int:
         assert_phase5b_waived_child_mode_requires_owner_proof(state_root)
         assert_goal_child_ids_handle_long_parent_ids(state_root)
         assert_goal_does_not_collect_nonterminal_existing_child(state_root)
+        assert_goal_collects_blocked_existing_child_as_terminal(state_root)
         assert_completion_criteria_plan_only_wording_does_not_downgrade_goal(state_root)
         assert_plan_accepted_requires_objective(state_root)
         assert_goal_retry_reuses_existing_plan_accepted(state_root)

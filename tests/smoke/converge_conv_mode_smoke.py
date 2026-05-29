@@ -10,10 +10,10 @@ from typing import Any
 
 
 try:
-    from smoke_helpers import VISIBLE_DELIVERY, assert_phase5a_contract, assert_phase5a_accepted_change_stale_rejected, assert_phase5a_freshness_rejected, assert_phase5a_missing_gate_rejected, assert_phase5a_stale_hash_rejected, assert_phase5a_terminal_status_rejected, assert_true, events, run, run_fail, workflow, write_workflow
+    from smoke_helpers import ROOT, VISIBLE_DELIVERY, assert_phase5a_contract, assert_phase5a_accepted_change_stale_rejected, assert_phase5a_freshness_rejected, assert_phase5a_missing_gate_rejected, assert_phase5a_stale_hash_rejected, assert_phase5a_terminal_status_rejected, assert_true, events, run, run_fail, workflow, write_workflow
     from converge_verify_mode_smoke import _write_fake_openclaw_cli
 except ModuleNotFoundError:
-    from tests.smoke.smoke_helpers import VISIBLE_DELIVERY, assert_phase5a_contract, assert_phase5a_accepted_change_stale_rejected, assert_phase5a_freshness_rejected, assert_phase5a_missing_gate_rejected, assert_phase5a_stale_hash_rejected, assert_phase5a_terminal_status_rejected, assert_true, events, run, run_fail, workflow, write_workflow
+    from tests.smoke.smoke_helpers import ROOT, VISIBLE_DELIVERY, assert_phase5a_contract, assert_phase5a_accepted_change_stale_rejected, assert_phase5a_freshness_rejected, assert_phase5a_missing_gate_rejected, assert_phase5a_stale_hash_rejected, assert_phase5a_terminal_status_rejected, assert_true, events, run, run_fail, workflow, write_workflow
     from tests.smoke.converge_verify_mode_smoke import _write_fake_openclaw_cli
 from converge.agents.contracts import NativeChildResult, stable_hash  # noqa: E402
 from converge.agents.openclaw_cli import NativePanelBlockedError  # noqa: E402
@@ -1520,7 +1520,7 @@ def assert_conv_records_native_specialist_panel(state_root: Path) -> None:
     expected_file_ref = {
         "kind": "file",
         "path": "converge/modes/conv.py",
-        "source_root": str(Path.cwd().resolve()),
+        "source_root": str(ROOT.resolve()),
         "role": "mode",
     }
     assert_true(native_cli_conv["workflow"]["status"] == "completed_unreported", "native CLI conv panel should complete")

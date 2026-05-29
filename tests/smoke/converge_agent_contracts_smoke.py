@@ -311,7 +311,9 @@ def assert_target_refs_manifest_validation() -> None:
 
 
 def assert_default_converge_target_refs_are_concrete_and_bounded() -> None:
-    root = Path.cwd().resolve()
+    root = resolve_converge_source_root(Path.cwd())
+    caller_root = Path.cwd().resolve()
+    non_converge_caller_root = caller_root if caller_root != root else root.parent
     conv_refs = default_converge_target_refs("conv", source_root=root)
     verify_refs = default_converge_target_refs("verify", source_root=root)
     assert_true(conv_refs, "broad native conv should receive concrete default file refs")
@@ -332,19 +334,20 @@ def assert_default_converge_target_refs_are_concrete_and_bounded() -> None:
         ),
         "default verify refs should cover mode, native panel, and target ref contracts",
     )
-    workspace_root = root.parent
-    installed_route_refs = default_converge_target_refs("verify", source_root=workspace_root)
+    installed_route_refs = default_converge_target_refs("verify", source_root=non_converge_caller_root)
     assert_true(
         any(item["path"] == "converge/modes/verify.py" and item["source_root"] == str(root) for item in installed_route_refs),
         "installed route defaults should resolve Converge refs from package/source root, not caller cwd",
     )
-    assert_true(resolve_converge_source_root(workspace_root) == root, "source root resolver should recover from non-Converge caller cwd")
+    assert_true(resolve_converge_source_root(non_converge_caller_root) == root, "source root resolver should recover from non-Converge caller cwd")
 
 
 def assert_legacy_comparison_target_refs_are_bounded_and_concrete() -> None:
-    root = Path.cwd().resolve()
+    root = resolve_converge_source_root(Path.cwd())
+    caller_root = Path.cwd().resolve()
+    non_converge_caller_root = caller_root if caller_root != root else root.parent
     target = "Compare Converge against legacy verification-convergence and GoalFlow behavior"
-    refs = default_converge_target_refs("verify", source_root=root.parent, target=target)
+    refs = default_converge_target_refs("verify", source_root=non_converge_caller_root, target=target)
     paths_by_root = {(item["source_root"], item["path"]) for item in refs}
     assert_true(
         (str(root), "converge/agents/openclaw_cli.py") in paths_by_root,
@@ -365,7 +368,9 @@ def assert_legacy_comparison_target_refs_are_bounded_and_concrete() -> None:
 
 
 def assert_cli_missing_target_refs_file_preserves_mode_defaults() -> None:
-    root = Path.cwd().resolve()
+    root = resolve_converge_source_root(Path.cwd())
+    caller_root = Path.cwd().resolve()
+    non_converge_caller_root = caller_root if caller_root != root else root.parent
     args = Namespace(target_refs_file=None)
     assert_true(_target_refs_from_args(args) is None, "missing CLI target refs file should preserve mode default refs")
 
@@ -394,7 +399,7 @@ def assert_cli_missing_target_refs_file_preserves_mode_defaults() -> None:
         workflow_id="verify-cli-comparison-refs",
         target="Compare against legacy verification-convergence skill",
         target_refs=_target_refs_from_args(args),
-        source_root=root.parent,
+        source_root=non_converge_caller_root,
     )
     comparison_paths = {item.get("path") for item in comparison_requests[0].target_refs if item.get("kind") == "file"}
     assert_true("converge/recovery.py" in comparison_paths, "CLI comparison verify should include recovery ref")

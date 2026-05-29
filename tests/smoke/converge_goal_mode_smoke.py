@@ -1560,6 +1560,8 @@ class FakeNativePanelBackend:
                         "verification_scope": "fixture_goal_parent_child_native_panel_binding",
                         "child_tool_smoke_kind": "fixture",
                         "child_tool_smoke_checked_at": completed_at,
+                        "read_action": "read_files",
+                        "status_action": "shell_status",
                         "child_read_action": "read_files",
                         "child_status_action": "shell_status",
                         "session_store_proof": {

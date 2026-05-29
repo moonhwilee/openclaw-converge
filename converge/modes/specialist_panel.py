@@ -13,13 +13,16 @@ from converge.agents.contracts import (
     SOURCE_NATIVE_AGENT_PANEL,
     SOURCE_RUNNER_PROVIDED_PACKET,
     STATUS_COMPLETED,
+    TOOL_SMOKE_NOT_RUN,
     TOOL_SMOKE_PASSED,
     NativeChildResult,
+    NativeLaunchRequest,
     build_runner_packet_request_ref,
     build_runner_packet_result_ref,
     stable_hash,
     validate_native_child_result,
 )
+from converge.artifacts import now_iso
 
 
 SPECIALIST_REVIEW_RUNNER_REF = "trusted-runner-provided-specialist-findings-v1"
@@ -765,6 +768,92 @@ def _build_native_agent_collection_state(
         },
         "recovery_resume_cursor": collection_cursor,
     }
+
+
+def build_native_agent_pending_collection_state(
+    *,
+    mode: str,
+    artifact_id: str,
+    requests: list[NativeLaunchRequest],
+    status: str = "launch_requested",
+    blocked_reason: str | None = None,
+    blocked_request_id: str | None = None,
+    blocked_session_key: str | None = None,
+    resume_next_action: str | None = None,
+) -> dict[str, Any]:
+    """Build non-terminal native request/collection state before results exist."""
+
+    if not requests:
+        raise ValueError("native pending collection state requires at least one request")
+    request_refs = []
+    now = now_iso()
+    for request in requests:
+        request_id = request.request_id or request.idempotency_key
+        request_refs.append(
+            {
+                "request_id": request_id,
+                "profile_ref": request.profile_ref,
+                "context_hash": request.context_hash,
+                "status": status,
+                "expected_result_count": 1,
+                "result_ids": [],
+                "session_key": request.session_key,
+                "agent_session_ref": request.session_key,
+                "target_refs": [dict(item) for item in request.target_refs],
+                "tool_smoke_status": TOOL_SMOKE_NOT_RUN,
+                "tool_smoke_evidence": None,
+                "tool_policy": dict(request.tool_policy),
+                "requested_at": now,
+                "lease": {"status": status, "source": SOURCE_NATIVE_AGENT_PANEL},
+                "collection_cursor": f"{request_id}:{status}:0/1",
+                "terminal_decision": None,
+                "execution_source": SOURCE_NATIVE_AGENT_PANEL,
+                "satisfies_native_agent_panel": False,
+                "advisory_only": False,
+            }
+        )
+    pending_request_ids = [item["request_id"] for item in request_refs]
+    collection_cursor = f"{mode}:{artifact_id}:{status}:0/{len(request_refs)}"
+    collection_status = {
+        "status": status,
+        "source": SOURCE_NATIVE_AGENT_PANEL,
+        "request_ids": pending_request_ids,
+        "expected_result_count": len(request_refs),
+        "accepted_result_count": 0,
+        "ignored_duplicate_result_count": 0,
+        "pending_request_ids": pending_request_ids,
+        "collection_cursor": collection_cursor,
+        "terminal_decision": "waiting_for_native_panel",
+        "relaunch_required": False,
+        "replayed_side_effects": False,
+    }
+    state: dict[str, Any] = {
+        "agent_request_refs": request_refs,
+        "agent_result_refs": [],
+        "agent_result_idempotency_keys": [],
+        "agent_result_collection_status": collection_status,
+        "recovery_resume_cursor": collection_cursor,
+        "native_panel_launch_status": status,
+    }
+    if blocked_reason:
+        state["blocked_reason"] = blocked_reason
+        state["blocked_request_id"] = blocked_request_id
+        state["blocked_session_key"] = blocked_session_key
+        state["pending_request_ids"] = pending_request_ids
+        state["resume_next_action"] = resume_next_action or "retry_native_panel_after_capacity_available"
+        state["agent_result_collection_status"] = {
+            **collection_status,
+            "status": "waiting_subagent_capacity",
+            "blocked_reason": blocked_reason,
+            "blocked_request_id": blocked_request_id,
+            "blocked_session_key": blocked_session_key,
+            "terminal_decision": "blocked_waiting_subagent_capacity",
+            "relaunch_required": True,
+            "collection_cursor": f"{mode}:{artifact_id}:waiting_subagent_capacity:0/{len(request_refs)}",
+        }
+        state["native_panel_launch_status"] = "waiting_subagent_capacity"
+        state["recovery_resume_cursor"] = state["agent_result_collection_status"]["collection_cursor"]
+    return state
 
 
 def _validate_native_session_store_evidence(item: dict[str, Any]) -> None:

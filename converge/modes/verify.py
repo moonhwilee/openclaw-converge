@@ -24,12 +24,14 @@ from .specialist_panel import (
     SOURCE_RUNNER_PROVIDED_PACKET,
     SPECIALIST_REVIEW_RUNNER_REF,
     build_native_specialist_review,
+    build_native_agent_pending_collection_state,
     build_specialist_review,
     specialist_artifact_id,
     validate_native_specialist_state,
     validate_specialist_state,
     write_specialist_artifact,
 )
+from ..agents.openclaw_cli import NativePanelBlockedError
 from ..agents.contracts import NativeLaunchRequest, stable_hash
 from ..artifacts import now_iso
 from ..messages import normalize_residuals
@@ -180,6 +182,12 @@ class VerifyHandler(ModeHandler):
                 native_agent_backend=native_agent_backend,
                 target_refs=target_refs,
             )
+            if specialist_review.get("blocked"):
+                return {
+                    "workflow_id": workflow_id,
+                    "checkpoint": specialist_review["checkpoint"],
+                    "verify": specialist_review["state"],
+                }
         specialist_state = None
         if specialist_review:
             specialist_state = specialist_review["state"]
@@ -453,7 +461,19 @@ def _record_native_specialist_review(
 ) -> dict[str, Any]:
     artifact_id = specialist_artifact_id("verify")
     requests = _native_verify_requests(workflow_id=workflow_id, target=target, target_refs=target_refs)
-    results = native_agent_backend.run_panel(requests)
+    _record_native_panel_launch_requested(handler, workflow_id, mode="verify", artifact_id=artifact_id, target=target, requests=requests)
+    try:
+        results = native_agent_backend.run_panel(requests)
+    except NativePanelBlockedError as exc:
+        return _record_native_panel_blocked(
+            handler,
+            workflow_id,
+            mode="verify",
+            artifact_id=artifact_id,
+            target=target,
+            requests=requests,
+            error=exc,
+        )
     review = build_native_specialist_review(
         results,
         mode="verify",
@@ -483,6 +503,122 @@ def _record_native_specialist_review(
         )["artifact"]
     _record_specialist_events(handler, workflow_id, mode="verify", review=review, artifact_id=artifact["artifact_id"])
     return review
+
+
+def _record_native_panel_launch_requested(
+    handler: ModeHandler,
+    workflow_id: str,
+    *,
+    mode: str,
+    artifact_id: str,
+    target: str,
+    requests: list[NativeLaunchRequest],
+) -> None:
+    state = _native_panel_verify_state(
+        handler,
+        workflow_id,
+        target=target,
+        verdict="stopped",
+        native_panel_state=build_native_agent_pending_collection_state(mode=mode, artifact_id=artifact_id, requests=requests),
+    )
+    handler.record_outcome(
+        workflow_id,
+        ModeOutcome(
+            summary="Native specialist panel child requests recorded before launch/collection.",
+            status_after="running",
+            phase_after="native_panel_launch_requested",
+            checkpoint_type="checkpoint",
+            event_type="checkpoint",
+            worklog_block_kind="checkpoint_summary",
+            step_result="waiting",
+            mode_state_update=state,
+        ),
+    )
+
+
+def _record_native_panel_blocked(
+    handler: ModeHandler,
+    workflow_id: str,
+    *,
+    mode: str,
+    artifact_id: str,
+    target: str,
+    requests: list[NativeLaunchRequest],
+    error: NativePanelBlockedError,
+) -> dict[str, Any]:
+    native_panel_state = build_native_agent_pending_collection_state(
+        mode=mode,
+        artifact_id=artifact_id,
+        requests=requests,
+        status="launch_blocked",
+        blocked_reason=error.reason,
+        blocked_request_id=error.blocked_request_id,
+        blocked_session_key=error.blocked_session_key,
+        resume_next_action="retry_native_panel_after_capacity_available",
+    )
+    residuals = normalize_residuals(
+        {
+            "blocking_remaining": [
+                f"Native specialist panel blocked before complete collection: {error.reason}.",
+            ],
+            "accepted_risks": [],
+            "implementation_backlog": [
+                "Retry native specialist panel after subagent capacity or CLI contract issue is resolved.",
+            ],
+            "deferred_scope": [
+                "No automatic child session abort/delete was attempted.",
+            ],
+        }
+    )
+    state = _native_panel_verify_state(
+        handler,
+        workflow_id,
+        target=target,
+        verdict="blocked",
+        native_panel_state=native_panel_state,
+        residuals=residuals,
+    )
+    checkpoint = handler.record_outcome(
+        workflow_id,
+        ModeOutcome(
+            summary=f"Native specialist panel blocked before complete collection: {error.reason}.",
+            status_after="blocked",
+            phase_after="native_panel_blocked",
+            checkpoint_type="checkpoint",
+            event_type="checkpoint",
+            worklog_block_kind="checkpoint_summary",
+            step_result="blocked",
+            residuals=residuals,
+            mode_state_update=state,
+            failure_reason=None,
+        ),
+    )
+    return {"blocked": True, "state": state, "checkpoint": checkpoint, "error": error.message}
+
+
+def _native_panel_verify_state(
+    handler: ModeHandler,
+    workflow_id: str,
+    *,
+    target: str,
+    verdict: str,
+    native_panel_state: dict[str, Any],
+    residuals: dict[str, list[str]] | None = None,
+) -> dict[str, Any]:
+    report_path = handler.store.workflow_dir(workflow_id) / "artifacts" / "verify-report.md"
+    return {
+        "final_report_artifact_id": VERIFY_REPORT_ARTIFACT_ID,
+        "final_report_artifact_path": str(report_path),
+        "target": target,
+        "check_plan": ["Run native OpenClaw specialist panel."],
+        "deterministic_checks": [],
+        "reviewer_findings": [],
+        "verdict": verdict,
+        "evidence": [],
+        "residuals": normalize_residuals(residuals or {}),
+        "final_report_summary": "Native specialist panel is pending or blocked before complete collection.",
+        **native_panel_state,
+    }
 
 
 def _native_verify_requests(*, workflow_id: str, target: str, target_refs: list[dict[str, Any]] | None = None) -> list[NativeLaunchRequest]:

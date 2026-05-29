@@ -16,6 +16,7 @@ except ModuleNotFoundError:
     from tests.smoke.smoke_helpers import VISIBLE_DELIVERY, assert_phase5a_contract, assert_phase5a_accepted_change_stale_rejected, assert_phase5a_freshness_rejected, assert_phase5a_missing_gate_rejected, assert_phase5a_stale_hash_rejected, assert_phase5a_terminal_status_rejected, assert_true, events, run, run_fail, workflow, write_workflow
     from tests.smoke.converge_verify_mode_smoke import _write_fake_openclaw_cli
 from converge.agents.contracts import NativeChildResult, stable_hash  # noqa: E402
+from converge.agents.openclaw_cli import NativePanelBlockedError  # noqa: E402
 from converge.modes.conv import ConvRecord, ConvRound, _material_change_record, _max_round_record, build_conv_record, render_conv_report, validate_conv_state  # noqa: E402
 from converge.modes.conv import ConvHandler  # noqa: E402
 from converge.store import WorkflowStore  # noqa: E402
@@ -1422,6 +1423,36 @@ def assert_conv_records_native_specialist_panel(state_root: Path) -> None:
     assert_conv_report_matches_state(native_conv)
     run("validate", "--workflow-id", "conv-native-panel", state_root=state_root)
 
+    blocked_native_workflow = native_store.create_workflow(
+        kind="conv",
+        text="Converge with blocked native OpenClaw child panel",
+        workflow_id="conv-native-panel-blocked",
+        owner_session_key="session:test",
+        visible_delivery={"channel": "telegram", "target": "test"},
+    )
+    ConvHandler(native_store).finalize_conv(
+        blocked_native_workflow["workflow_id"],
+        native_agent_backend=BlockedNativePanelBackend("subagent_spawn_timeout"),
+    )
+    blocked_native = workflow(state_root, "conv-native-panel-blocked")
+    blocked_state = blocked_native["conv_state"]
+    assert_true(blocked_native["status"] == "blocked", "blocked native conv should stop as blocked, not running")
+    assert_true(len(blocked_state["agent_request_refs"]) == 3, "blocked native conv should persist request refs")
+    assert_true(blocked_state["agent_result_refs"] == [], "blocked native conv should not synthesize child results")
+    assert_true(
+        blocked_state["agent_result_collection_status"]["status"] == "waiting_subagent_capacity",
+        "blocked native conv should record waiting_subagent_capacity",
+    )
+    assert_true(
+        blocked_state["blocked_session_key"] == blocked_state["agent_request_refs"][0]["session_key"],
+        "blocked native conv should preserve the blocked session key",
+    )
+    assert_true(
+        blocked_state["recovery_resume_cursor"] == blocked_state["agent_result_collection_status"]["collection_cursor"],
+        "blocked native conv should keep recovery cursor bound to collection status",
+    )
+    run("validate", "--workflow-id", "conv-native-panel-blocked", state_root=state_root)
+
     target_refs_file = state_root / "conv-target-refs.json"
     target_refs_file.write_text(
         json.dumps(
@@ -1723,6 +1754,19 @@ class FakeNativePanelBackend:
                 )
             )
         return results
+
+
+class BlockedNativePanelBackend:
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+
+    def run_panel(self, requests):
+        raise NativePanelBlockedError(
+            reason=self.reason,
+            request=requests[0],
+            message="fixture native panel blocked before collection",
+            pending_request_ids=[request.request_id for request in requests],
+        )
 
 
 if __name__ == "__main__":

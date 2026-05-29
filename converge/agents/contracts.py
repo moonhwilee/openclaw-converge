@@ -94,7 +94,7 @@ DEFAULT_BUDGET_POLICY = {
     "max_rounds_default": 1,
     "max_follow_up_rounds_after_material_change": 1,
     "context_mode": "isolated_light",
-    "max_input_bytes": 120_000,
+    "max_input_bytes": 160_000,
     "max_findings_bytes": 24_000,
     "oversized_context": "reject_before_launch",
     "oversized_findings": "truncate_with_metadata",

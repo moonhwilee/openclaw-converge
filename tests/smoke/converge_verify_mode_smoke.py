@@ -1544,7 +1544,23 @@ if len(sys.argv) > 2 and sys.argv[1:3] == ["sessions", "export-trajectory"]:
                 "toolCallId": "call-1",
                 "name": "exec_command",
                 "arguments": {{
-                    "cmd": "sed -n '1,80p' converge/modes/verify.py && sed -n '1,80p' converge/modes/conv.py && sed -n '1,80p' converge/modes/goal.py && git status --short",
+                    "cmd": "sed -n '1,80p' converge/modes/verify.py && sed -n '1,80p' converge/modes/conv.py && sed -n '1,80p' converge/modes/goal.py",
+                    "cwd": {str(ROOT.resolve())!r},
+                }},
+            }},
+        }},
+        {{
+            "traceSchema": "openclaw-trajectory",
+            "schemaVersion": 1,
+            "traceId": "trace-fake",
+            "source": "transcript",
+            "type": "tool.call",
+            "sessionKey": session_key,
+            "data": {{
+                "toolCallId": "call-2",
+                "name": "exec_command",
+                "arguments": {{
+                    "cmd": "git status --short",
                     "cwd": {str(ROOT.resolve())!r},
                 }},
             }},
@@ -1557,6 +1573,15 @@ if len(sys.argv) > 2 and sys.argv[1:3] == ["sessions", "export-trajectory"]:
             "type": "tool.result",
             "sessionKey": session_key,
             "data": {{"toolCallId": "call-1", "name": "exec_command"}},
+        }},
+        {{
+            "traceSchema": "openclaw-trajectory",
+            "schemaVersion": 1,
+            "traceId": "trace-fake",
+            "source": "transcript",
+            "type": "tool.result",
+            "sessionKey": session_key,
+            "data": {{"toolCallId": "call-2", "name": "exec_command"}},
         }},
     ]
     with open(output_dir + "/events.jsonl", "w", encoding="utf-8") as handle:

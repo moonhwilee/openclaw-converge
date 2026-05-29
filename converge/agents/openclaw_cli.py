@@ -51,12 +51,14 @@ MAX_TRAJECTORY_ARGUMENT_TEXT_BYTES = 4_000
 
 @dataclass(frozen=True)
 class OpenClawToolCallRef:
+    tool_call_id: str
     name: str
     cwd: str | None
     argument_text: str
 
     def as_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
+            "tool_call_id": self.tool_call_id,
             "name": self.name,
             "argument_text": self.argument_text,
         }
@@ -255,6 +257,7 @@ class OpenClawTrajectoryProofChecker:
                         tool_call_refs.append(
                             OpenClawToolCallRef(
                                 name=tool_name,
+                                tool_call_id=_tool_call_id(data, fallback=f"tool-call-{tool_call_count}"),
                                 cwd=_tool_call_cwd(arguments),
                                 argument_text=_tool_call_argument_text(arguments),
                             )
@@ -409,8 +412,11 @@ def build_child_prompt(request: NativeLaunchRequest) -> str:
         "kind, checked_at, session_key, agent_session_ref, read_action, "
         "status_action, and read_target_refs. read_target_refs must be an "
         "array of every file target ref you actually inspected, with path and "
-        "source_root copied from REQUEST_JSON.target_refs. read_action must "
-        "be read_files or read_artifacts; status_action must be shell_status. Set session_key "
+        "source_root copied from REQUEST_JSON.target_refs. Use a separate "
+        "harmless status tool call, such as git status --short or pwd, after "
+        "the target ref reads; do not rely on the same read command as the "
+        "status check. read_action must be read_files or read_artifacts; "
+        "status_action must be shell_status. Set session_key "
         "and agent_session_ref exactly to REQUEST_JSON.session_key. If "
         "tool_smoke_status is passed, error must be null or omitted; use error "
         "only when you cannot complete the requested inspection. Avoid shell "
@@ -695,6 +701,10 @@ def _validate_trajectory_supports_child_actions(
     if not status_supported:
         raise ValueError("native CLI trajectory proof lacks a tool event compatible with shell_status")
     target_ref_read_binding = _validate_trajectory_read_manifest(trajectory_proof, read_manifest)
+    status_action_binding = _validate_trajectory_status_action(
+        trajectory_proof,
+        excluded_tool_call_ids=set(target_ref_read_binding["matched_tool_call_ids"]),
+    )
     return {
         "read_action": read_action,
         "status_action": evidence["status_action"],
@@ -702,6 +712,7 @@ def _validate_trajectory_supports_child_actions(
         "read_action_bound_by_tool_names": read_supported,
         "status_action_bound_by_tool_names": status_supported,
         "target_ref_read_binding": target_ref_read_binding,
+        "status_action_binding": status_action_binding,
     }
 
 
@@ -711,13 +722,14 @@ def _validate_trajectory_read_manifest(
 ) -> dict[str, Any]:
     required_refs = read_manifest.get("read_target_refs")
     if not isinstance(required_refs, list) or not required_refs:
-        return {"required_count": 0, "matched_count": 0, "missing": []}
+        return {"required_count": 0, "matched_count": 0, "missing": [], "matched_tool_call_ids": []}
     read_calls = [
         item
         for item in trajectory_proof.tool_call_refs
         if item.name in READ_ACTION_TOOL_NAMES
     ]
     missing: list[dict[str, str]] = []
+    matched_tool_call_ids: set[str] = set()
     for item in required_refs:
         if not isinstance(item, dict):
             continue
@@ -725,8 +737,14 @@ def _validate_trajectory_read_manifest(
         source_root = item.get("source_root")
         if not isinstance(path, str) or not isinstance(source_root, str):
             continue
-        if not any(_tool_call_ref_covers_target_ref(call, path=path, source_root=source_root) for call in read_calls):
+        match = next(
+            (call for call in read_calls if _tool_call_ref_covers_target_ref(call, path=path, source_root=source_root)),
+            None,
+        )
+        if match is None:
             missing.append({"path": path, "source_root": source_root})
+        else:
+            matched_tool_call_ids.add(match.tool_call_id)
     if missing:
         missing_paths = ", ".join(item["path"] for item in missing[:5])
         raise ValueError(f"native CLI trajectory proof lacks target_ref read argument: {missing_paths}")
@@ -735,7 +753,39 @@ def _validate_trajectory_read_manifest(
         "matched_count": len(required_refs),
         "missing": [],
         "proof": "read_tool_call_arguments",
+        "matched_tool_call_ids": sorted(matched_tool_call_ids),
     }
+
+
+def _validate_trajectory_status_action(
+    trajectory_proof: OpenClawTrajectoryProof,
+    *,
+    excluded_tool_call_ids: set[str],
+) -> dict[str, Any]:
+    for call in trajectory_proof.tool_call_refs:
+        if call.name not in STATUS_ACTION_TOOL_NAMES or call.tool_call_id in excluded_tool_call_ids:
+            continue
+        if _tool_call_ref_is_harmless_status(call):
+            return {
+                "proof": "separate_status_tool_call_argument",
+                "tool_call_id": call.tool_call_id,
+                "tool_name": call.name,
+            }
+    raise ValueError("native CLI trajectory proof lacks a separate harmless shell_status tool argument")
+
+
+def _tool_call_ref_is_harmless_status(call: OpenClawToolCallRef) -> bool:
+    text = call.argument_text.lower()
+    harmless_markers = (
+        "git status --short",
+        "git status --porcelain",
+        "\"pwd\"",
+        "'pwd'",
+        " pwd",
+        "test -",
+        "true",
+    )
+    return any(marker in text for marker in harmless_markers)
 
 
 def _tool_call_ref_covers_target_ref(call: OpenClawToolCallRef, *, path: str, source_root: str) -> bool:
@@ -769,6 +819,13 @@ def _tool_call_cwd(arguments: Any) -> str | None:
         if isinstance(value, str) and value.strip():
             return value
     return None
+
+
+def _tool_call_id(data: dict[str, Any], *, fallback: str) -> str:
+    value = data.get("toolCallId") or data.get("tool_call_id") or data.get("id")
+    if isinstance(value, str) and value.strip():
+        return value
+    return fallback
 
 
 def _tool_call_argument_text(arguments: Any) -> str:

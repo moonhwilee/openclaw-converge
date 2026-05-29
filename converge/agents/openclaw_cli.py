@@ -9,6 +9,7 @@ native_agent_panel parity until coordinator-verified tool-smoke evidence exists.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
@@ -797,6 +798,9 @@ def _validate_trajectory_has_no_unexpected_tool_calls(
         if _tool_call_ref_is_harmless_status(call):
             allowed_count += 1
             continue
+        if call.name in READ_ACTION_TOOL_NAMES and _tool_call_ref_is_allowed_startup_read(call):
+            allowed_count += 1
+            continue
         if call.name in READ_ACTION_TOOL_NAMES and _tool_call_ref_covers_any_read_target(call, read_manifest):
             allowed_count += 1
             continue
@@ -838,6 +842,24 @@ def _tool_call_ref_is_harmless_status(call: OpenClawToolCallRef) -> bool:
         "true",
     )
     return any(marker in text for marker in harmless_markers)
+
+
+def _tool_call_ref_is_allowed_startup_read(call: OpenClawToolCallRef) -> bool:
+    text = call.argument_text
+    cwd = call.cwd or ""
+    combined = f"{cwd}\n{text}"
+    if "$WORKSPACE_DIR" not in combined and "/.openclaw/workspace" not in combined:
+        return False
+    allowed_exact = (
+        "SOUL.md",
+        "USER.md",
+        "MEMORY.md",
+        "AGENTS.md",
+        "TOOLS.md",
+    )
+    if any(path in text for path in allowed_exact):
+        return True
+    return re.search(r"memory/20\d{2}-\d{2}-\d{2}\.md", text) is not None
 
 
 def _tool_call_ref_covers_target_ref(call: OpenClawToolCallRef, *, path: str, source_root: str) -> bool:

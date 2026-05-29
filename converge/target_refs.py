@@ -29,7 +29,12 @@ CONVERGE_COMPARISON_TARGET_REF_PATHS = [
     ("package", "converge/agents/openclaw_cli.py", "native-launch"),
     ("package", "converge/recovery.py", "recovery"),
     ("package", "converge/target_refs.py", "target-refs"),
-    ("package", "docs/converge/c7-canonical-command-replacement.md", "route-contract"),
+    ("package", "converge/modes/verify.py", "verify-mode"),
+    ("package", "converge/modes/conv.py", "conv-mode"),
+    ("package", "converge/modes/goal.py", "goal-mode"),
+    ("package", "converge/modes/specialist_panel.py", "native-panel"),
+    ("package", "converge/modes/evidence_contract.py", "evidence-contract"),
+    ("package", "tests/smoke/converge_terminal_finalization_smoke.py", "report-proof-smoke"),
     ("workspace", "docs/context/goalflow.md", "legacy-goalflow"),
     ("workspace", "skills/verification-convergence/SKILL.md", "legacy-verify-conv"),
 ]

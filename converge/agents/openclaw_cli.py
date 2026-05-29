@@ -374,9 +374,11 @@ def build_child_prompt(request: NativeLaunchRequest) -> str:
         "performed that tool smoke, not whether your review found risks; use "
         "passed after successful inspection even when findings report problems. "
         "tool_smoke_evidence must include status, "
-        "kind, checked_at, session_key, agent_session_ref, read_action, and "
-        "status_action. read_action must be read_files or read_artifacts; "
-        "status_action must be shell_status. Set session_key "
+        "kind, checked_at, session_key, agent_session_ref, read_action, "
+        "status_action, and read_target_refs. read_target_refs must be an "
+        "array of every file target ref you actually inspected, with path and "
+        "source_root copied from REQUEST_JSON.target_refs. read_action must "
+        "be read_files or read_artifacts; status_action must be shell_status. Set session_key "
         "and agent_session_ref exactly to REQUEST_JSON.session_key. If "
         "tool_smoke_status is passed, error must be null or omitted; use error "
         "only when you cannot complete the requested inspection. Avoid shell "
@@ -554,6 +556,7 @@ def coordinator_verified_tool_smoke_evidence(
         "status_action": evidence["status_action"],
         "child_read_action": evidence["read_action"],
         "child_status_action": evidence["status_action"],
+        "target_ref_read_manifest": _validate_child_read_manifest(request, evidence),
         "trajectory_action_binding": action_binding,
         "session_store_proof": session_proof.as_dict(),
         "trajectory_proof": trajectory_proof.as_dict(),
@@ -588,6 +591,52 @@ def _validate_child_smoke_claim(request: NativeLaunchRequest, result: NativeChil
     if evidence.get("status_action") != "shell_status":
         raise ValueError("native CLI child tool_smoke_evidence.status_action must be shell_status")
     return evidence
+
+
+def _validate_child_read_manifest(request: NativeLaunchRequest, evidence: dict[str, Any]) -> dict[str, Any]:
+    required = [
+        {"path": item.get("path"), "source_root": item.get("source_root")}
+        for item in request.target_refs
+        if item.get("kind") == "file"
+    ]
+    required = [
+        {"path": item["path"], "source_root": item["source_root"]}
+        for item in required
+        if isinstance(item.get("path"), str) and item["path"] and isinstance(item.get("source_root"), str) and item["source_root"]
+    ]
+    raw_read_refs = evidence.get("read_target_refs")
+    if not required:
+        return {"required_count": 0, "read_count": 0, "missing": [], "read_target_refs": []}
+    if not isinstance(raw_read_refs, list):
+        raise ValueError("native CLI child tool_smoke_evidence requires read_target_refs for file target refs")
+    read_refs: list[dict[str, str]] = []
+    for item in raw_read_refs:
+        if isinstance(item, str):
+            read_refs.append({"path": item, "source_root": ""})
+            continue
+        if not isinstance(item, dict):
+            raise ValueError("native CLI child read_target_refs entries must be objects or path strings")
+        path = item.get("path")
+        source_root = item.get("source_root")
+        if not isinstance(path, str) or not path:
+            raise ValueError("native CLI child read_target_refs entries require path")
+        read_refs.append({"path": path, "source_root": source_root if isinstance(source_root, str) else ""})
+    read_keys = {(item["source_root"], item["path"]) for item in read_refs}
+    read_paths = {item["path"] for item in read_refs}
+    missing = [
+        item
+        for item in required
+        if (item["source_root"], item["path"]) not in read_keys and item["path"] not in read_paths
+    ]
+    if missing:
+        missing_paths = ", ".join(item["path"] for item in missing[:5])
+        raise ValueError(f"native CLI child read_target_refs missing requested target refs: {missing_paths}")
+    return {
+        "required_count": len(required),
+        "read_count": len(read_refs),
+        "missing": [],
+        "read_target_refs": read_refs,
+    }
 
 
 def _validate_trajectory_supports_child_actions(

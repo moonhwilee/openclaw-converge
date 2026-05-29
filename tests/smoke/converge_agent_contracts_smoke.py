@@ -361,6 +361,17 @@ def assert_legacy_comparison_target_refs_are_bounded_and_concrete() -> None:
         any(item["path"] == "skills/verification-convergence/SKILL.md" for item in refs),
         "legacy comparison refs should include the retained verification-convergence skill",
     )
+    for required_path in {
+        "converge/modes/verify.py",
+        "converge/modes/conv.py",
+        "converge/modes/goal.py",
+        "converge/modes/evidence_contract.py",
+        "tests/smoke/converge_terminal_finalization_smoke.py",
+    }:
+        assert_true(
+            (str(root), required_path) in paths_by_root,
+            f"legacy comparison refs should include {required_path}",
+        )
     assert_true(
         sum((Path(item["source_root"]) / item["path"]).stat().st_size for item in refs) <= DEFAULT_BUDGET_POLICY["max_input_bytes"],
         "legacy comparison refs should remain inside native panel input budget",
@@ -403,6 +414,11 @@ def assert_cli_missing_target_refs_file_preserves_mode_defaults() -> None:
     )
     comparison_paths = {item.get("path") for item in comparison_requests[0].target_refs if item.get("kind") == "file"}
     assert_true("converge/recovery.py" in comparison_paths, "CLI comparison verify should include recovery ref")
+    assert_true("converge/modes/goal.py" in comparison_paths, "CLI comparison verify should include goal mode ref")
+    assert_true(
+        "tests/smoke/converge_terminal_finalization_smoke.py" in comparison_paths,
+        "CLI comparison verify should include report-proof smoke ref",
+    )
     assert_true("skills/verification-convergence/SKILL.md" in comparison_paths, "CLI comparison verify should include legacy skill ref")
 
 
@@ -847,6 +863,8 @@ def assert_openclaw_native_panel_cli_backend_requires_coordinator_verified_smoke
             and item.tool_smoke_evidence["child_status_action"] == "shell_status"
             and item.tool_smoke_evidence["policy_enforcement"] == "prompt_and_coordinator_validation_only"
             and item.tool_smoke_evidence["lifecycle_model"] == "synchronous_serial_openclaw_agent_child_process"
+            and item.tool_smoke_evidence["target_ref_read_manifest"]["required_count"] == 1
+            and item.tool_smoke_evidence["target_ref_read_manifest"]["missing"] == []
             and item.tool_smoke_evidence["trajectory_action_binding"]["read_action_bound_by_tool_names"] is True
             and item.tool_smoke_evidence["trajectory_action_binding"]["status_action_bound_by_tool_names"] is True
             and item.tool_smoke_evidence["session_store_proof"]["session_key"] == item.session_key
@@ -878,6 +896,41 @@ def assert_openclaw_native_panel_cli_backend_requires_coordinator_verified_smoke
     )
     blocked = expect_native_panel_blocked(lambda: broken_backend.run_panel(requests), "tool_smoke_evidence")
     assert_true(blocked.reason == "subagent_proof_failed", "missing child evidence should be structured blocked")
+
+    missing_read_manifest = OpenClawNativePanelCliBackend(
+        child_backend=OpenClawAgentCliBackend(
+            runner=lambda command, timeout_seconds: subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=(
+                    _trajectory_completed_process(command).stdout
+                    if command[:3] == ["openclaw", "sessions", "export-trajectory"]
+                    else _sessions_stdout([request.session_key for request in requests])
+                    if command[:2] == ["openclaw", "sessions"]
+                    else json_dumps_response(
+                        {
+                            "tool_smoke_status": "passed",
+                            "tool_smoke_evidence": {
+                                "status": "passed",
+                                "kind": "child_file_read_and_status_check",
+                                "checked_at": "2026-05-29T00:00:00Z",
+                                "session_key": command[3],
+                                "agent_session_ref": command[3],
+                                "read_action": "read_files",
+                                "status_action": "shell_status",
+                                "read_target_refs": [{"path": "README.md", "source_root": str(Path.cwd().resolve())}],
+                            },
+                            "findings": [structured_finding("missing-read-manifest")],
+                            "error": None,
+                        }
+                    )
+                ),
+                stderr="",
+            )
+        )
+    )
+    blocked = expect_native_panel_blocked(lambda: missing_read_manifest.run_panel(requests), "read_target_refs missing requested target refs")
+    assert_true(blocked.reason == "subagent_proof_failed", "missing requested target refs should block coordinator acceptance")
 
     failed_smoke = OpenClawNativePanelCliBackend(
         child_backend=OpenClawAgentCliBackend(
@@ -1107,6 +1160,9 @@ def _cli_child_stdout(session_key: str, *, openclaw_agent_json: bool = False) ->
             "agent_session_ref": session_key,
             "read_action": "read_files",
             "status_action": "shell_status",
+            "read_target_refs": [
+                {"path": "converge/agents/contracts.py", "source_root": str(Path.cwd().resolve())}
+            ],
         },
         "findings": [
             structured_finding(

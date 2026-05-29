@@ -883,6 +883,15 @@ def _validate_native_session_store_evidence(item: dict[str, Any]) -> None:
         raise ValueError("native specialist evidence requires child_read_action")
     if evidence.get("child_status_action") != "shell_status":
         raise ValueError("native specialist evidence requires child_status_action=shell_status")
+    read_manifest = evidence.get("target_ref_read_manifest")
+    if not isinstance(read_manifest, dict):
+        raise ValueError("native specialist evidence requires target_ref_read_manifest")
+    if not isinstance(read_manifest.get("required_count"), int):
+        raise ValueError("native specialist target_ref_read_manifest requires required_count")
+    if read_manifest["required_count"] > 0 and not isinstance(read_manifest.get("read_target_refs"), list):
+        raise ValueError("native specialist target_ref_read_manifest requires read_target_refs")
+    if read_manifest.get("missing") not in ([], None):
+        raise ValueError("native specialist target_ref_read_manifest must not have missing refs")
     if evidence.get("policy_enforcement") != "prompt_and_coordinator_validation_only":
         raise ValueError("native specialist evidence requires explicit policy_enforcement scope")
     if evidence.get("lifecycle_model") != "synchronous_serial_openclaw_agent_child_process":

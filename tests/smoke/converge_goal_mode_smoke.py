@@ -1769,6 +1769,12 @@ class FakeNativePanelBackend:
                         "status_action": "shell_status",
                         "child_read_action": "read_files",
                         "child_status_action": "shell_status",
+                        "target_ref_read_manifest": {
+                            "required_count": 0,
+                            "read_count": 0,
+                            "missing": [],
+                            "read_target_refs": [],
+                        },
                         "trajectory_action_binding": {
                             "read_action": "read_files",
                             "status_action": "shell_status",

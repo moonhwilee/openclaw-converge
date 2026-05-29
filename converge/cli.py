@@ -2245,10 +2245,10 @@ def _validate_goal_child_execution(
             raise ValueError("goal child workflow visible_delivery must match parent")
         if child.get("source_request") != _expected_goal_child_request(workflow, role=child_ref["kind"]):
             raise ValueError("goal child workflow source_request must match deterministic child request")
-        if child.get("status") not in {"completed_unreported", "failed_unreported", "reported"}:
+        if child.get("status") not in {"completed_unreported", "failed_unreported", "reported", "blocked"}:
             raise ValueError("goal child workflow collection requires terminal child status")
         terminal_status = child_ref.get("terminal_status")
-        if terminal_status not in {"completed_unreported", "failed_unreported", "reported"}:
+        if terminal_status not in {"completed_unreported", "failed_unreported", "reported", "blocked"}:
             raise ValueError("goal child workflow terminal_status must be terminal")
         if child.get("status") != terminal_status and not (
             child.get("status") == "reported"

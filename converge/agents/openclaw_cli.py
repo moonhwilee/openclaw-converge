@@ -32,6 +32,7 @@ SUBAGENT_CAPACITY_EXHAUSTED = "subagent_capacity_exhausted"
 SUBAGENT_SPAWN_TIMEOUT = "subagent_spawn_timeout"
 SUBAGENT_CLI_CONTRACT_CHANGED = "subagent_cli_contract_changed"
 SUBAGENT_SPAWN_FAILED = "subagent_spawn_failed"
+SUBAGENT_PROOF_FAILED = "subagent_proof_failed"
 
 
 @dataclass(frozen=True)
@@ -342,7 +343,9 @@ def build_child_prompt(request: NativeLaunchRequest) -> str:
     }
     return (
         "You are a read-only Converge native specialist child session.\n"
-        "Inspect only the provided target refs. Do not send visible messages, "
+        "Inspect only the provided target refs. The first target ref is the "
+        "inline objective; file target refs are relative to their source_root. "
+        "Do not send visible messages, "
         "mutate files, restart services, push, open PRs, release, or perform "
         "external actions.\n"
         "Return one JSON object only with keys: tool_smoke_status, findings, "
@@ -352,7 +355,9 @@ def build_child_prompt(request: NativeLaunchRequest) -> str:
         "performed that tool smoke, not whether your review found risks; use "
         "passed after successful inspection even when findings report problems. "
         "tool_smoke_evidence must include status, "
-        "kind, checked_at, session_key, and agent_session_ref. Set session_key "
+        "kind, checked_at, session_key, agent_session_ref, read_action, and "
+        "status_action. read_action must be read_files or read_artifacts; "
+        "status_action must be shell_status. Set session_key "
         "and agent_session_ref exactly to REQUEST_JSON.session_key. If "
         "tool_smoke_status is passed, error must be null or omitted; use error "
         "only when you cannot complete the requested inspection. Avoid shell "
@@ -463,23 +468,33 @@ class OpenClawNativePanelCliBackend:
                 run = self.child_backend.run_review(request)
             except NativePanelBlockedError as exc:
                 raise replace(exc, pending_request_ids=_pending_request_ids(requests, request)) from exc
-            _validate_child_smoke_claim(request, run.result)
-            session_proof = self.session_proof_checker.prove_session(request)
-            trajectory_proof = self.trajectory_proof_checker.prove_tool_events(request)
-            evidence = coordinator_verified_tool_smoke_evidence(
-                request,
-                run.result,
-                session_proof=session_proof,
-                trajectory_proof=trajectory_proof,
-            )
-            verified = replace(
-                run.result,
-                tool_smoke_evidence=evidence,
-                satisfies_native_agent_panel=True,
-                status=STATUS_COMPLETED,
-                error=None,
-            )
-            validate_native_child_result(verified.as_dict())
+            try:
+                _validate_child_smoke_claim(request, run.result)
+                session_proof = self.session_proof_checker.prove_session(request)
+                trajectory_proof = self.trajectory_proof_checker.prove_tool_events(request)
+                evidence = coordinator_verified_tool_smoke_evidence(
+                    request,
+                    run.result,
+                    session_proof=session_proof,
+                    trajectory_proof=trajectory_proof,
+                )
+                verified = replace(
+                    run.result,
+                    tool_smoke_evidence=evidence,
+                    satisfies_native_agent_panel=True,
+                    status=STATUS_COMPLETED,
+                    error=None,
+                )
+                validate_native_child_result(verified.as_dict())
+            except ValueError as exc:
+                raise NativePanelBlockedError(
+                    reason=SUBAGENT_PROOF_FAILED,
+                    request=request,
+                    message=str(exc),
+                    pending_request_ids=_pending_request_ids(requests, request),
+                    raw_stdout=run.raw_stdout,
+                    raw_stderr=run.raw_stderr,
+                ) from exc
             results.append(verified)
         return results
 
@@ -512,6 +527,8 @@ def coordinator_verified_tool_smoke_evidence(
         "verification_scope": "child_claim_bound_to_explicit_session_refs_with_openclaw_session_store_and_trajectory_tool_events",
         "child_tool_smoke_kind": evidence["kind"],
         "child_tool_smoke_checked_at": evidence["checked_at"],
+        "child_read_action": evidence["read_action"],
+        "child_status_action": evidence["status_action"],
         "session_store_proof": session_proof.as_dict(),
         "trajectory_proof": trajectory_proof.as_dict(),
         "launch_ref": request.session_key,
@@ -540,6 +557,10 @@ def _validate_child_smoke_claim(request: NativeLaunchRequest, result: NativeChil
         raise ValueError("native CLI child tool_smoke_evidence.kind is required")
     if not isinstance(evidence.get("checked_at"), str) or not evidence["checked_at"].strip():
         raise ValueError("native CLI child tool_smoke_evidence.checked_at is required")
+    if evidence.get("read_action") not in {"read_files", "read_artifacts"}:
+        raise ValueError("native CLI child tool_smoke_evidence.read_action must be read_files or read_artifacts")
+    if evidence.get("status_action") != "shell_status":
+        raise ValueError("native CLI child tool_smoke_evidence.status_action must be shell_status")
     return evidence
 
 

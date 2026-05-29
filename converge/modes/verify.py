@@ -460,7 +460,7 @@ def _record_native_specialist_review(
     target_refs: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     artifact_id = specialist_artifact_id("verify")
-    requests = _native_verify_requests(workflow_id=workflow_id, target=target, target_refs=target_refs)
+    requests = _native_verify_requests(workflow_id=workflow_id, target=target, target_refs=target_refs, source_root=Path.cwd())
     _record_native_panel_launch_requested(handler, workflow_id, mode="verify", artifact_id=artifact_id, target=target, requests=requests)
     try:
         results = native_agent_backend.run_panel(requests)
@@ -554,7 +554,6 @@ def _record_native_panel_blocked(
         blocked_reason=error.reason,
         blocked_request_id=error.blocked_request_id,
         blocked_session_key=error.blocked_session_key,
-        resume_next_action="retry_native_panel_after_capacity_available",
     )
     residuals = normalize_residuals(
         {
@@ -621,15 +620,22 @@ def _native_panel_verify_state(
     }
 
 
-def _native_verify_requests(*, workflow_id: str, target: str, target_refs: list[dict[str, Any]] | None = None) -> list[NativeLaunchRequest]:
+def _native_verify_requests(
+    *,
+    workflow_id: str,
+    target: str,
+    target_refs: list[dict[str, Any]] | None = None,
+    source_root: Path | None = None,
+) -> list[NativeLaunchRequest]:
     profile_refs = ["native-verify-architecture", "native-verify-contracts", "native-verify-ops"]
+    merged_target_refs = merge_inline_target_ref("verify", target, target_refs, source_root=source_root or Path.cwd())
     return [
         NativeLaunchRequest(
             mode="verify",
             objective=target,
-            target_refs=merge_inline_target_ref("verify", target, target_refs),
+            target_refs=[dict(item) for item in merged_target_refs],
             profile_ref=profile_ref,
-            context_hash=stable_hash({"workflow_id": workflow_id, "target": target, "profile_ref": profile_ref}),
+            context_hash=stable_hash({"workflow_id": workflow_id, "target": target, "profile_ref": profile_ref, "target_refs": merged_target_refs}),
             idempotency_key=stable_hash({"workflow_id": workflow_id, "profile_ref": profile_ref, "round": 1}),
             output_schema={"schema_ref": "structured_specialist_finding.v1"},
             session_key=f"agent:main:converge-{workflow_id}-{index + 1}",

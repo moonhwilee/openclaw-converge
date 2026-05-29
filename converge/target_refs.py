@@ -10,6 +10,8 @@ from .agents.contracts import DEFAULT_BUDGET_POLICY
 
 
 MAX_TARGET_REFS = 50
+INLINE_TARGET_KINDS = {"verify_target", "conv_target"}
+MANIFEST_TARGET_KINDS = {"file"}
 
 
 def load_target_refs_file(path: str | Path | None, *, source_root: Path | None = None) -> list[dict[str, Any]]:
@@ -54,7 +56,11 @@ def validate_target_refs(refs: list[Any], *, source_root: Path | None = None) ->
         total_bytes += resolved.stat().st_size
         if total_bytes > int(DEFAULT_BUDGET_POLICY["max_input_bytes"]):
             raise ValueError("target refs manifest exceeds native panel max_input_bytes")
-        normalized_ref: dict[str, Any] = {"kind": "file", "path": rel_path.as_posix()}
+        normalized_ref: dict[str, Any] = {
+            "kind": "file",
+            "path": rel_path.as_posix(),
+            "source_root": str(root),
+        }
         role = item.get("role")
         if isinstance(role, str) and role:
             normalized_ref["role"] = role
@@ -62,5 +68,33 @@ def validate_target_refs(refs: list[Any], *, source_root: Path | None = None) ->
     return normalized
 
 
-def merge_inline_target_ref(mode: str, text: str, refs: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
-    return [{"kind": f"{mode}_target", "text": text}, *[dict(item) for item in (refs or [])]]
+def merge_inline_target_ref(
+    mode: str,
+    text: str,
+    refs: list[dict[str, Any]] | None = None,
+    *,
+    source_root: Path | None = None,
+) -> list[dict[str, Any]]:
+    if mode not in {"verify", "conv"}:
+        raise ValueError("inline target mode must be verify or conv")
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError("inline target requires non-empty text")
+    root = (source_root or Path.cwd()).expanduser().resolve()
+    merged: list[dict[str, Any]] = [{"kind": f"{mode}_target", "text": text, "source_root": str(root)}]
+    for item in refs or []:
+        if not isinstance(item, dict):
+            raise ValueError("target refs entries must be objects")
+        kind = item.get("kind")
+        if kind in INLINE_TARGET_KINDS:
+            raise ValueError("manifest target refs must not contain inline target refs")
+        if kind not in MANIFEST_TARGET_KINDS:
+            raise ValueError("manifest target refs currently supports only kind=file")
+        raw_path = item.get("path")
+        if not isinstance(raw_path, str) or not raw_path:
+            raise ValueError("manifest file refs require non-empty path")
+        ref = dict(item)
+        source_root_value = ref.get("source_root")
+        if not isinstance(source_root_value, str) or not source_root_value:
+            ref["source_root"] = str(root)
+        merged.append(ref)
+    return merged

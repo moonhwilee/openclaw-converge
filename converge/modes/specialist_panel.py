@@ -836,24 +836,37 @@ def build_native_agent_pending_collection_state(
         "native_panel_launch_status": status,
     }
     if blocked_reason:
+        blocked_status = _native_blocked_collection_status(blocked_reason)
         state["blocked_reason"] = blocked_reason
         state["blocked_request_id"] = blocked_request_id
         state["blocked_session_key"] = blocked_session_key
         state["pending_request_ids"] = pending_request_ids
-        state["resume_next_action"] = resume_next_action or "retry_native_panel_after_capacity_available"
+        state["resume_next_action"] = resume_next_action or _native_blocked_resume_next_action(blocked_reason)
         state["agent_result_collection_status"] = {
             **collection_status,
-            "status": "waiting_subagent_capacity",
+            "status": blocked_status,
             "blocked_reason": blocked_reason,
             "blocked_request_id": blocked_request_id,
             "blocked_session_key": blocked_session_key,
-            "terminal_decision": "blocked_waiting_subagent_capacity",
+            "terminal_decision": f"blocked_{blocked_status}",
             "relaunch_required": True,
-            "collection_cursor": f"{mode}:{artifact_id}:waiting_subagent_capacity:0/{len(request_refs)}",
+            "collection_cursor": f"{mode}:{artifact_id}:{blocked_status}:0/{len(request_refs)}",
         }
-        state["native_panel_launch_status"] = "waiting_subagent_capacity"
+        state["native_panel_launch_status"] = blocked_status
         state["recovery_resume_cursor"] = state["agent_result_collection_status"]["collection_cursor"]
     return state
+
+
+def _native_blocked_collection_status(blocked_reason: str) -> str:
+    if blocked_reason in {"subagent_capacity_exhausted", "subagent_spawn_timeout", "subagent_spawn_failed"}:
+        return "waiting_subagent_capacity"
+    return "blocked_native_panel_contract"
+
+
+def _native_blocked_resume_next_action(blocked_reason: str) -> str:
+    if _native_blocked_collection_status(blocked_reason) == "waiting_subagent_capacity":
+        return "retry_native_panel_after_capacity_available"
+    return "inspect_native_panel_contract_failure"
 
 
 def _validate_native_session_store_evidence(item: dict[str, Any]) -> None:
@@ -866,6 +879,10 @@ def _validate_native_session_store_evidence(item: dict[str, Any]) -> None:
         raise ValueError("native specialist evidence session_key must match native item")
     if evidence.get("agent_session_ref") != item.get("agent_session_ref"):
         raise ValueError("native specialist evidence agent_session_ref must match native item")
+    if evidence.get("child_read_action") not in {"read_files", "read_artifacts"}:
+        raise ValueError("native specialist evidence requires child_read_action")
+    if evidence.get("child_status_action") != "shell_status":
+        raise ValueError("native specialist evidence requires child_status_action=shell_status")
     proof = evidence.get("session_store_proof")
     if not isinstance(proof, dict):
         raise ValueError("native specialist evidence requires session_store_proof")

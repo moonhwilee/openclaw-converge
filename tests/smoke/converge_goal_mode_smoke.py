@@ -844,11 +844,19 @@ def assert_goal_collects_native_child_panel_evidence(state_root: Path) -> None:
     )
     for child_ref in cli_result["goal_state"]["child_workflow_refs"]:
         proof = child_ref["native_agent_panel_proof"]
+        expected_file_ref = {
+            "kind": "file",
+            "path": "converge/modes/goal.py",
+            "source_root": str(Path.cwd().resolve()),
+            "role": "mode",
+        }
         assert_true(len(proof["tool_smoke_proofs"]) == 3, "goal CLI native proof should preserve every child tool-smoke proof")
         assert_true(
             all(
                 item["tool_smoke_evidence"]["session_key"] == item["session_key"]
                 and item["tool_smoke_evidence"]["agent_session_ref"] == item["agent_session_ref"]
+                and item["tool_smoke_evidence"]["child_read_action"] == "read_files"
+                and item["tool_smoke_evidence"]["child_status_action"] == "shell_status"
                 for item in proof["tool_smoke_proofs"]
             ),
             "goal CLI native proof should preserve per-result session-bound smoke proof",
@@ -868,7 +876,7 @@ def assert_goal_collects_native_child_panel_evidence(state_root: Path) -> None:
         child_state = child[f"{child_ref['kind']}_state"]
         assert_true(
             all(
-                {"kind": "file", "path": "converge/modes/goal.py", "role": "mode"} in item["target_refs"]
+                expected_file_ref in item["target_refs"]
                 for item in child_state["agent_request_refs"]
             ),
             "goal CLI should propagate manifest file refs into child native requests",
@@ -1552,6 +1560,8 @@ class FakeNativePanelBackend:
                         "verification_scope": "fixture_goal_parent_child_native_panel_binding",
                         "child_tool_smoke_kind": "fixture",
                         "child_tool_smoke_checked_at": completed_at,
+                        "child_read_action": "read_files",
+                        "child_status_action": "shell_status",
                         "session_store_proof": {
                             "session_key": request.session_key,
                             "session_id": f"fixture-goal-child-session-{request.mode}-{index}",

@@ -2826,7 +2826,11 @@ def _validate_conv_state_integrity(store: WorkflowStore, workflow: dict[str, Any
 
 
 def _is_native_panel_pending_state(state: dict[str, Any]) -> bool:
-    return state.get("native_panel_launch_status") in {"launch_requested", "waiting_subagent_capacity"}
+    return state.get("native_panel_launch_status") in {
+        "launch_requested",
+        "waiting_subagent_capacity",
+        "blocked_native_panel_contract",
+    }
 
 
 def _validate_native_panel_pending_state(state: dict[str, Any]) -> None:

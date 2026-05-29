@@ -10,6 +10,7 @@ import hashlib
 import json
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Protocol
 
 
@@ -46,6 +47,18 @@ TOOL_SMOKE_PASSED = "passed"
 TOOL_SMOKE_FAILED = "failed"
 TOOL_SMOKE_NOT_APPLICABLE = "not_applicable"
 TOOL_SMOKE_NOT_RUN = "not_run"
+
+NATIVE_FINDING_SEVERITIES = {"p0", "p1", "p2", "p3"}
+NATIVE_INLINE_TARGET_KINDS = {"verify_target", "conv_target"}
+NATIVE_FINDING_REQUIRED_STRING_FIELDS = (
+    "finding_id",
+    "finding",
+    "evidence",
+    "why_it_matters",
+    "minimal_fix_or_test",
+    "scope_risk",
+    "failure_mode",
+)
 
 DEFAULT_TOOL_POLICY = {
     "policy_id": "native-reviewer-readonly-v1",
@@ -415,11 +428,40 @@ def validate_native_launch_request(payload: dict[str, Any]) -> None:
     target_refs = payload.get("target_refs")
     if not isinstance(target_refs, list) or not target_refs:
         raise ValueError("native launch requires non-empty target_refs")
+    _validate_native_launch_target_refs(payload["mode"], target_refs)
     if not isinstance(payload.get("output_schema"), dict) or not payload["output_schema"].get("schema_ref"):
         raise ValueError("native launch requires output_schema.schema_ref")
     validate_tool_policy(payload.get("tool_policy"))
     validate_timeout_policy(payload.get("timeout_policy"))
     validate_budget_policy(payload.get("budget_policy"))
+
+
+def _validate_native_launch_target_refs(mode: str, refs: list[Any]) -> None:
+    expected_inline_kind = f"{mode}_target"
+    first = refs[0]
+    if not isinstance(first, dict):
+        raise ValueError("native launch target_refs entries must be objects")
+    if first.get("kind") != expected_inline_kind:
+        raise ValueError(f"native launch target_refs must start with {expected_inline_kind}")
+    _required_string(first, "text")
+    _required_string(first, "source_root")
+    if not Path(first["source_root"]).expanduser().is_absolute():
+        raise ValueError("native launch inline target source_root must be absolute")
+    for item in refs[1:]:
+        if not isinstance(item, dict):
+            raise ValueError("native launch target_refs entries must be objects")
+        kind = item.get("kind")
+        if kind in NATIVE_INLINE_TARGET_KINDS:
+            raise ValueError("native launch target_refs must contain only one inline target ref")
+        if kind != "file":
+            raise ValueError("native launch manifest target_refs currently supports only kind=file")
+        _required_string(item, "path")
+        _required_string(item, "source_root")
+        rel_path = Path(item["path"])
+        if rel_path.is_absolute() or ".." in rel_path.parts:
+            raise ValueError("native launch file target_refs paths must be relative and cannot contain '..'")
+        if not Path(item["source_root"]).expanduser().is_absolute():
+            raise ValueError("native launch file target_refs source_root must be absolute")
 
 
 def validate_openclaw_session_payload(payload: dict[str, Any]) -> None:
@@ -445,8 +487,8 @@ def validate_native_child_result(payload: dict[str, Any]) -> None:
     if classification["execution_source"] == SOURCE_NATIVE_AGENT_PANEL:
         if payload["status"] == STATUS_COMPLETED and payload["tool_smoke_status"] != TOOL_SMOKE_PASSED:
             raise ValueError("completed native_agent_panel result requires passed tool_smoke_status")
-        if payload["status"] == STATUS_COMPLETED and not isinstance(payload.get("findings"), list):
-            raise ValueError("completed native result requires findings array")
+        if payload["status"] == STATUS_COMPLETED:
+            _validate_native_result_findings(payload.get("findings"))
         if payload["status"] == STATUS_COMPLETED and payload.get("satisfies_native_agent_panel") is True:
             _validate_tool_smoke_evidence(payload)
     elif classification["advisory_only"] and payload.get("satisfies_native_agent_panel") is True:
@@ -755,6 +797,36 @@ def _validate_tool_smoke_evidence(payload: dict[str, Any]) -> None:
         raise ValueError("native tool_smoke_evidence kind must be a non-empty string")
     if not isinstance(evidence.get("checked_at"), str) or not evidence["checked_at"]:
         raise ValueError("native tool_smoke_evidence checked_at must be a non-empty string")
+    if evidence.get("kind") == "coordinator_verified_child_tool_smoke_session_and_trajectory_binding":
+        if evidence.get("child_read_action") not in {"read_files", "read_artifacts"}:
+            raise ValueError("coordinator native tool_smoke_evidence requires child_read_action")
+        if evidence.get("child_status_action") != "shell_status":
+            raise ValueError("coordinator native tool_smoke_evidence requires child_status_action=shell_status")
+
+
+def _validate_native_result_findings(findings: Any) -> None:
+    if not isinstance(findings, list):
+        raise ValueError("completed native result requires findings array")
+    if not findings:
+        raise ValueError("completed native result requires non-empty findings array")
+    seen_ids: set[str] = set()
+    for index, finding in enumerate(findings):
+        if not isinstance(finding, dict):
+            raise ValueError(f"native finding {index} must be an object")
+        for key in NATIVE_FINDING_REQUIRED_STRING_FIELDS:
+            value = finding.get(key)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"native finding {index} requires non-empty {key}")
+        severity = finding.get("severity")
+        if severity not in NATIVE_FINDING_SEVERITIES:
+            raise ValueError(f"native finding {index} severity must be one of p0, p1, p2, p3")
+        confidence = finding.get("confidence")
+        if isinstance(confidence, bool) or not isinstance(confidence, (int, float)) or not 0 <= confidence <= 1:
+            raise ValueError(f"native finding {index} confidence must be a JSON number from 0.0 to 1.0")
+        finding_id = finding["finding_id"]
+        if finding_id in seen_ids:
+            raise ValueError("native findings must have unique finding_id values")
+        seen_ids.add(finding_id)
 
 
 def _replace_record(record: NativeSessionRecord, **changes: Any) -> NativeSessionRecord:

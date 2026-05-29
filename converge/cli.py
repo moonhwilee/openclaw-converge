@@ -2470,6 +2470,9 @@ def _validate_verify_state_integrity(store: WorkflowStore, workflow: dict[str, A
         if terminal_verify or has_report_artifact:
             raise ValueError("terminal or artifact-backed verify workflow requires populated verify_state")
         return
+    if not terminal_verify and _is_native_panel_pending_state(state):
+        _validate_native_panel_pending_state(state)
+        return
     required = {
         "final_report_artifact_id",
         "final_report_artifact_path",
@@ -2762,6 +2765,9 @@ def _validate_conv_state_integrity(store: WorkflowStore, workflow: dict[str, Any
         if terminal_conv or has_report_artifact:
             raise ValueError("terminal or artifact-backed conv workflow requires populated conv_state")
         return
+    if not terminal_conv and _is_native_panel_pending_state(state):
+        _validate_native_panel_pending_state(state)
+        return
     residuals = validate_conv_state(state, terminal=terminal_conv, final_status=workflow.get("final_status"))
     artifact_id = state.get("final_report_artifact_id")
     if not isinstance(artifact_id, str) or not artifact_id:
@@ -2817,6 +2823,39 @@ def _validate_conv_state_integrity(store: WorkflowStore, workflow: dict[str, Any
     if state.get("execution_performed") is True:
         _validate_conv_execution_evidence(store, workflow, state)
     _validate_conv_fix_runner_evidence(store, workflow, state)
+
+
+def _is_native_panel_pending_state(state: dict[str, Any]) -> bool:
+    return state.get("native_panel_launch_status") in {"launch_requested", "waiting_subagent_capacity"}
+
+
+def _validate_native_panel_pending_state(state: dict[str, Any]) -> None:
+    requests = state.get("agent_request_refs")
+    results = state.get("agent_result_refs")
+    collection = state.get("agent_result_collection_status")
+    if not isinstance(requests, list) or not requests:
+        raise ValueError("native panel pending state requires agent_request_refs")
+    if results != []:
+        raise ValueError("native panel pending state must not synthesize agent_result_refs")
+    if not isinstance(collection, dict):
+        raise ValueError("native panel pending state requires agent_result_collection_status")
+    pending_ids = collection.get("pending_request_ids")
+    request_ids = [item.get("request_id") for item in requests if isinstance(item, dict)]
+    if pending_ids != request_ids:
+        raise ValueError("native panel pending state pending_request_ids must match request refs")
+    if collection.get("accepted_result_count") != 0:
+        raise ValueError("native panel pending state cannot accept child results")
+    if not isinstance(state.get("recovery_resume_cursor"), str) or not state["recovery_resume_cursor"]:
+        raise ValueError("native panel pending state requires recovery_resume_cursor")
+    for request in requests:
+        if not isinstance(request, dict):
+            raise ValueError("native panel pending request refs must be objects")
+        if request.get("execution_source") != "native_agent_panel":
+            raise ValueError("native panel pending request refs require native_agent_panel source")
+        if request.get("satisfies_native_agent_panel") is not False:
+            raise ValueError("native panel pending request refs must not satisfy native panel")
+        if not request.get("request_id") or not request.get("session_key"):
+            raise ValueError("native panel pending request refs require request_id and session_key")
 
 
 def _validate_conv_execution_evidence(store: WorkflowStore, workflow: dict[str, Any], state: dict[str, Any]) -> None:

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import subprocess
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -27,6 +27,39 @@ from .contracts import (
 
 
 CommandRunner = Callable[[list[str], int], subprocess.CompletedProcess[str]]
+
+SUBAGENT_CAPACITY_EXHAUSTED = "subagent_capacity_exhausted"
+SUBAGENT_SPAWN_TIMEOUT = "subagent_spawn_timeout"
+SUBAGENT_CLI_CONTRACT_CHANGED = "subagent_cli_contract_changed"
+SUBAGENT_SPAWN_FAILED = "subagent_spawn_failed"
+
+
+@dataclass(frozen=True)
+class NativePanelBlockedError(RuntimeError):
+    """Structured native panel launch/collection blockage.
+
+    This is intentionally not a successful child result. It lets modes persist
+    pending request refs and recovery pointers without pretending that a native
+    specialist panel ran to completion.
+    """
+
+    reason: str
+    request: NativeLaunchRequest
+    message: str
+    pending_request_ids: list[str] = field(default_factory=list)
+    raw_stdout: str = ""
+    raw_stderr: str = ""
+
+    def __post_init__(self) -> None:
+        RuntimeError.__init__(self, self.message)
+
+    @property
+    def blocked_request_id(self) -> str:
+        return self.request.request_id or self.request.idempotency_key
+
+    @property
+    def blocked_session_key(self) -> str:
+        return self.request.session_key
 
 
 @dataclass(frozen=True)
@@ -256,13 +289,39 @@ class OpenClawAgentCliBackend:
             "--timeout",
             str(timeout),
         ]
-        completed = self.runner(command, timeout)
-        result = _result_from_completed_process(
-            request,
-            completed,
-            satisfies_native_agent_panel=satisfies_native_agent_panel,
-            coordinator_tool_smoke_evidence=coordinator_tool_smoke_evidence,
-        )
+        try:
+            completed = self.runner(command, timeout)
+            if completed.returncode != 0:
+                stderr = completed.stderr.strip()
+                raise NativePanelBlockedError(
+                    reason=_classify_failure_text(completed.stdout, completed.stderr),
+                    request=request,
+                    message=stderr or f"openclaw agent exited with {completed.returncode}",
+                    raw_stdout=completed.stdout,
+                    raw_stderr=completed.stderr,
+                )
+            result = _result_from_completed_process(
+                request,
+                completed,
+                satisfies_native_agent_panel=satisfies_native_agent_panel,
+                coordinator_tool_smoke_evidence=coordinator_tool_smoke_evidence,
+            )
+        except subprocess.TimeoutExpired as exc:
+            stdout = _timeout_text(exc.stdout)
+            stderr = _timeout_text(exc.stderr)
+            raise NativePanelBlockedError(
+                reason=SUBAGENT_SPAWN_TIMEOUT,
+                request=request,
+                message=f"openclaw agent timed out after {timeout} seconds before returning a child result",
+                raw_stdout=stdout,
+                raw_stderr=stderr,
+            ) from exc
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise NativePanelBlockedError(
+                reason=SUBAGENT_CLI_CONTRACT_CHANGED,
+                request=request,
+                message=str(exc),
+            ) from exc
         return OpenClawCliRun(command=command, result=result, raw_stdout=completed.stdout, raw_stderr=completed.stderr)
 
 
@@ -400,7 +459,10 @@ class OpenClawNativePanelCliBackend:
             raise ValueError("native OpenClaw CLI panel requires exactly 3 or 5 child requests")
         results: list[NativeChildResult] = []
         for request in requests:
-            run = self.child_backend.run_review(request)
+            try:
+                run = self.child_backend.run_review(request)
+            except NativePanelBlockedError as exc:
+                raise replace(exc, pending_request_ids=_pending_request_ids(requests, request)) from exc
             _validate_child_smoke_claim(request, run.result)
             session_proof = self.session_proof_checker.prove_session(request)
             trajectory_proof = self.trajectory_proof_checker.prove_tool_events(request)
@@ -543,6 +605,45 @@ def _int_summary(summary: dict[str, Any], key: str) -> int:
 
 def _default_runner(command: list[str], timeout_seconds: int) -> subprocess.CompletedProcess[str]:
     return subprocess.run(command, text=True, capture_output=True, check=False, timeout=timeout_seconds)
+
+
+def _timeout_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
+
+
+def _pending_request_ids(requests: list[NativeLaunchRequest], blocked_request: NativeLaunchRequest) -> list[str]:
+    blocked_id = blocked_request.request_id or blocked_request.idempotency_key
+    ids = [request.request_id or request.idempotency_key for request in requests]
+    if blocked_id not in ids:
+        return ids
+    return ids[ids.index(blocked_id) :]
+
+
+def _classify_failure_text(*values: str) -> str:
+    text = " ".join(
+        item.lower()
+        for item in values
+        if isinstance(item, str)
+    )
+    capacity_markers = (
+        "capacity",
+        "slot",
+        "slots",
+        "concurrent",
+        "concurrency",
+        "maxchildren",
+        "max children",
+        "sessions are full",
+        "too many",
+        "limit",
+    )
+    if any(marker in text for marker in capacity_markers):
+        return SUBAGENT_CAPACITY_EXHAUSTED
+    return SUBAGENT_SPAWN_FAILED
 
 
 def _format_time(value: datetime) -> str:

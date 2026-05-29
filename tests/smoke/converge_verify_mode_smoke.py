@@ -14,6 +14,7 @@ except ModuleNotFoundError:
     from tests.smoke.smoke_helpers import ROOT, assert_phase5a_contract, assert_phase5a_accepted_change_stale_rejected, assert_phase5a_freshness_rejected, assert_phase5a_missing_gate_rejected, assert_phase5a_stale_hash_rejected, assert_phase5a_terminal_status_rejected, assert_true, events, run, run_fail, workflow, write_events, write_workflow
 from converge.artifacts import sha256_file  # noqa: E402
 from converge.agents.contracts import NativeChildResult  # noqa: E402
+from converge.agents.openclaw_cli import NativePanelBlockedError  # noqa: E402
 from converge.messages import format_final  # noqa: E402
 from converge.modes.specialist_panel import _stable_hash, validate_specialist_state  # noqa: E402
 from converge.modes.verify import VerifyHandler, build_verify_record, render_verify_report  # noqa: E402
@@ -421,6 +422,36 @@ def main() -> int:
             "native verify should force native finding profile/provenance onto child findings",
         )
         run("validate", "--workflow-id", "verify-native-panel", state_root=state_root)
+
+        blocked_native_workflow = native_store.create_workflow(
+            kind="verify",
+            text="Verify with blocked native OpenClaw child panel",
+            workflow_id="verify-native-panel-blocked",
+            owner_session_key="session:test",
+            visible_delivery={"channel": "telegram", "target": "test"},
+        )
+        VerifyHandler(native_store).finalize_verify(
+            blocked_native_workflow["workflow_id"],
+            native_agent_backend=BlockedNativePanelBackend("subagent_capacity_exhausted"),
+        )
+        blocked_native = workflow(state_root, "verify-native-panel-blocked")
+        blocked_state = blocked_native["verify_state"]
+        assert_true(blocked_native["status"] == "blocked", "blocked native verify should stop as blocked, not running")
+        assert_true(len(blocked_state["agent_request_refs"]) == 3, "blocked native verify should persist request refs")
+        assert_true(blocked_state["agent_result_refs"] == [], "blocked native verify should not synthesize child results")
+        assert_true(
+            blocked_state["agent_result_collection_status"]["status"] == "waiting_subagent_capacity",
+            "blocked native verify should record waiting_subagent_capacity",
+        )
+        assert_true(
+            blocked_state["blocked_request_id"] in blocked_state["pending_request_ids"],
+            "blocked native verify should preserve the blocked request id in pending ids",
+        )
+        assert_true(
+            blocked_state["resume_next_action"] == "retry_native_panel_after_capacity_available",
+            "blocked native verify should include a resume pointer",
+        )
+        run("validate", "--workflow-id", "verify-native-panel-blocked", state_root=state_root)
 
         target_refs_file = state_root / "verify-target-refs.json"
         target_refs_file.write_text(
@@ -1581,6 +1612,19 @@ class FakeNativePanelBackend:
                 )
             )
         return results
+
+
+class BlockedNativePanelBackend:
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+
+    def run_panel(self, requests):
+        raise NativePanelBlockedError(
+            reason=self.reason,
+            request=requests[0],
+            message="fixture native panel blocked before collection",
+            pending_request_ids=[request.request_id for request in requests],
+        )
 
 
 def specialist_packet() -> dict:

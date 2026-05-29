@@ -127,6 +127,7 @@ class NativeChildResult:
     tool_smoke_evidence: dict[str, Any] | None = None
     source_classification: str = SOURCE_NATIVE_AGENT_PANEL
     satisfies_native_agent_panel: bool = True
+    target_refs: list[dict[str, Any]] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -281,6 +282,7 @@ class InMemoryOpenClawSessionBackend:
             deadline_at=record.deadline_at,
             completed_at=_format_time(current),
             error=reason,
+            target_refs=[dict(item) for item in record.request.target_refs],
         )
         validate_native_child_result(result.as_dict())
         self.records_by_request_id[request_id] = _replace_record(
@@ -311,6 +313,7 @@ class InMemoryOpenClawSessionBackend:
                 deadline_at=record.deadline_at,
                 completed_at=_format_time(current),
                 timeout_reason="lease_expired",
+                target_refs=[dict(item) for item in record.request.target_refs],
             )
             validate_native_child_result(result.as_dict())
             self.records_by_request_id[request_id] = _replace_record(
@@ -375,6 +378,7 @@ class InMemoryOpenClawSessionBackend:
             completed_at=_format_time(completed_at),
             error=error,
             tool_smoke_evidence=_tool_smoke_evidence(record) if tool_smoke_status == TOOL_SMOKE_PASSED else None,
+            target_refs=[dict(item) for item in record.request.target_refs],
         )
 
     def _record(self, request_id: str) -> NativeSessionRecord:

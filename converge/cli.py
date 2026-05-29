@@ -52,6 +52,7 @@ from .route_parity import validate_phase6_route_parity_evidence
 from .artifacts import now_iso, record_workflow_artifact, sha256_file, validate_manifest_entry
 from .schema import SchemaError, validate_bundled_schemas, validate_named, validate_next_safe_action
 from .store import WorkflowStore, structured_next_action
+from .target_refs import load_target_refs_file
 
 
 SUPPORTED_MANUAL_EVENT_TYPES = ("owner_decision", "plan_accepted", "progress", "rescope")
@@ -169,6 +170,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
         workflow["workflow_id"],
         specialist_findings=load_specialist_packet(getattr(args, "structured_findings_file", None)),
         native_agent_backend=native_agent_backend,
+        target_refs=_target_refs_from_args(args),
         recovery_lease_id=args.recovery_lease_id,
         recovery_lease_holder=args.recovery_lease_holder,
     )
@@ -190,6 +192,10 @@ def _uses_structured_findings(args: argparse.Namespace) -> bool:
     return bool(getattr(args, "structured_findings_file", None))
 
 
+def _target_refs_from_args(args: argparse.Namespace) -> list[dict[str, Any]]:
+    return load_target_refs_file(getattr(args, "target_refs_file", None), source_root=Path.cwd())
+
+
 def _validate_verify_execution_inputs(
     args: argparse.Namespace,
     *,
@@ -197,6 +203,8 @@ def _validate_verify_execution_inputs(
 ) -> None:
     if native_agent_backend is not None and _uses_structured_findings(args):
         raise ValueError("verify native OpenClaw CLI panel cannot be combined with runner-provided structured findings")
+    if native_agent_backend is None and getattr(args, "target_refs_file", None):
+        raise ValueError("verify --target-refs-file requires --native-panel-openclaw-cli")
     _reject_scaffold_with_real_inputs(args, mode="verify", native_agent_backend=native_agent_backend, runner_inputs=("structured_findings_file",))
 
 
@@ -207,6 +215,8 @@ def _validate_conv_execution_inputs(
 ) -> None:
     if native_agent_backend is not None and _uses_structured_findings(args):
         raise ValueError("conv native OpenClaw CLI panel cannot be combined with runner-provided structured findings")
+    if native_agent_backend is None and getattr(args, "target_refs_file", None):
+        raise ValueError("conv --target-refs-file requires --native-panel-openclaw-cli")
     _reject_scaffold_with_real_inputs(
         args,
         mode="conv",
@@ -220,6 +230,8 @@ def _validate_goal_execution_inputs(
     *,
     native_agent_backend: OpenClawNativePanelCliBackend | None,
 ) -> None:
+    if native_agent_backend is None and getattr(args, "target_refs_file", None):
+        raise ValueError("goal --target-refs-file requires --native-panel-openclaw-cli")
     _reject_scaffold_with_real_inputs(args, mode="goal", native_agent_backend=native_agent_backend, runner_inputs=())
 
 
@@ -297,6 +309,7 @@ def cmd_conv(args: argparse.Namespace) -> int:
         workflow["workflow_id"],
         specialist_findings=load_specialist_packet(getattr(args, "structured_findings_file", None)),
         native_agent_backend=native_agent_backend,
+        target_refs=_target_refs_from_args(args),
         fix_runner_result=_load_optional_json_object(getattr(args, "fix_runner_result_file", None)),
         fix_runner_source_root=getattr(args, "fix_runner_source_root", None),
         recovery_lease_id=args.recovery_lease_id,
@@ -356,6 +369,7 @@ def cmd_goal(args: argparse.Namespace) -> int:
     goal = GoalHandler(store).finalize_goal(
         workflow["workflow_id"],
         native_agent_backend=native_agent_backend,
+        target_refs=_target_refs_from_args(args),
         recovery_lease_id=args.recovery_lease_id,
         recovery_lease_holder=args.recovery_lease_holder,
     )
@@ -3143,6 +3157,11 @@ def build_parser() -> argparse.ArgumentParser:
     verify.add_argument("--owner-session-key")
     verify.add_argument("--visible-delivery", type=parse_json)
     verify.add_argument("--structured-findings-file")
+    verify.add_argument(
+        "--target-refs-file",
+        type=Path,
+        help="JSON manifest of readable file refs to attach to the native OpenClaw child requests",
+    )
     verify.add_argument("--native-panel-openclaw-cli", action="store_true")
     verify.add_argument("--native-panel-openclaw-bin", default="openclaw")
     verify.add_argument(
@@ -3160,6 +3179,11 @@ def build_parser() -> argparse.ArgumentParser:
     goal.add_argument("--workflow-id")
     goal.add_argument("--owner-session-key")
     goal.add_argument("--visible-delivery", type=parse_json)
+    goal.add_argument(
+        "--target-refs-file",
+        type=Path,
+        help="JSON manifest of readable file refs to pass through to required native child workflows",
+    )
     goal.add_argument("--native-panel-openclaw-cli", action="store_true")
     goal.add_argument("--native-panel-openclaw-bin", default="openclaw")
     goal.add_argument(
@@ -3178,6 +3202,11 @@ def build_parser() -> argparse.ArgumentParser:
     conv.add_argument("--owner-session-key")
     conv.add_argument("--visible-delivery", type=parse_json)
     conv.add_argument("--structured-findings-file")
+    conv.add_argument(
+        "--target-refs-file",
+        type=Path,
+        help="JSON manifest of readable file refs to attach to the native OpenClaw child requests",
+    )
     conv.add_argument("--fix-runner-result-file")
     conv.add_argument("--fix-runner-source-root", type=Path)
     conv.add_argument("--native-panel-openclaw-cli", action="store_true")

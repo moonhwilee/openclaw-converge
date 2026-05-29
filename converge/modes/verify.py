@@ -33,6 +33,7 @@ from .specialist_panel import (
 from ..agents.contracts import NativeLaunchRequest, stable_hash
 from ..artifacts import now_iso
 from ..messages import normalize_residuals
+from ..target_refs import merge_inline_target_ref
 
 
 VERIFY_REPORT_ARTIFACT_ID = "verify-final-report"
@@ -138,6 +139,7 @@ class VerifyHandler(ModeHandler):
         *,
         specialist_findings: dict[str, Any] | None = None,
         native_agent_backend: Any | None = None,
+        target_refs: list[dict[str, Any]] | None = None,
         recovery_lease_id: str | None = None,
         recovery_lease_holder: str | None = None,
     ) -> dict[str, Any]:
@@ -176,6 +178,7 @@ class VerifyHandler(ModeHandler):
                 workflow_id,
                 target=record.target,
                 native_agent_backend=native_agent_backend,
+                target_refs=target_refs,
             )
         specialist_state = None
         if specialist_review:
@@ -446,9 +449,10 @@ def _record_native_specialist_review(
     *,
     target: str,
     native_agent_backend: Any,
+    target_refs: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     artifact_id = specialist_artifact_id("verify")
-    requests = _native_verify_requests(workflow_id=workflow_id, target=target)
+    requests = _native_verify_requests(workflow_id=workflow_id, target=target, target_refs=target_refs)
     results = native_agent_backend.run_panel(requests)
     review = build_native_specialist_review(
         results,
@@ -481,13 +485,13 @@ def _record_native_specialist_review(
     return review
 
 
-def _native_verify_requests(*, workflow_id: str, target: str) -> list[NativeLaunchRequest]:
+def _native_verify_requests(*, workflow_id: str, target: str, target_refs: list[dict[str, Any]] | None = None) -> list[NativeLaunchRequest]:
     profile_refs = ["native-verify-architecture", "native-verify-contracts", "native-verify-ops"]
     return [
         NativeLaunchRequest(
             mode="verify",
             objective=target,
-            target_refs=[{"kind": "verify_target", "text": target}],
+            target_refs=merge_inline_target_ref("verify", target, target_refs),
             profile_ref=profile_ref,
             context_hash=stable_hash({"workflow_id": workflow_id, "target": target, "profile_ref": profile_ref}),
             idempotency_key=stable_hash({"workflow_id": workflow_id, "profile_ref": profile_ref, "round": 1}),

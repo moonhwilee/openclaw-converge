@@ -41,6 +41,7 @@ from ..agents.contracts import (
 )
 from ..artifacts import now_iso
 from ..messages import normalize_residuals
+from ..target_refs import merge_inline_target_ref
 
 
 CONV_REPORT_ARTIFACT_ID = "conv-final-report"
@@ -152,6 +153,7 @@ class ConvHandler(ModeHandler):
         *,
         specialist_findings: dict[str, Any] | None = None,
         native_agent_backend: Any | None = None,
+        target_refs: list[dict[str, Any]] | None = None,
         fix_runner_result: dict[str, Any] | None = None,
         fix_runner_source_root: Path | None = None,
         recovery_lease_id: str | None = None,
@@ -174,6 +176,7 @@ class ConvHandler(ModeHandler):
                 workflow_id,
                 target=text,
                 native_agent_backend=native_agent_backend,
+                target_refs=target_refs,
             )
         specialist_state = specialist_review["state"] if specialist_review else None
         if specialist_state:
@@ -1166,9 +1169,10 @@ def _record_native_specialist_review(
     *,
     target: str,
     native_agent_backend: Any,
+    target_refs: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     artifact_id = specialist_artifact_id("conv")
-    requests = _native_conv_requests(workflow_id=workflow_id, target=target)
+    requests = _native_conv_requests(workflow_id=workflow_id, target=target, target_refs=target_refs)
     results = native_agent_backend.run_panel(requests)
     review = build_native_specialist_review(
         results,
@@ -1203,13 +1207,13 @@ def _record_native_specialist_review(
     return review
 
 
-def _native_conv_requests(*, workflow_id: str, target: str) -> list[NativeLaunchRequest]:
+def _native_conv_requests(*, workflow_id: str, target: str, target_refs: list[dict[str, Any]] | None = None) -> list[NativeLaunchRequest]:
     profile_refs = ["native-conv-integrity", "native-conv-regression", "native-conv-ops"]
     return [
         NativeLaunchRequest(
             mode="conv",
             objective=target,
-            target_refs=[{"kind": "conv_target", "text": target}],
+            target_refs=merge_inline_target_ref("conv", target, target_refs),
             profile_ref=profile_ref,
             context_hash=stable_hash({"workflow_id": workflow_id, "target": target, "profile_ref": profile_ref}),
             idempotency_key=stable_hash({"workflow_id": workflow_id, "profile_ref": profile_ref, "round": 1}),

@@ -46,6 +46,7 @@ from converge.agents.openclaw_cli import (  # noqa: E402
     build_child_prompt,
     validate_openclaw_agent_session_key,
 )
+from converge.target_refs import load_target_refs_file  # noqa: E402
 
 
 def expect_error(func, contains: str) -> None:
@@ -154,6 +155,37 @@ def assert_native_result_schema_requires_tool_smoke() -> None:
         "timeout_reason": "lease_expired",
     }
     validate_native_child_result(timed_out)
+
+
+def assert_target_refs_manifest_validation() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        good_file = root / "converge" / "modes" / "verify.py"
+        good_file.parent.mkdir(parents=True)
+        good_file.write_text("print('target')\n", encoding="utf-8")
+        manifest = root / "target-refs.json"
+
+        def write_refs(refs: list[dict[str, object]]) -> None:
+            manifest.write_text(json.dumps({"schema_version": 1, "target_refs": refs}), encoding="utf-8")
+
+        write_refs([{"kind": "file", "path": "converge/modes/verify.py", "role": "mode"}])
+        refs = load_target_refs_file(manifest, source_root=root)
+        assert_true(
+            refs == [{"kind": "file", "path": "converge/modes/verify.py", "role": "mode"}],
+            "target refs manifest should normalize valid relative file refs",
+        )
+
+        write_refs([{"kind": "artifact", "path": "converge/modes/verify.py"}])
+        expect_error(lambda: load_target_refs_file(manifest, source_root=root), "only kind=file")
+
+        write_refs([{"kind": "file", "path": "/tmp/verify.py"}])
+        expect_error(lambda: load_target_refs_file(manifest, source_root=root), "relative")
+
+        write_refs([{"kind": "file", "path": "../verify.py"}])
+        expect_error(lambda: load_target_refs_file(manifest, source_root=root), "relative")
+
+        write_refs([{"kind": "file", "path": "missing.py"}])
+        expect_error(lambda: load_target_refs_file(manifest, source_root=root), "does not exist")
 
 
 def assert_fake_backend_lifecycle_idempotency_and_timeout() -> None:
@@ -779,6 +811,7 @@ def main() -> None:
     assert_default_policies_are_enforced()
     assert_openclaw_session_contract_requires_explicit_session_refs()
     assert_native_result_schema_requires_tool_smoke()
+    assert_target_refs_manifest_validation()
     assert_fake_backend_lifecycle_idempotency_and_timeout()
     assert_panel_collection_blocks_partial_failure()
     assert_source_and_fix_runner_contracts()

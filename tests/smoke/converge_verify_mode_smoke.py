@@ -520,7 +520,7 @@ def main() -> int:
         expected_file_ref = {
             "kind": "file",
             "path": "converge/modes/verify.py",
-            "source_root": str(Path.cwd().resolve()),
+            "source_root": str(ROOT.resolve()),
             "role": "mode",
         }
         assert_true(native_cli_verify["workflow"]["status"] == "completed_unreported", "native CLI verify panel should complete")

@@ -44,8 +44,10 @@ from converge.agents.contracts import (  # noqa: E402
 )
 from converge.agents.openclaw_cli import (  # noqa: E402
     NativePanelBlockedError,
+    OPENCLAW_AGENT_COMMAND_TIMEOUT_CAP_SECONDS,
     OpenClawAgentCliBackend,
     OpenClawNativePanelCliBackend,
+    SUBAGENT_SPAWN_TIMEOUT,
     build_child_prompt,
     validate_openclaw_agent_session_key,
 )
@@ -612,7 +614,14 @@ def assert_openclaw_cli_backend_uses_explicit_session_and_structured_result() ->
         assert_true("--message" in command, "adapter should pass a child prompt")
         prompt = command[command.index("--message") + 1]
         assert_true("REQUEST_JSON" in prompt and "native specialist child session" in prompt, "adapter prompt should carry native child request")
-        assert_true(timeout_seconds == request.timeout_policy["child_lease_seconds"], "adapter should use child lease timeout")
+        assert_true(
+            timeout_seconds == OPENCLAW_AGENT_COMMAND_TIMEOUT_CAP_SECONDS,
+            "adapter should cap default openclaw agent command waits",
+        )
+        assert_true(
+            command[command.index("--timeout") + 1] == str(OPENCLAW_AGENT_COMMAND_TIMEOUT_CAP_SECONDS),
+            "adapter should pass the bounded command wait to openclaw agent",
+        )
         return subprocess.CompletedProcess(command, 0, stdout=_cli_child_stdout(command[3]), stderr="")
 
     result = OpenClawAgentCliBackend(runner=runner).run_review(request)
@@ -676,6 +685,34 @@ def assert_openclaw_cli_backend_uses_explicit_session_and_structured_result() ->
         "CLI seam should parse OpenClaw 2026.5.27 result.payloads text",
     )
     expect_error(lambda: validate_openclaw_agent_session_key("session:child:a"), "agent:<id>:<key>")
+
+    short_timeout_request = NativeLaunchRequest(
+        **{
+            **launch_request().as_dict(),
+            "session_key": "agent:main:child-short-timeout",
+            "timeout_policy": {
+                **DEFAULT_TIMEOUT_POLICY,
+                "child_lease_seconds": 42,
+                "panel_collection_seconds": DEFAULT_TIMEOUT_POLICY["panel_collection_seconds"],
+            },
+        }
+    )
+
+    def short_timeout_runner(command: list[str], timeout_seconds: int) -> subprocess.CompletedProcess[str]:
+        assert_true(timeout_seconds == 42, "adapter should not raise short leases to the command cap")
+        assert_true(command[command.index("--timeout") + 1] == "42", "adapter should pass short leases unchanged")
+        return subprocess.CompletedProcess(command, 0, stdout=_cli_child_stdout(command[3]), stderr="")
+
+    OpenClawAgentCliBackend(runner=short_timeout_runner).run_review(short_timeout_request)
+
+    def timeout_runner(command: list[str], timeout_seconds: int) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired(command, timeout_seconds, output="waiting for subagent", stderr="sessions are full")
+
+    blocked = expect_native_panel_blocked(
+        lambda: OpenClawAgentCliBackend(runner=timeout_runner).run_review(request),
+        "timed out",
+    )
+    assert_true(blocked.reason == SUBAGENT_SPAWN_TIMEOUT, "command timeout should block as a retryable spawn timeout")
 
 
 def assert_openclaw_native_panel_cli_backend_requires_coordinator_verified_smoke() -> None:

@@ -8,6 +8,7 @@ import hashlib
 import json
 import subprocess
 import tempfile
+from argparse import Namespace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -51,6 +52,9 @@ from converge.agents.openclaw_cli import (  # noqa: E402
     build_child_prompt,
     validate_openclaw_agent_session_key,
 )
+from converge.cli import _target_refs_from_args  # noqa: E402
+from converge.modes.conv import _native_conv_requests  # noqa: E402
+from converge.modes.verify import _native_verify_requests  # noqa: E402
 from converge.target_refs import default_converge_target_refs, load_target_refs_file, merge_inline_target_ref  # noqa: E402
 
 
@@ -328,6 +332,33 @@ def assert_default_converge_target_refs_are_concrete_and_bounded() -> None:
         ),
         "default verify refs should cover mode, native panel, and target ref contracts",
     )
+
+
+def assert_cli_missing_target_refs_file_preserves_mode_defaults() -> None:
+    root = Path.cwd().resolve()
+    args = Namespace(target_refs_file=None)
+    assert_true(_target_refs_from_args(args) is None, "missing CLI target refs file should preserve mode default refs")
+
+    verify_requests = _native_verify_requests(
+        workflow_id="verify-cli-default-refs",
+        target="Check CLI default refs",
+        target_refs=_target_refs_from_args(args),
+        source_root=root,
+    )
+    conv_requests = _native_conv_requests(
+        workflow_id="conv-cli-default-refs",
+        target="Check CLI default refs",
+        target_refs=_target_refs_from_args(args),
+        source_root=root,
+    )
+    for request in verify_requests:
+        paths = {item.get("path") for item in request.target_refs if item.get("kind") == "file"}
+        assert_true("converge/modes/verify.py" in paths, "CLI verify without target refs file should include default verify mode ref")
+        assert_true("converge/target_refs.py" in paths, "CLI verify without target refs file should include target refs contract")
+    for request in conv_requests:
+        paths = {item.get("path") for item in request.target_refs if item.get("kind") == "file"}
+        assert_true("converge/modes/conv.py" in paths, "CLI conv without target refs file should include default conv mode ref")
+        assert_true("converge/target_refs.py" in paths, "CLI conv without target refs file should include target refs contract")
 
 
 def assert_fake_backend_lifecycle_idempotency_and_timeout() -> None:
@@ -1046,6 +1077,7 @@ def main() -> None:
     assert_native_result_schema_requires_tool_smoke()
     assert_target_refs_manifest_validation()
     assert_default_converge_target_refs_are_concrete_and_bounded()
+    assert_cli_missing_target_refs_file_preserves_mode_defaults()
     assert_fake_backend_lifecycle_idempotency_and_timeout()
     assert_panel_collection_blocks_partial_failure()
     assert_source_and_fix_runner_contracts()

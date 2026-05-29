@@ -801,7 +801,7 @@ def _validate_trajectory_has_no_unexpected_tool_calls(
         if call.name in READ_ACTION_TOOL_NAMES and _tool_call_ref_is_allowed_startup_read(call):
             allowed_count += 1
             continue
-        if call.name in READ_ACTION_TOOL_NAMES and _tool_call_ref_is_allowed_readonly_search(call, read_manifest):
+        if call.name in READ_ACTION_TOOL_NAMES and _tool_call_ref_is_allowed_readonly_context(call, read_manifest):
             allowed_count += 1
             continue
         if call.name in READ_ACTION_TOOL_NAMES and _tool_call_ref_covers_any_read_target(call, read_manifest):
@@ -865,8 +865,8 @@ def _tool_call_ref_is_allowed_startup_read(call: OpenClawToolCallRef) -> bool:
     return re.search(r"memory/20\d{2}-\d{2}-\d{2}\.md", text) is not None
 
 
-def _tool_call_ref_is_allowed_readonly_search(call: OpenClawToolCallRef, read_manifest: dict[str, Any]) -> bool:
-    if not _tool_call_ref_is_readonly_search(call):
+def _tool_call_ref_is_allowed_readonly_context(call: OpenClawToolCallRef, read_manifest: dict[str, Any]) -> bool:
+    if not _tool_call_ref_is_readonly_context(call):
         return False
     roots = _allowed_target_search_roots(read_manifest)
     if not roots:
@@ -882,9 +882,18 @@ def _tool_call_ref_is_allowed_readonly_search(call: OpenClawToolCallRef, read_ma
     return False
 
 
-def _tool_call_ref_is_readonly_search(call: OpenClawToolCallRef) -> bool:
+def _tool_call_ref_is_readonly_context(call: OpenClawToolCallRef) -> bool:
     text = call.argument_text.lower()
-    if "rg " not in text and "grep " not in text and "grep -" not in text:
+    readonly_markers = (
+        "rg ",
+        "grep ",
+        "grep -",
+        "sed -n",
+        "cat ",
+        "nl ",
+        "wc ",
+    )
+    if not any(marker in text for marker in readonly_markers):
         return False
     blocked_markers = (
         ">",

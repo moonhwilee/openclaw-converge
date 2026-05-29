@@ -944,6 +944,28 @@ def assert_openclaw_native_panel_cli_backend_requires_coordinator_verified_smoke
         "bounded readonly searches under target-ref roots should remain inside native read-only policy",
     )
 
+    readonly_related_read_trajectory = OpenClawNativePanelCliBackend(
+        child_backend=OpenClawAgentCliBackend(
+            runner=lambda command, timeout_seconds: subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=(
+                    _trajectory_completed_process(command, include_readonly_related_read_call=True).stdout
+                    if command[:3] == ["openclaw", "sessions", "export-trajectory"]
+                    else _sessions_stdout([request.session_key for request in requests])
+                    if command[:2] == ["openclaw", "sessions"]
+                    else _cli_child_stdout(command[3])
+                ),
+                stderr="",
+            )
+        )
+    )
+    readonly_related_read_results = readonly_related_read_trajectory.run_panel(requests)
+    assert_true(
+        all(item.satisfies_native_agent_panel for item in readonly_related_read_results),
+        "bounded related file reads under target-ref roots should remain inside native read-only policy",
+    )
+
     missing_evidence = json_dumps_response(
         {"tool_smoke_status": "passed", "findings": [structured_finding("missing-evidence")], "error": None}
     )
@@ -1241,6 +1263,7 @@ def _trajectory_completed_process(
     include_extra_status_call: bool = False,
     include_startup_read_call: bool = False,
     include_readonly_search_call: bool = False,
+    include_readonly_related_read_call: bool = False,
     include_unexpected_tool_call: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     session_key = command[command.index("--session-key") + 1]
@@ -1369,6 +1392,25 @@ def _trajectory_completed_process(
                 },
             }
         )
+    if include_readonly_related_read_call:
+        events.append(
+            {
+                "traceSchema": "openclaw-trajectory",
+                "schemaVersion": 1,
+                "traceId": "trace-contract",
+                "source": "transcript",
+                "type": "tool.call",
+                "sessionKey": tool_session_key,
+                "data": {
+                    "toolCallId": "call-readonly-related-read",
+                    "name": tool_name,
+                    "arguments": {
+                        "cmd": "sed -n '1,80p' converge/agents/contracts.py",
+                        "cwd": str(Path.cwd().resolve()),
+                    },
+                },
+            }
+        )
     if include_tool_result:
         call_ids = ["call-1"]
         if include_status_call:
@@ -1381,6 +1423,8 @@ def _trajectory_completed_process(
             call_ids.append("call-startup-read")
         if include_readonly_search_call:
             call_ids.append("call-readonly-search")
+        if include_readonly_related_read_call:
+            call_ids.append("call-readonly-related-read")
         for call_id in call_ids:
             events.append(
                 {

@@ -41,12 +41,13 @@ from converge.agents.contracts import (  # noqa: E402
     validate_tool_policy,
 )
 from converge.agents.openclaw_cli import (  # noqa: E402
+    NativePanelBlockedError,
     OpenClawAgentCliBackend,
     OpenClawNativePanelCliBackend,
     build_child_prompt,
     validate_openclaw_agent_session_key,
 )
-from converge.target_refs import load_target_refs_file  # noqa: E402
+from converge.target_refs import load_target_refs_file, merge_inline_target_ref  # noqa: E402
 
 
 def expect_error(func, contains: str) -> None:
@@ -58,11 +59,24 @@ def expect_error(func, contains: str) -> None:
     raise AssertionError(f"expected ValueError containing {contains!r}")
 
 
+def expect_native_panel_blocked(func, contains: str) -> NativePanelBlockedError:
+    try:
+        func()
+    except NativePanelBlockedError as exc:
+        assert_true(contains in str(exc), f"expected blocked error containing {contains!r}, got {exc!s}")
+        return exc
+    raise AssertionError(f"expected NativePanelBlockedError containing {contains!r}")
+
+
 def launch_request(profile_ref: str = "reviewer-contract", key_suffix: str = "a") -> NativeLaunchRequest:
+    source_root = str(Path.cwd().resolve())
     return NativeLaunchRequest(
         mode="verify",
         objective="Audit the native adapter boundary",
-        target_refs=[{"kind": "file", "path": "converge/agents/contracts.py"}],
+        target_refs=[
+            {"kind": "verify_target", "text": "Audit the native adapter boundary", "source_root": source_root},
+            {"kind": "file", "path": "converge/agents/contracts.py", "source_root": source_root},
+        ],
         profile_ref=profile_ref,
         context_hash="sha256:context",
         idempotency_key=f"sha256:task-context-profile-{key_suffix}",
@@ -70,6 +84,26 @@ def launch_request(profile_ref: str = "reviewer-contract", key_suffix: str = "a"
         session_key=f"session:child:{key_suffix}",
         profile_context_refs=[{"kind": "profile", "id": profile_ref}],
     )
+
+
+def structured_finding(
+    finding_id: str = "inspection-passed",
+    *,
+    evidence: str = "agent_session_ref:session:child:contract",
+    severity: str = "p3",
+    confidence: float = 0.9,
+) -> dict[str, object]:
+    return {
+        "finding_id": finding_id,
+        "finding": "Read-only native inspection completed.",
+        "severity": severity,
+        "confidence": confidence,
+        "evidence": evidence,
+        "why_it_matters": "Native panel parity requires concrete specialist output.",
+        "minimal_fix_or_test": "Keep native child result validation bound to this schema.",
+        "scope_risk": "native-child-result-contract",
+        "failure_mode": "none_observed",
+    }
 
 
 def assert_default_policies_are_enforced() -> None:
@@ -106,6 +140,27 @@ def assert_openclaw_session_contract_requires_explicit_session_refs() -> None:
     current_payload = {**payload, "session_key": "current"}
     expect_error(lambda: validate_native_launch_request(current_payload), "non-current session_key")
 
+    missing_inline_target = {**payload, "target_refs": [{"kind": "file", "path": "converge/agents/contracts.py", "source_root": str(Path.cwd().resolve())}]}
+    expect_error(lambda: validate_native_launch_request(missing_inline_target), "must start with verify_target")
+
+    duplicate_inline_target = {
+        **payload,
+        "target_refs": [
+            payload["target_refs"][0],
+            {"kind": "conv_target", "text": "bad", "source_root": str(Path.cwd().resolve())},
+        ],
+    }
+    expect_error(lambda: validate_native_launch_request(duplicate_inline_target), "only one inline")
+
+    escaped_file_ref = {
+        **payload,
+        "target_refs": [
+            payload["target_refs"][0],
+            {"kind": "file", "path": "../contracts.py", "source_root": str(Path.cwd().resolve())},
+        ],
+    }
+    expect_error(lambda: validate_native_launch_request(escaped_file_ref), "relative")
+
     implicit_wait = {**session_payload, "wait": "current"}
     expect_error(lambda: validate_openclaw_session_payload(implicit_wait), "explicit wait session ref")
 
@@ -120,7 +175,7 @@ def assert_native_result_schema_requires_tool_smoke() -> None:
         profile_ref="reviewer-contract",
         context_hash="sha256:context",
         status=STATUS_COMPLETED,
-        findings=[],
+        findings=[structured_finding()],
         started_at="2026-05-28T00:00:00Z",
         deadline_at="2026-05-28T00:15:00Z",
         completed_at="2026-05-28T00:01:00Z",
@@ -139,6 +194,27 @@ def assert_native_result_schema_requires_tool_smoke() -> None:
 
     no_smoke_evidence = {**result, "tool_smoke_evidence": None}
     expect_error(lambda: validate_native_child_result(no_smoke_evidence), "tool_smoke_evidence")
+
+    coordinator_without_child_read_action = {
+        **result,
+        "tool_smoke_evidence": {
+            **result["tool_smoke_evidence"],
+            "kind": "coordinator_verified_child_tool_smoke_session_and_trajectory_binding",
+        },
+    }
+    expect_error(lambda: validate_native_child_result(coordinator_without_child_read_action), "child_read_action")
+
+    empty_findings = {**result, "findings": []}
+    expect_error(lambda: validate_native_child_result(empty_findings), "non-empty findings")
+
+    missing_required_field = {**result, "findings": [{key: value for key, value in structured_finding().items() if key != "why_it_matters"}]}
+    expect_error(lambda: validate_native_child_result(missing_required_field), "why_it_matters")
+
+    string_confidence = {**result, "findings": [{**structured_finding(), "confidence": "high"}]}
+    expect_error(lambda: validate_native_child_result(string_confidence), "confidence")
+
+    evidence_array = {**result, "findings": [{**structured_finding(), "evidence": ["file:a"]}]}
+    expect_error(lambda: validate_native_child_result(evidence_array), "evidence")
 
     runner_packet = {
         **result,
@@ -171,8 +247,16 @@ def assert_target_refs_manifest_validation() -> None:
         write_refs([{"kind": "file", "path": "converge/modes/verify.py", "role": "mode"}])
         refs = load_target_refs_file(manifest, source_root=root)
         assert_true(
-            refs == [{"kind": "file", "path": "converge/modes/verify.py", "role": "mode"}],
+            refs == [{"kind": "file", "path": "converge/modes/verify.py", "source_root": str(root.resolve()), "role": "mode"}],
             "target refs manifest should normalize valid relative file refs",
+        )
+        merged = merge_inline_target_ref("verify", "Audit target refs", refs, source_root=root)
+        assert_true(merged[0] == {"kind": "verify_target", "text": "Audit target refs", "source_root": str(root.resolve())}, "inline target ref should be first and source-rooted")
+        assert_true(merged[1] == refs[0], "manifest file ref should remain source-rooted after merge")
+        expect_error(lambda: merge_inline_target_ref("goal", "Audit target refs", refs, source_root=root), "verify or conv")
+        expect_error(
+            lambda: merge_inline_target_ref("verify", "Audit target refs", [{"kind": "conv_target", "text": "bad"}], source_root=root),
+            "must not contain inline",
         )
 
         write_refs([{"kind": "artifact", "path": "converge/modes/verify.py"}])
@@ -199,7 +283,7 @@ def assert_fake_backend_lifecycle_idempotency_and_timeout() -> None:
     assert_true(active_reuse.request_id == first.request_id, "matching active idempotency key should reuse request")
     assert_true(active_reuse.reuse_state == "active_reuse", "active idempotency key should attach to lease")
 
-    completed = backend.collect_result(first.request_id, findings=[], now=now + timedelta(seconds=2))
+    completed = backend.collect_result(first.request_id, findings=[structured_finding("fake-completed")], now=now + timedelta(seconds=2))
     assert_true(completed.status == STATUS_COMPLETED, "completed fake child should report completed")
     completed_reuse = backend.launch(launch_request(), now=now + timedelta(seconds=3))
     assert_true(completed_reuse.reuse_state == "completed_reuse", "completed idempotency key should be reused")
@@ -209,7 +293,7 @@ def assert_fake_backend_lifecycle_idempotency_and_timeout() -> None:
     timeout_record = backend.launch(timeout_request, now=now)
     expired = backend.expire_timeouts(now=now + timedelta(seconds=901))
     assert_true(len(expired) == 1 and expired[0].status == STATUS_TIMED_OUT, "active lease should expire as terminal timeout")
-    late = backend.collect_result(timeout_record.request_id, findings=[], now=now + timedelta(seconds=902))
+    late = backend.collect_result(timeout_record.request_id, findings=[structured_finding("fake-late")], now=now + timedelta(seconds=902))
     stored = backend.records_by_request_id[timeout_record.request_id]
     assert_true(len(backend.late_results) == 1 and backend.late_results[0] == late, "late result should be recorded separately")
     assert_true(stored.status == STATUS_TIMED_OUT, "late result must not overwrite terminal timeout")
@@ -223,8 +307,8 @@ def assert_panel_collection_blocks_partial_failure() -> None:
         backend.launch(launch_request(profile_ref=f"reviewer-{idx}", key_suffix=str(idx)), now=now)
         for idx in range(3)
     ]
-    backend.collect_result(records[0].request_id, findings=[], now=now + timedelta(seconds=1))
-    backend.collect_result(records[1].request_id, findings=[], now=now + timedelta(seconds=1))
+    backend.collect_result(records[0].request_id, findings=[structured_finding("panel-1")], now=now + timedelta(seconds=1))
+    backend.collect_result(records[1].request_id, findings=[structured_finding("panel-2")], now=now + timedelta(seconds=1))
     backend.collect_result(records[2].request_id, findings=[], now=now + timedelta(seconds=1), status="failed", error="tool smoke failed")
 
     blocked = backend.collect_panel([record.request_id for record in records])
@@ -531,11 +615,15 @@ def assert_openclaw_cli_backend_uses_explicit_session_and_structured_result() ->
         "evidence must be one non-empty string" in prompt and '"evidence":"agent_session_ref:agent:main:converge-example"' in prompt,
         "child prompt should include a schema-compatible finding example",
     )
+    assert_true(
+        "read_action must be read_files or read_artifacts" in prompt and "status_action must be shell_status" in prompt,
+        "child prompt should require structured read/status smoke proof",
+    )
 
     missing_smoke = subprocess.CompletedProcess(
         ["openclaw"],
         0,
-        stdout='{"response":"{\\"findings\\":[]}"}',
+        stdout=json_dumps_response({"findings": [structured_finding("missing-smoke")]}),
         stderr="",
     )
     seam_result = OpenClawAgentCliBackend(runner=lambda _command, _timeout: missing_smoke).run_review(request)
@@ -584,6 +672,8 @@ def assert_openclaw_native_panel_cli_backend_requires_coordinator_verified_smoke
         all(
             item.tool_smoke_evidence
             and item.tool_smoke_evidence["kind"] == "coordinator_verified_child_tool_smoke_session_and_trajectory_binding"
+            and item.tool_smoke_evidence["child_read_action"] == "read_files"
+            and item.tool_smoke_evidence["child_status_action"] == "shell_status"
             and item.tool_smoke_evidence["session_store_proof"]["session_key"] == item.session_key
             and item.tool_smoke_evidence["trajectory_proof"]["session_key"] == item.session_key
             and item.tool_smoke_evidence["trajectory_proof"]["tool_call_count"] >= 1
@@ -592,7 +682,9 @@ def assert_openclaw_native_panel_cli_backend_requires_coordinator_verified_smoke
         "native CLI panel should replace child evidence with coordinator-verified smoke, session, and trajectory proof",
     )
 
-    missing_evidence = '{"response":"{\\"tool_smoke_status\\":\\"passed\\",\\"findings\\":[],\\"error\\":null}"}'
+    missing_evidence = json_dumps_response(
+        {"tool_smoke_status": "passed", "findings": [structured_finding("missing-evidence")], "error": None}
+    )
     broken_backend = OpenClawNativePanelCliBackend(
         child_backend=OpenClawAgentCliBackend(
             runner=lambda command, timeout_seconds: subprocess.CompletedProcess(
@@ -609,7 +701,8 @@ def assert_openclaw_native_panel_cli_backend_requires_coordinator_verified_smoke
             )
         )
     )
-    expect_error(lambda: broken_backend.run_panel(requests), "tool_smoke_evidence")
+    blocked = expect_native_panel_blocked(lambda: broken_backend.run_panel(requests), "tool_smoke_evidence")
+    assert_true(blocked.reason == "subagent_proof_failed", "missing child evidence should be structured blocked")
 
     failed_smoke = OpenClawNativePanelCliBackend(
         child_backend=OpenClawAgentCliBackend(
@@ -630,8 +723,10 @@ def assert_openclaw_native_panel_cli_backend_requires_coordinator_verified_smoke
                             "checked_at": "2026-05-29T00:00:00Z",
                             "session_key": command[3],
                             "agent_session_ref": command[3],
+                            "read_action": "read_files",
+                            "status_action": "shell_status",
                         },
-                        "findings": [],
+                        "findings": [structured_finding("failed-smoke")],
                         "error": None,
                     }
                     )
@@ -640,7 +735,40 @@ def assert_openclaw_native_panel_cli_backend_requires_coordinator_verified_smoke
             )
         )
     )
-    expect_error(lambda: failed_smoke.run_panel(requests), "did not complete")
+    blocked = expect_native_panel_blocked(lambda: failed_smoke.run_panel(requests), "did not complete")
+    assert_true(blocked.reason == "subagent_proof_failed", "failed smoke should be recorded as structured proof blockage")
+
+    missing_structured_smoke_action = OpenClawNativePanelCliBackend(
+        child_backend=OpenClawAgentCliBackend(
+            runner=lambda command, timeout_seconds: subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=(
+                    _trajectory_completed_process(command).stdout
+                    if command[:3] == ["openclaw", "sessions", "export-trajectory"]
+                    else _sessions_stdout([request.session_key for request in requests])
+                    if command[:2] == ["openclaw", "sessions"]
+                    else json_dumps_response(
+                        {
+                            "tool_smoke_status": "passed",
+                            "tool_smoke_evidence": {
+                                "status": "passed",
+                                "kind": "child_file_read_and_status_check",
+                                "checked_at": "2026-05-29T00:00:00Z",
+                                "session_key": command[3],
+                                "agent_session_ref": command[3],
+                            },
+                            "findings": [structured_finding("missing-structured-smoke-action")],
+                            "error": None,
+                        }
+                    )
+                ),
+                stderr="",
+            )
+        )
+    )
+    blocked = expect_native_panel_blocked(lambda: missing_structured_smoke_action.run_panel(requests), "read_action")
+    assert_true(blocked.reason == "subagent_proof_failed", "unstructured child smoke should be recorded as proof blockage")
 
     missing_session_store_proof = OpenClawNativePanelCliBackend(
         child_backend=OpenClawAgentCliBackend(
@@ -658,7 +786,8 @@ def assert_openclaw_native_panel_cli_backend_requires_coordinator_verified_smoke
             )
         )
     )
-    expect_error(lambda: missing_session_store_proof.run_panel(requests), "session_key")
+    blocked = expect_native_panel_blocked(lambda: missing_session_store_proof.run_panel(requests), "session_key")
+    assert_true(blocked.reason == "subagent_proof_failed", "missing session proof should be structured blocked")
 
     missing_trajectory_proof = OpenClawNativePanelCliBackend(
         child_backend=OpenClawAgentCliBackend(
@@ -676,7 +805,8 @@ def assert_openclaw_native_panel_cli_backend_requires_coordinator_verified_smoke
             )
         )
     )
-    expect_error(lambda: missing_trajectory_proof.run_panel(requests), "trajectory")
+    blocked = expect_native_panel_blocked(lambda: missing_trajectory_proof.run_panel(requests), "trajectory")
+    assert_true(blocked.reason == "subagent_proof_failed", "missing trajectory proof should be structured blocked")
 
     wrong_session_tool_events = OpenClawNativePanelCliBackend(
         child_backend=OpenClawAgentCliBackend(
@@ -694,7 +824,8 @@ def assert_openclaw_native_panel_cli_backend_requires_coordinator_verified_smoke
             )
         )
     )
-    expect_error(lambda: wrong_session_tool_events.run_panel(requests), "tool.call")
+    blocked = expect_native_panel_blocked(lambda: wrong_session_tool_events.run_panel(requests), "tool.call")
+    assert_true(blocked.reason == "subagent_proof_failed", "wrong-session trajectory proof should be structured blocked")
 
 
 def _sessions_stdout(session_keys: list[str]) -> str:
@@ -779,8 +910,15 @@ def _cli_child_stdout(session_key: str, *, openclaw_agent_json: bool = False) ->
             "checked_at": "2026-05-29T00:00:00Z",
             "session_key": session_key,
             "agent_session_ref": session_key,
+            "read_action": "read_files",
+            "status_action": "shell_status",
         },
-        "findings": [{"severity": "p2", "evidence_refs": ["file:a"]}],
+        "findings": [
+            structured_finding(
+                "cli-finding-" + session_key.rsplit(":", 1)[-1],
+                evidence=f"agent_session_ref:{session_key}",
+            )
+        ],
         "error": None,
     }
     if openclaw_agent_json:

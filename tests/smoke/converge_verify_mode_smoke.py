@@ -485,12 +485,18 @@ def main() -> int:
             state_root=state_root,
         )
         native_cli_state = native_cli_verify["workflow"]["verify_state"]
+        expected_file_ref = {
+            "kind": "file",
+            "path": "converge/modes/verify.py",
+            "source_root": str(Path.cwd().resolve()),
+            "role": "mode",
+        }
         assert_true(native_cli_verify["workflow"]["status"] == "completed_unreported", "native CLI verify panel should complete")
         assert_true(native_cli_state["execution_source"] == "native_agent_panel", "native CLI verify should carry native source")
         assert_true(native_cli_state["satisfies_native_agent_panel"] is True, "native CLI verify should satisfy panel only after coordinator smoke")
         assert_true(
             all(
-                {"kind": "file", "path": "converge/modes/verify.py", "role": "mode"} in item["target_refs"]
+                expected_file_ref in item["target_refs"]
                 for item in native_cli_state["agent_request_refs"]
             ),
             "native CLI verify should include manifest file refs in every child request",
@@ -498,6 +504,8 @@ def main() -> int:
         assert_true(
             all(
                 item["tool_smoke_evidence"]["kind"] == "coordinator_verified_child_tool_smoke_session_and_trajectory_binding"
+                and item["tool_smoke_evidence"]["child_read_action"] == "read_files"
+                and item["tool_smoke_evidence"]["child_status_action"] == "shell_status"
                 and item["tool_smoke_evidence"]["session_store_proof"]["session_key"] == item["session_key"]
                 and item["tool_smoke_evidence"]["trajectory_proof"]["session_key"] == item["session_key"]
                 and item["tool_smoke_evidence"]["trajectory_proof"]["tool_call_count"] >= 1
@@ -508,7 +516,7 @@ def main() -> int:
         run("validate", "--workflow-id", "verify-native-cli-panel", state_root=state_root)
 
         fake_openclaw_no_evidence = _write_fake_openclaw_cli(state_root / "fake-openclaw-no-evidence", include_tool_smoke_evidence=False)
-        native_cli_missing_smoke = run_fail(
+        native_cli_missing_smoke = run(
             "verify",
             "--text",
             "Verify native CLI child panel without smoke evidence",
@@ -523,9 +531,13 @@ def main() -> int:
             str(fake_openclaw_no_evidence),
             state_root=state_root,
         )
+        missing_smoke_state = native_cli_missing_smoke["verify"]
         assert_true(
-            "tool_smoke_evidence" in native_cli_missing_smoke["error"],
-            "native CLI verify should fail closed when coordinator cannot verify child smoke evidence",
+            missing_smoke_state["verdict"] == "blocked"
+            and missing_smoke_state["blocked_reason"] == "subagent_proof_failed"
+            and missing_smoke_state["native_panel_launch_status"] == "blocked_native_panel_contract"
+            and missing_smoke_state["agent_request_refs"],
+            "native CLI verify should persist structured blocked state when child smoke evidence is missing",
         )
 
         fake_openclaw_failed_smoke = _write_fake_openclaw_cli(
@@ -533,7 +545,7 @@ def main() -> int:
             include_tool_smoke_evidence=True,
             tool_smoke_status="failed",
         )
-        native_cli_failed_smoke = run_fail(
+        native_cli_failed_smoke = run(
             "verify",
             "--text",
             "Verify native CLI child panel with failed smoke",
@@ -548,8 +560,12 @@ def main() -> int:
             str(fake_openclaw_failed_smoke),
             state_root=state_root,
         )
+        failed_smoke_state = native_cli_failed_smoke["verify"]
         assert_true(
-            "did not complete" in native_cli_failed_smoke["error"] or "tool smoke" in native_cli_failed_smoke["error"],
+            failed_smoke_state["verdict"] == "blocked"
+            and failed_smoke_state["blocked_reason"] == "subagent_proof_failed"
+            and failed_smoke_state["native_panel_launch_status"] == "blocked_native_panel_contract"
+            and not failed_smoke_state["agent_result_refs"],
             "native CLI verify should not promote failed child tool smoke",
         )
 
@@ -558,7 +574,7 @@ def main() -> int:
             include_tool_smoke_evidence=True,
             include_session_store_proof=False,
         )
-        native_cli_missing_session = run_fail(
+        native_cli_missing_session = run(
             "verify",
             "--text",
             "Verify native CLI child panel without session store proof",
@@ -573,9 +589,13 @@ def main() -> int:
             str(fake_openclaw_no_session),
             state_root=state_root,
         )
+        missing_session_state = native_cli_missing_session["verify"]
         assert_true(
-            "session_key" in native_cli_missing_session["error"],
-            "native CLI verify should fail closed when OpenClaw session store proof is missing",
+            missing_session_state["verdict"] == "blocked"
+            and missing_session_state["blocked_reason"] == "subagent_proof_failed"
+            and missing_session_state["resume_next_action"] == "inspect_native_panel_contract_failure"
+            and missing_session_state["pending_request_ids"],
+            "native CLI verify should persist structured blocked state when OpenClaw session store proof is missing",
         )
 
         broken_native = json.loads(json.dumps(native_verify))
@@ -1542,6 +1562,8 @@ if {include_tool_smoke_evidence!r}:
         "checked_at": "2026-05-29T00:00:00Z",
         "session_key": session_key,
         "agent_session_ref": session_key,
+        "read_action": "read_files",
+        "status_action": "shell_status",
     }}
 print(json.dumps({{"response": json.dumps(payload, sort_keys=True)}}, sort_keys=True))
 """
@@ -1591,6 +1613,8 @@ class FakeNativePanelBackend:
                         "verification_scope": "fixture_child_claim_bound_to_explicit_session_refs_with_openclaw_session_store_and_trajectory_tool_events",
                         "child_tool_smoke_kind": "fixture",
                         "child_tool_smoke_checked_at": completed_at,
+                        "child_read_action": "read_files",
+                        "child_status_action": "shell_status",
                         "session_store_proof": {
                             "session_key": request.session_key,
                             "session_id": f"fixture-session-{index}",

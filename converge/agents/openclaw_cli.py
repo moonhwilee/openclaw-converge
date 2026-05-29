@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import subprocess
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
@@ -793,6 +794,11 @@ def _validate_trajectory_has_no_unexpected_tool_calls(
     read_manifest: dict[str, Any],
     status_tool_call_id: str,
 ) -> dict[str, Any]:
+    if trajectory_proof.tool_call_count > len(trajectory_proof.tool_call_refs):
+        raise ValueError(
+            "native CLI trajectory proof did not capture every tool call for allowlist validation: "
+            f"{trajectory_proof.tool_call_count} calls, {len(trajectory_proof.tool_call_refs)} captured"
+        )
     allowed_count = 0
     for call in trajectory_proof.tool_call_refs:
         if _tool_call_ref_is_harmless_status(call):
@@ -834,17 +840,36 @@ def _tool_call_ref_covers_any_read_target(call: OpenClawToolCallRef, read_manife
 
 
 def _tool_call_ref_is_harmless_status(call: OpenClawToolCallRef) -> bool:
-    text = call.argument_text.lower()
-    harmless_markers = (
-        "git status --short",
-        "git status --porcelain",
-        "\"pwd\"",
-        "'pwd'",
-        " pwd",
-        "test -",
-        "true",
-    )
-    return any(marker in text for marker in harmless_markers)
+    command = _tool_call_shell_command(call)
+    if command is None:
+        return False
+    normalized = _unwrap_shell_command(command)
+    if normalized in {"pwd", "git status --short", "git status --porcelain", "true"}:
+        return True
+    return bool(re.fullmatch(r"test\s+-[defrs]\s+[\w./$~-]+", normalized))
+
+
+def _tool_call_shell_command(call: OpenClawToolCallRef) -> str | None:
+    try:
+        parsed = json.loads(call.argument_text)
+    except json.JSONDecodeError:
+        parsed = None
+    if isinstance(parsed, dict):
+        value = parsed.get("command") or parsed.get("cmd")
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    text = call.argument_text.strip()
+    return text or None
+
+
+def _unwrap_shell_command(command: str) -> str:
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        return command.strip()
+    if len(parts) >= 3 and parts[0].endswith(("sh", "zsh", "bash")) and parts[1] in {"-lc", "-c"}:
+        return parts[2].strip()
+    return command.strip()
 
 
 def _tool_call_ref_is_allowed_startup_read(call: OpenClawToolCallRef) -> bool:

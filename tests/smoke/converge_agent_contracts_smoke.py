@@ -21,6 +21,8 @@ from converge.agents.contracts import (  # noqa: E402
     DEFAULT_BUDGET_POLICY,
     DEFAULT_TIMEOUT_POLICY,
     DEFAULT_TOOL_POLICY,
+    NATIVE_INLINE_TARGET_MAX_BYTES,
+    NATIVE_INLINE_TARGET_MAX_LINES,
     SOURCE_NATIVE_AGENT_PANEL,
     SOURCE_RUNNER_PROVIDED_PACKET,
     STATUS_COMPLETED,
@@ -161,6 +163,24 @@ def assert_openclaw_session_contract_requires_explicit_session_refs() -> None:
     }
     expect_error(lambda: validate_native_launch_request(escaped_file_ref), "relative")
 
+    oversized_inline_target = {
+        **payload,
+        "target_refs": [
+            {**payload["target_refs"][0], "text": "x" * (NATIVE_INLINE_TARGET_MAX_BYTES + 1)},
+            payload["target_refs"][1],
+        ],
+    }
+    expect_error(lambda: validate_native_launch_request(oversized_inline_target), "too large")
+
+    multiline_inline_target = {
+        **payload,
+        "target_refs": [
+            {**payload["target_refs"][0], "text": "\n".join(["line"] * (NATIVE_INLINE_TARGET_MAX_LINES + 1))},
+            payload["target_refs"][1],
+        ],
+    }
+    expect_error(lambda: validate_native_launch_request(multiline_inline_target), "too many lines")
+
     implicit_wait = {**session_payload, "wait": "current"}
     expect_error(lambda: validate_openclaw_session_payload(implicit_wait), "explicit wait session ref")
 
@@ -264,6 +284,8 @@ def assert_target_refs_manifest_validation() -> None:
         assert_true(merged[0] == {"kind": "verify_target", "text": "Audit target refs", "source_root": str(root.resolve())}, "inline target ref should be first and source-rooted")
         assert_true(merged[1] == refs[0], "manifest file ref should remain source-rooted after merge")
         expect_error(lambda: merge_inline_target_ref("goal", "Audit target refs", refs, source_root=root), "verify or conv")
+        expect_error(lambda: merge_inline_target_ref("verify", "x" * (NATIVE_INLINE_TARGET_MAX_BYTES + 1), refs, source_root=root), "too large")
+        expect_error(lambda: merge_inline_target_ref("verify", "\n".join(["line"] * (NATIVE_INLINE_TARGET_MAX_LINES + 1)), refs, source_root=root), "too many lines")
         expect_error(
             lambda: merge_inline_target_ref("verify", "Audit target refs", [{"kind": "conv_target", "text": "bad"}], source_root=root),
             "must not contain inline",

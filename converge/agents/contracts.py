@@ -50,6 +50,8 @@ TOOL_SMOKE_NOT_RUN = "not_run"
 
 NATIVE_FINDING_SEVERITIES = {"p0", "p1", "p2", "p3"}
 NATIVE_INLINE_TARGET_KINDS = {"verify_target", "conv_target"}
+NATIVE_INLINE_TARGET_MAX_BYTES = 6_000
+NATIVE_INLINE_TARGET_MAX_LINES = 80
 NATIVE_FINDING_REQUIRED_STRING_FIELDS = (
     "finding_id",
     "finding",
@@ -444,6 +446,7 @@ def _validate_native_launch_target_refs(mode: str, refs: list[Any]) -> None:
     if first.get("kind") != expected_inline_kind:
         raise ValueError(f"native launch target_refs must start with {expected_inline_kind}")
     _required_string(first, "text")
+    _validate_inline_target_text(first["text"])
     _required_string(first, "source_root")
     if not Path(first["source_root"]).expanduser().is_absolute():
         raise ValueError("native launch inline target source_root must be absolute")
@@ -462,6 +465,13 @@ def _validate_native_launch_target_refs(mode: str, refs: list[Any]) -> None:
             raise ValueError("native launch file target_refs paths must be relative and cannot contain '..'")
         if not Path(item["source_root"]).expanduser().is_absolute():
             raise ValueError("native launch file target_refs source_root must be absolute")
+
+
+def _validate_inline_target_text(text: str) -> None:
+    if len(text.encode("utf-8")) > NATIVE_INLINE_TARGET_MAX_BYTES:
+        raise ValueError("native launch inline target is too large; pass documents as file refs")
+    if text.count("\n") + 1 > NATIVE_INLINE_TARGET_MAX_LINES:
+        raise ValueError("native launch inline target has too many lines; pass documents as file refs")
 
 
 def validate_openclaw_session_payload(payload: dict[str, Any]) -> None:

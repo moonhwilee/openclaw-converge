@@ -918,7 +918,9 @@ def assert_openclaw_native_panel_cli_backend_requires_coordinator_verified_smoke
                                 "agent_session_ref": command[3],
                                 "read_action": "read_files",
                                 "status_action": "shell_status",
-                                "read_target_refs": [{"path": "README.md", "source_root": str(Path.cwd().resolve())}],
+                                "read_target_refs": [
+                                    {"path": "converge/agents/contracts.py", "source_root": str(Path.cwd().resolve().parent)}
+                                ],
                             },
                             "findings": [structured_finding("missing-read-manifest")],
                             "error": None,

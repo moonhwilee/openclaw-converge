@@ -1597,9 +1597,9 @@ if {include_tool_smoke_evidence!r}:
         "read_action": "read_files",
         "status_action": "shell_status",
         "read_target_refs": [
-            {{"path": "converge/modes/verify.py"}},
-            {{"path": "converge/modes/conv.py"}},
-            {{"path": "converge/modes/goal.py"}},
+            {{"path": "converge/modes/verify.py", "source_root": {str(ROOT.resolve())!r}}},
+            {{"path": "converge/modes/conv.py", "source_root": {str(ROOT.resolve())!r}}},
+            {{"path": "converge/modes/goal.py", "source_root": {str(ROOT.resolve())!r}}},
         ],
     }}
 print(json.dumps({{"response": json.dumps(payload, sort_keys=True)}}, sort_keys=True))

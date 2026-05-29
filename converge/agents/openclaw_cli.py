@@ -612,21 +612,21 @@ def _validate_child_read_manifest(request: NativeLaunchRequest, evidence: dict[s
     read_refs: list[dict[str, str]] = []
     for item in raw_read_refs:
         if isinstance(item, str):
-            read_refs.append({"path": item, "source_root": ""})
-            continue
+            raise ValueError("native CLI child read_target_refs entries require source_root and path objects")
         if not isinstance(item, dict):
-            raise ValueError("native CLI child read_target_refs entries must be objects or path strings")
+            raise ValueError("native CLI child read_target_refs entries must be objects")
         path = item.get("path")
         source_root = item.get("source_root")
         if not isinstance(path, str) or not path:
             raise ValueError("native CLI child read_target_refs entries require path")
-        read_refs.append({"path": path, "source_root": source_root if isinstance(source_root, str) else ""})
+        if not isinstance(source_root, str) or not source_root:
+            raise ValueError("native CLI child read_target_refs entries require source_root")
+        read_refs.append({"path": path, "source_root": source_root})
     read_keys = {(item["source_root"], item["path"]) for item in read_refs}
-    read_paths = {item["path"] for item in read_refs}
     missing = [
         item
         for item in required
-        if (item["source_root"], item["path"]) not in read_keys and item["path"] not in read_paths
+        if (item["source_root"], item["path"]) not in read_keys
     ]
     if missing:
         missing_paths = ", ".join(item["path"] for item in missing[:5])

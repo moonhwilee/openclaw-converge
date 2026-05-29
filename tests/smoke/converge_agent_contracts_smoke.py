@@ -55,7 +55,7 @@ from converge.agents.openclaw_cli import (  # noqa: E402
 from converge.cli import _target_refs_from_args  # noqa: E402
 from converge.modes.conv import _native_conv_requests  # noqa: E402
 from converge.modes.verify import _native_verify_requests  # noqa: E402
-from converge.target_refs import default_converge_target_refs, load_target_refs_file, merge_inline_target_ref  # noqa: E402
+from converge.target_refs import default_converge_target_refs, load_target_refs_file, merge_inline_target_ref, resolve_converge_source_root  # noqa: E402
 
 
 def expect_error(func, contains: str) -> None:
@@ -332,6 +332,36 @@ def assert_default_converge_target_refs_are_concrete_and_bounded() -> None:
         ),
         "default verify refs should cover mode, native panel, and target ref contracts",
     )
+    workspace_root = root.parent
+    installed_route_refs = default_converge_target_refs("verify", source_root=workspace_root)
+    assert_true(
+        any(item["path"] == "converge/modes/verify.py" and item["source_root"] == str(root) for item in installed_route_refs),
+        "installed route defaults should resolve Converge refs from package/source root, not caller cwd",
+    )
+    assert_true(resolve_converge_source_root(workspace_root) == root, "source root resolver should recover from non-Converge caller cwd")
+
+
+def assert_legacy_comparison_target_refs_are_bounded_and_concrete() -> None:
+    root = Path.cwd().resolve()
+    target = "Compare Converge against legacy verification-convergence and GoalFlow behavior"
+    refs = default_converge_target_refs("verify", source_root=root.parent, target=target)
+    paths_by_root = {(item["source_root"], item["path"]) for item in refs}
+    assert_true(
+        (str(root), "converge/agents/openclaw_cli.py") in paths_by_root,
+        "legacy comparison refs should include native launch implementation",
+    )
+    assert_true(
+        (str(root), "converge/recovery.py") in paths_by_root,
+        "legacy comparison refs should include recovery implementation",
+    )
+    assert_true(
+        any(item["path"] == "skills/verification-convergence/SKILL.md" for item in refs),
+        "legacy comparison refs should include the retained verification-convergence skill",
+    )
+    assert_true(
+        sum((Path(item["source_root"]) / item["path"]).stat().st_size for item in refs) <= DEFAULT_BUDGET_POLICY["max_input_bytes"],
+        "legacy comparison refs should remain inside native panel input budget",
+    )
 
 
 def assert_cli_missing_target_refs_file_preserves_mode_defaults() -> None:
@@ -359,6 +389,16 @@ def assert_cli_missing_target_refs_file_preserves_mode_defaults() -> None:
         paths = {item.get("path") for item in request.target_refs if item.get("kind") == "file"}
         assert_true("converge/modes/conv.py" in paths, "CLI conv without target refs file should include default conv mode ref")
         assert_true("converge/target_refs.py" in paths, "CLI conv without target refs file should include target refs contract")
+
+    comparison_requests = _native_verify_requests(
+        workflow_id="verify-cli-comparison-refs",
+        target="Compare against legacy verification-convergence skill",
+        target_refs=_target_refs_from_args(args),
+        source_root=root.parent,
+    )
+    comparison_paths = {item.get("path") for item in comparison_requests[0].target_refs if item.get("kind") == "file"}
+    assert_true("converge/recovery.py" in comparison_paths, "CLI comparison verify should include recovery ref")
+    assert_true("skills/verification-convergence/SKILL.md" in comparison_paths, "CLI comparison verify should include legacy skill ref")
 
 
 def assert_fake_backend_lifecycle_idempotency_and_timeout() -> None:
@@ -1077,6 +1117,7 @@ def main() -> None:
     assert_native_result_schema_requires_tool_smoke()
     assert_target_refs_manifest_validation()
     assert_default_converge_target_refs_are_concrete_and_bounded()
+    assert_legacy_comparison_target_refs_are_bounded_and_concrete()
     assert_cli_missing_target_refs_file_preserves_mode_defaults()
     assert_fake_backend_lifecycle_idempotency_and_timeout()
     assert_panel_collection_blocks_partial_failure()

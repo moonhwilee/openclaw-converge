@@ -631,7 +631,9 @@ def _native_verify_requests(
     root = source_root or Path.cwd()
     effective_target_refs = target_refs
     if effective_target_refs is None:
-        effective_target_refs = default_converge_target_refs("verify", source_root=root)
+        effective_target_refs = default_converge_target_refs("verify", source_root=root, target=target)
+        if effective_target_refs:
+            root = Path(effective_target_refs[0]["source_root"])
     merged_target_refs = merge_inline_target_ref("verify", target, effective_target_refs, source_root=root)
     return [
         NativeLaunchRequest(

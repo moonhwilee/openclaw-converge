@@ -794,7 +794,7 @@ def _validate_trajectory_has_no_unexpected_tool_calls(
 ) -> dict[str, Any]:
     allowed_count = 0
     for call in trajectory_proof.tool_call_refs:
-        if call.tool_call_id == status_tool_call_id and _tool_call_ref_is_harmless_status(call):
+        if _tool_call_ref_is_harmless_status(call):
             allowed_count += 1
             continue
         if call.name in READ_ACTION_TOOL_NAMES and _tool_call_ref_covers_any_read_target(call, read_manifest):

@@ -878,6 +878,28 @@ def assert_openclaw_native_panel_cli_backend_requires_coordinator_verified_smoke
         "native CLI panel should replace child evidence with coordinator-verified smoke, session, and trajectory proof",
     )
 
+    extra_status_trajectory = OpenClawNativePanelCliBackend(
+        child_backend=OpenClawAgentCliBackend(
+            runner=lambda command, timeout_seconds: subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=(
+                    _trajectory_completed_process(command, include_extra_status_call=True).stdout
+                    if command[:3] == ["openclaw", "sessions", "export-trajectory"]
+                    else _sessions_stdout([request.session_key for request in requests])
+                    if command[:2] == ["openclaw", "sessions"]
+                    else _cli_child_stdout(command[3])
+                ),
+                stderr="",
+            )
+        )
+    )
+    extra_status_results = extra_status_trajectory.run_panel(requests)
+    assert_true(
+        all(item.satisfies_native_agent_panel for item in extra_status_results),
+        "multiple harmless shell_status tool calls should remain inside native read-only policy",
+    )
+
     missing_evidence = json_dumps_response(
         {"tool_smoke_status": "passed", "findings": [structured_finding("missing-evidence")], "error": None}
     )
@@ -1172,6 +1194,7 @@ def _trajectory_completed_process(
     tool_name: str = "exec_command",
     read_path: str = "converge/agents/contracts.py",
     include_status_call: bool = True,
+    include_extra_status_call: bool = False,
     include_unexpected_tool_call: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     session_key = command[command.index("--session-key") + 1]
@@ -1243,12 +1266,33 @@ def _trajectory_completed_process(
                 },
             }
         )
+    if include_extra_status_call:
+        events.append(
+            {
+                "traceSchema": "openclaw-trajectory",
+                "schemaVersion": 1,
+                "traceId": "trace-contract",
+                "source": "transcript",
+                "type": "tool.call",
+                "sessionKey": tool_session_key,
+                "data": {
+                    "toolCallId": "call-extra-status",
+                    "name": tool_name,
+                    "arguments": {
+                        "cmd": "pwd",
+                        "cwd": str(Path.cwd().resolve()),
+                    },
+                },
+            }
+        )
     if include_tool_result:
         call_ids = ["call-1"]
         if include_status_call:
             call_ids.append("call-2")
         if include_unexpected_tool_call:
             call_ids.append("call-3")
+        if include_extra_status_call:
+            call_ids.append("call-extra-status")
         for call_id in call_ids:
             events.append(
                 {

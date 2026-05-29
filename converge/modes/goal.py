@@ -509,17 +509,19 @@ def _create_or_link_child(handler: GoalHandler, parent: dict[str, Any], *, child
 
 
 def _record_child_collected(handler: GoalHandler, parent_id: str, child: dict[str, Any]) -> None:
+    terminal_status = child.get("status")
+    result = (child.get("final_status") or {}).get("result") or "none"
     _append_idempotent_event(
         handler,
         parent_id,
         event_type="child_workflow_collected",
-        event_id=f"evt-child-collected-{child['workflow_id']}",
+        event_id=f"evt-child-collected-{child['workflow_id']}-{terminal_status}-{result}",
         note="goal child workflow terminal status collected",
         payload={
             "child_workflow_id": child["workflow_id"],
             "child_role": child.get("kind"),
-            "terminal_status": child.get("status"),
-            "result": (child.get("final_status") or {}).get("result"),
+            "terminal_status": terminal_status,
+            "result": result if result != "none" else None,
         },
     )
 
@@ -536,7 +538,12 @@ def _append_idempotent_event(
     events_path = handler.store.workflow_dir(workflow_id) / "events.jsonl"
     if events_path.exists():
         for line in events_path.read_text(encoding="utf-8").splitlines():
-            if line.strip() and json.loads(line).get("event_id") == event_id:
+            if not line.strip():
+                continue
+            existing = json.loads(line)
+            if existing.get("event_id") == event_id:
+                if existing.get("event_type") != event_type or (existing.get("payload") or {}) != payload:
+                    raise ValueError(f"existing idempotent event payload mismatch: {event_id}")
                 return
     handler.store.append_event(
         workflow_id,

@@ -2301,18 +2301,19 @@ def _validate_goal_child_execution(
             raise ValueError("goal requires exactly one child_creation_intent event per child")
         if len(created_events) != 1:
             raise ValueError("goal requires exactly one child_workflow_created event per child")
-        if len(collected_events) != 1:
-            raise ValueError("goal requires exactly one child_workflow_collected event per child")
+        if not collected_events:
+            raise ValueError("goal requires at least one child_workflow_collected event per child")
         event_ids = [event.get("event_id") for event in events]
+        collected_event = collected_events[-1]
         if not (
             event_ids.index(intent_events[0]["event_id"])
             < event_ids.index(created_events[0]["event_id"])
-            < event_ids.index(collected_events[0]["event_id"])
+            < event_ids.index(collected_event["event_id"])
         ):
             raise ValueError("goal child workflow events must be ordered intent -> created -> collected")
         intent_payload = intent_events[0].get("payload") or {}
         created_payload = created_events[0].get("payload") or {}
-        collected_payload = collected_events[0].get("payload") or {}
+        collected_payload = collected_event.get("payload") or {}
         if intent_payload.get("child_role") != child_ref["kind"]:
             raise ValueError("goal child_creation_intent child_role must match child ref")
         if intent_payload.get("required_for_parent_completion") is not True:

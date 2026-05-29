@@ -15,7 +15,7 @@ try:
 except ModuleNotFoundError:
     from tests.smoke.smoke_helpers import VISIBLE_DELIVERY, assert_phase5a_contract, assert_phase5a_accepted_change_stale_rejected, assert_phase5a_freshness_rejected, assert_phase5a_missing_gate_rejected, assert_phase5a_stale_hash_rejected, assert_phase5a_terminal_status_rejected, assert_true, events, run, run_fail, workflow, write_events, write_workflow
     from tests.smoke.converge_verify_mode_smoke import _write_fake_openclaw_cli
-from converge.modes.goal import GoalRecord, _child_workflow_id, build_goal_record, render_goal_plan, validate_goal_state  # noqa: E402
+from converge.modes.goal import GoalRecord, _child_ref_from_workflow, _child_workflow_id, _record_child_collected, build_goal_record, render_goal_plan, validate_goal_state  # noqa: E402
 from converge.artifacts import sha256_file  # noqa: E402
 from converge.agents.contracts import NativeChildResult  # noqa: E402
 from converge.modes.goal import GoalHandler  # noqa: E402
@@ -1238,6 +1238,129 @@ def assert_goal_collects_blocked_existing_child_as_terminal(state_root: Path) ->
     run("validate", "--workflow-id", parent_id, state_root=state_root)
 
 
+def assert_goal_refreshes_child_collection_after_child_terminal_status_changes(state_root: Path) -> None:
+    parent_id = "goal-refresh-child-collection"
+    text = "Implement execution-required goal with remediated child collection"
+    verify_child_id = _child_workflow_id(parent_id, role="verify", objective=text)
+    conv_child_id = _child_workflow_id(parent_id, role="conv", objective=text)
+    for role, child_id, child_text in (
+        ("verify", verify_child_id, f"Verify required goal child evidence for: {text}"),
+        ("conv", conv_child_id, f"Converge required goal child execution for: {text}"),
+    ):
+        run(
+            "start",
+            "--kind",
+            role,
+            "--text",
+            child_text,
+            "--workflow-id",
+            child_id,
+            "--owner-session-key",
+            "session:test",
+            "--visible-delivery",
+            VISIBLE_DELIVERY,
+            state_root=state_root,
+        )
+        child = workflow(state_root, child_id)
+        child["parent_workflow_id"] = parent_id
+        child["status"] = "blocked" if role == "verify" else "completed_unreported"
+        child["phase"] = "native_panel_blocked" if role == "verify" else "terminal"
+        child["final_status"] = (
+            {
+                "result": "blocked",
+                "stop_reason": "blocked_no_execution_evidence",
+                "residuals": {
+                    "blocking_remaining": ["initial blocked child"],
+                    "accepted_risks": [],
+                    "implementation_backlog": [],
+                    "deferred_scope": [],
+                },
+            }
+            if role == "verify"
+            else {
+                "result": "pass",
+                "stop_reason": "complete",
+                "residuals": {
+                    "blocking_remaining": [],
+                    "accepted_risks": [],
+                    "implementation_backlog": [],
+                    "deferred_scope": [],
+                },
+            }
+        )
+        write_workflow(state_root, child_id, child)
+
+    first = run(
+        "goal",
+        "--text",
+        text,
+        "--scaffold-only",
+        "--workflow-id",
+        parent_id,
+        "--owner-session-key",
+        "session:test",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        state_root=state_root,
+    )["workflow"]
+    assert_true(first["status"] == "failed_unreported", "first goal run should close on blocked child")
+    verify_child = workflow(state_root, verify_child_id)
+    verify_child["status"] = "completed_unreported"
+    verify_child["phase"] = "terminal"
+    verify_child["final_status"] = {
+        "result": "pass",
+        "stop_reason": "complete",
+        "residuals": {
+            "blocking_remaining": [],
+            "accepted_risks": [],
+            "implementation_backlog": [],
+            "deferred_scope": [],
+        },
+    }
+    write_workflow(state_root, verify_child_id, verify_child)
+
+    store = WorkflowStore(state_root)
+    _record_child_collected(GoalHandler(store), parent_id, verify_child)
+    retry = workflow(state_root, parent_id)
+    conv_child = workflow(state_root, conv_child_id)
+    child_refs = [
+        _child_ref_from_workflow(verify_child, role="verify"),
+        _child_ref_from_workflow(conv_child, role="conv"),
+    ]
+    child_ids = [item["workflow_id"] for item in child_refs]
+    retry["goal_state"]["child_workflow_refs"] = child_refs
+    retry["goal_state"]["child_collection_status"] = {
+        "required_child_workflow_ids": child_ids,
+        "collected_child_workflow_ids": child_ids,
+        "children": [
+            {
+                "workflow_id": item["workflow_id"],
+                "kind": item["kind"],
+                "status": item["status"],
+                "terminal_status": item["terminal_status"],
+                "result": item["result"],
+                "stop_reason": (item.get("final_status") or {}).get("stop_reason"),
+                "residuals": (item.get("final_status") or {}).get("residuals"),
+                "evidence_refs": item.get("evidence_refs") or [],
+            }
+            for item in child_refs
+        ],
+        "complete": True,
+    }
+    write_workflow(state_root, parent_id, retry)
+    persist_goal_state(state_root, parent_id, retry)
+    child_refs_by_id = {item["workflow_id"]: item for item in retry["goal_state"]["child_workflow_refs"]}
+    assert_true(child_refs_by_id[verify_child_id]["terminal_status"] == "completed_unreported", "retry should refresh terminal_status")
+    collected = [
+        record
+        for record in events(state_root, parent_id)
+        if record.get("event_type") == "child_workflow_collected"
+        and (record.get("payload") or {}).get("child_workflow_id") == verify_child_id
+    ]
+    assert_true(len(collected) == 2, "retry should append a new child collection event for changed terminal status")
+    assert_true((collected[-1].get("payload") or {}).get("result") == "pass", "latest collection event should match current child result")
+
+
 def assert_completion_criteria_plan_only_wording_does_not_downgrade_goal(state_root: Path) -> None:
     wf = run(
         "goal",
@@ -1567,6 +1690,7 @@ def main() -> int:
         assert_goal_child_ids_handle_long_parent_ids(state_root)
         assert_goal_does_not_collect_nonterminal_existing_child(state_root)
         assert_goal_collects_blocked_existing_child_as_terminal(state_root)
+        assert_goal_refreshes_child_collection_after_child_terminal_status_changes(state_root)
         assert_completion_criteria_plan_only_wording_does_not_downgrade_goal(state_root)
         assert_plan_accepted_requires_objective(state_root)
         assert_goal_retry_reuses_existing_plan_accepted(state_root)

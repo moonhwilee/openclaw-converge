@@ -33,6 +33,7 @@ SUBAGENT_SPAWN_TIMEOUT = "subagent_spawn_timeout"
 SUBAGENT_CLI_CONTRACT_CHANGED = "subagent_cli_contract_changed"
 SUBAGENT_SPAWN_FAILED = "subagent_spawn_failed"
 SUBAGENT_PROOF_FAILED = "subagent_proof_failed"
+OPENCLAW_AGENT_COMMAND_TIMEOUT_CAP_SECONDS = 300
 
 
 @dataclass(frozen=True)
@@ -264,9 +265,13 @@ class OpenClawAgentCliBackend:
         *,
         openclaw_bin: str = "openclaw",
         runner: CommandRunner | None = None,
+        command_timeout_cap_seconds: int | None = OPENCLAW_AGENT_COMMAND_TIMEOUT_CAP_SECONDS,
     ) -> None:
         self.openclaw_bin = openclaw_bin
         self.runner = runner or _default_runner
+        if command_timeout_cap_seconds is not None and command_timeout_cap_seconds <= 0:
+            raise ValueError("command_timeout_cap_seconds must be positive when provided")
+        self.command_timeout_cap_seconds = command_timeout_cap_seconds
 
     def run_review(
         self,
@@ -279,6 +284,8 @@ class OpenClawAgentCliBackend:
         validate_native_launch_request(request.as_dict())
         validate_openclaw_agent_session_key(request.session_key)
         timeout = timeout_seconds or int(request.timeout_policy["child_lease_seconds"])
+        if timeout_seconds is None and self.command_timeout_cap_seconds is not None:
+            timeout = min(timeout, self.command_timeout_cap_seconds)
         command = [
             self.openclaw_bin,
             "agent",

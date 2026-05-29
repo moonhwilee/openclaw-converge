@@ -780,15 +780,30 @@ def build_native_agent_pending_collection_state(
     blocked_request_id: str | None = None,
     blocked_session_key: str | None = None,
     resume_next_action: str | None = None,
+    accepted_results: list[NativeChildResult] | None = None,
 ) -> dict[str, Any]:
     """Build non-terminal native request/collection state before results exist."""
 
     if not requests:
         raise ValueError("native pending collection state requires at least one request")
+    accepted_results = list(accepted_results or [])
+    completed_state = (
+        _build_native_agent_collection_state(mode=mode, artifact_id=artifact_id, results=accepted_results)
+        if accepted_results
+        else {"agent_request_refs": [], "agent_result_refs": [], "agent_result_idempotency_keys": []}
+    )
+    completed_request_refs = {
+        item["request_id"]: item
+        for item in completed_state["agent_request_refs"]
+    }
+    accepted_request_ids = set(completed_request_refs)
     request_refs = []
     now = now_iso()
     for request in requests:
         request_id = request.request_id or request.idempotency_key
+        if request_id in completed_request_refs:
+            request_refs.append(completed_request_refs[request_id])
+            continue
         request_refs.append(
             {
                 "request_id": request_id,
@@ -812,14 +827,16 @@ def build_native_agent_pending_collection_state(
                 "advisory_only": False,
             }
         )
-    pending_request_ids = [item["request_id"] for item in request_refs]
-    collection_cursor = f"{mode}:{artifact_id}:{status}:0/{len(request_refs)}"
+    pending_request_ids = [item["request_id"] for item in request_refs if item["request_id"] not in accepted_request_ids]
+    result_refs = list(completed_state["agent_result_refs"])
+    accepted_keys = list(completed_state["agent_result_idempotency_keys"])
+    collection_cursor = f"{mode}:{artifact_id}:{status}:{len(result_refs)}/{len(request_refs)}"
     collection_status = {
         "status": status,
         "source": SOURCE_NATIVE_AGENT_PANEL,
-        "request_ids": pending_request_ids,
+        "request_ids": [item["request_id"] for item in request_refs],
         "expected_result_count": len(request_refs),
-        "accepted_result_count": 0,
+        "accepted_result_count": len(result_refs),
         "ignored_duplicate_result_count": 0,
         "pending_request_ids": pending_request_ids,
         "collection_cursor": collection_cursor,
@@ -829,8 +846,8 @@ def build_native_agent_pending_collection_state(
     }
     state: dict[str, Any] = {
         "agent_request_refs": request_refs,
-        "agent_result_refs": [],
-        "agent_result_idempotency_keys": [],
+        "agent_result_refs": result_refs,
+        "agent_result_idempotency_keys": accepted_keys,
         "agent_result_collection_status": collection_status,
         "recovery_resume_cursor": collection_cursor,
         "native_panel_launch_status": status,
@@ -850,7 +867,7 @@ def build_native_agent_pending_collection_state(
             "blocked_session_key": blocked_session_key,
             "terminal_decision": f"blocked_{blocked_status}",
             "relaunch_required": True,
-            "collection_cursor": f"{mode}:{artifact_id}:{blocked_status}:0/{len(request_refs)}",
+            "collection_cursor": f"{mode}:{artifact_id}:{blocked_status}:{len(result_refs)}/{len(request_refs)}",
         }
         state["native_panel_launch_status"] = blocked_status
         state["recovery_resume_cursor"] = state["agent_result_collection_status"]["collection_cursor"]

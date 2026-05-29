@@ -80,6 +80,7 @@ class NativePanelBlockedError(RuntimeError):
     request: NativeLaunchRequest
     message: str
     pending_request_ids: list[str] = field(default_factory=list)
+    partial_results: list[NativeChildResult] = field(default_factory=list)
     raw_stdout: str = ""
     raw_stderr: str = ""
 
@@ -526,7 +527,11 @@ class OpenClawNativePanelCliBackend:
             try:
                 run = self.child_backend.run_review(request)
             except NativePanelBlockedError as exc:
-                raise replace(exc, pending_request_ids=_pending_request_ids(requests, request)) from exc
+                raise replace(
+                    exc,
+                    pending_request_ids=_pending_request_ids(requests, request),
+                    partial_results=list(results),
+                ) from exc
             try:
                 _validate_child_smoke_claim(request, run.result)
                 session_proof = self.session_proof_checker.prove_session(request)
@@ -551,6 +556,7 @@ class OpenClawNativePanelCliBackend:
                     request=request,
                     message=str(exc),
                     pending_request_ids=_pending_request_ids(requests, request),
+                    partial_results=list(results),
                     raw_stdout=run.raw_stdout,
                     raw_stderr=run.raw_stderr,
                 ) from exc
@@ -705,6 +711,11 @@ def _validate_trajectory_supports_child_actions(
         trajectory_proof,
         excluded_tool_call_ids=set(target_ref_read_binding["matched_tool_call_ids"]),
     )
+    allowed_tool_binding = _validate_trajectory_has_no_unexpected_tool_calls(
+        trajectory_proof,
+        read_manifest=read_manifest,
+        status_tool_call_id=status_action_binding["tool_call_id"],
+    )
     return {
         "read_action": read_action,
         "status_action": evidence["status_action"],
@@ -713,6 +724,7 @@ def _validate_trajectory_supports_child_actions(
         "status_action_bound_by_tool_names": status_supported,
         "target_ref_read_binding": target_ref_read_binding,
         "status_action_binding": status_action_binding,
+        "allowed_tool_binding": allowed_tool_binding,
     }
 
 
@@ -772,6 +784,46 @@ def _validate_trajectory_status_action(
                 "tool_name": call.name,
             }
     raise ValueError("native CLI trajectory proof lacks a separate harmless shell_status tool argument")
+
+
+def _validate_trajectory_has_no_unexpected_tool_calls(
+    trajectory_proof: OpenClawTrajectoryProof,
+    *,
+    read_manifest: dict[str, Any],
+    status_tool_call_id: str,
+) -> dict[str, Any]:
+    allowed_count = 0
+    for call in trajectory_proof.tool_call_refs:
+        if call.tool_call_id == status_tool_call_id and _tool_call_ref_is_harmless_status(call):
+            allowed_count += 1
+            continue
+        if call.name in READ_ACTION_TOOL_NAMES and _tool_call_ref_covers_any_read_target(call, read_manifest):
+            allowed_count += 1
+            continue
+        raise ValueError(f"native CLI trajectory proof contains unexpected tool call: {call.name}")
+    return {
+        "proof": "all_tool_calls_match_read_or_status_policy",
+        "checked_tool_call_count": len(trajectory_proof.tool_call_refs),
+        "allowed_tool_call_count": allowed_count,
+    }
+
+
+def _tool_call_ref_covers_any_read_target(call: OpenClawToolCallRef, read_manifest: dict[str, Any]) -> bool:
+    read_refs = read_manifest.get("read_target_refs")
+    if not isinstance(read_refs, list):
+        return False
+    for item in read_refs:
+        if not isinstance(item, dict):
+            continue
+        path = item.get("path")
+        source_root = item.get("source_root")
+        if isinstance(path, str) and isinstance(source_root, str) and _tool_call_ref_covers_target_ref(
+            call,
+            path=path,
+            source_root=source_root,
+        ):
+            return True
+    return False
 
 
 def _tool_call_ref_is_harmless_status(call: OpenClawToolCallRef) -> bool:

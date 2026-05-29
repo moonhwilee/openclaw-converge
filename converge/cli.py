@@ -2843,16 +2843,22 @@ def _validate_native_panel_pending_state(state: dict[str, Any]) -> None:
     collection = state.get("agent_result_collection_status")
     if not isinstance(requests, list) or not requests:
         raise ValueError("native panel pending state requires agent_request_refs")
-    if results != []:
-        raise ValueError("native panel pending state must not synthesize agent_result_refs")
+    if not isinstance(results, list):
+        raise ValueError("native panel pending state requires agent_result_refs")
     if not isinstance(collection, dict):
         raise ValueError("native panel pending state requires agent_result_collection_status")
     pending_ids = collection.get("pending_request_ids")
     request_ids = [item.get("request_id") for item in requests if isinstance(item, dict)]
-    if pending_ids != request_ids:
-        raise ValueError("native panel pending state pending_request_ids must match request refs")
-    if collection.get("accepted_result_count") != 0:
-        raise ValueError("native panel pending state cannot accept child results")
+    result_request_ids = {
+        item.get("request_id")
+        for item in results
+        if isinstance(item, dict)
+    }
+    expected_pending_ids = [request_id for request_id in request_ids if request_id not in result_request_ids]
+    if pending_ids != expected_pending_ids:
+        raise ValueError("native panel pending state pending_request_ids must match uncollected request refs")
+    if collection.get("accepted_result_count") != len(results):
+        raise ValueError("native panel pending state accepted count must match partial child results")
     if not isinstance(state.get("recovery_resume_cursor"), str) or not state["recovery_resume_cursor"]:
         raise ValueError("native panel pending state requires recovery_resume_cursor")
     for request in requests:
@@ -2860,7 +2866,10 @@ def _validate_native_panel_pending_state(state: dict[str, Any]) -> None:
             raise ValueError("native panel pending request refs must be objects")
         if request.get("execution_source") != "native_agent_panel":
             raise ValueError("native panel pending request refs require native_agent_panel source")
-        if request.get("satisfies_native_agent_panel") is not False:
+        if request.get("request_id") in result_request_ids:
+            if request.get("satisfies_native_agent_panel") is not True:
+                raise ValueError("native panel completed request refs must satisfy native panel")
+        elif request.get("satisfies_native_agent_panel") is not False:
             raise ValueError("native panel pending request refs must not satisfy native panel")
         if not request.get("request_id") or not request.get("session_key"):
             raise ValueError("native panel pending request refs require request_id and session_key")

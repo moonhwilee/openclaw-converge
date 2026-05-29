@@ -485,6 +485,34 @@ def main() -> int:
         )
         run("validate", "--workflow-id", "verify-native-panel-spawn-failed", state_root=state_root)
 
+        partial_blocked_workflow = native_store.create_workflow(
+            kind="verify",
+            text="Verify with partial native OpenClaw child panel",
+            workflow_id="verify-native-panel-partial-blocked",
+            owner_session_key="session:test",
+            visible_delivery={"channel": "telegram", "target": "test"},
+        )
+        VerifyHandler(native_store).finalize_verify(
+            partial_blocked_workflow["workflow_id"],
+            native_agent_backend=PartialBlockedNativePanelBackend("subagent_proof_failed"),
+        )
+        partial_blocked = workflow(state_root, "verify-native-panel-partial-blocked")
+        partial_state = partial_blocked["verify_state"]
+        assert_true(partial_blocked["status"] == "blocked", "partial native failure should block terminally")
+        assert_true(len(partial_state["agent_result_refs"]) == 1, "partial native block should preserve completed child results")
+        assert_true(
+            partial_state["agent_result_collection_status"]["accepted_result_count"] == 1,
+            "partial native block should keep accepted result count",
+        )
+        assert_true(
+            partial_state["agent_result_collection_status"]["pending_request_ids"] == [
+                "verify-native-verify-native-panel-partial-blocked-2",
+                "verify-native-verify-native-panel-partial-blocked-3",
+            ],
+            "partial native block should leave only uncollected child ids pending",
+        )
+        run("validate", "--workflow-id", "verify-native-panel-partial-blocked", state_root=state_root)
+
         target_refs_file = state_root / "verify-target-refs.json"
         target_refs_file.write_text(
             json.dumps(
@@ -1739,6 +1767,21 @@ class BlockedNativePanelBackend:
             request=requests[0],
             message="fixture native panel blocked before collection",
             pending_request_ids=[request.request_id for request in requests],
+        )
+
+
+class PartialBlockedNativePanelBackend:
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+
+    def run_panel(self, requests):
+        completed = FakeNativePanelBackend().run_panel(requests)[0]
+        raise NativePanelBlockedError(
+            reason=self.reason,
+            request=requests[1],
+            message="fixture native panel blocked after partial collection",
+            pending_request_ids=[request.request_id for request in requests[1:]],
+            partial_results=[completed],
         )
 
 

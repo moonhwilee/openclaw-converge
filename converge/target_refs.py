@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,14 @@ DEFAULT_CONVERGE_TARGET_REF_PATHS = {
         ("converge/target_refs.py", "target-refs"),
     ],
 }
+CONVERGE_COMPARISON_TARGET_REF_PATHS = [
+    ("package", "converge/agents/openclaw_cli.py", "native-launch"),
+    ("package", "converge/recovery.py", "recovery"),
+    ("package", "converge/target_refs.py", "target-refs"),
+    ("package", "docs/converge/c7-canonical-command-replacement.md", "route-contract"),
+    ("workspace", "docs/context/goalflow.md", "legacy-goalflow"),
+    ("workspace", "skills/verification-convergence/SKILL.md", "legacy-verify-conv"),
+]
 
 
 def load_target_refs_file(path: str | Path | None, *, source_root: Path | None = None) -> list[dict[str, Any]]:
@@ -80,18 +89,62 @@ def validate_target_refs(refs: list[Any], *, source_root: Path | None = None) ->
     return normalized
 
 
-def default_converge_target_refs(mode: str, *, source_root: Path | None = None) -> list[dict[str, Any]]:
+def default_converge_target_refs(mode: str, *, source_root: Path | None = None, target: str | None = None) -> list[dict[str, Any]]:
     """Return a bounded default file-ref set for broad Converge self-review."""
     if mode not in DEFAULT_CONVERGE_TARGET_REF_PATHS:
         raise ValueError("default converge target refs mode must be verify or conv")
-    root = (source_root or Path.cwd()).expanduser().resolve()
+    root = resolve_converge_source_root(source_root)
+    if target and _is_legacy_comparison_target(target):
+        return _comparison_target_refs(package_root=root)
+    return _target_refs_for_paths(DEFAULT_CONVERGE_TARGET_REF_PATHS[mode], source_root=root)
+
+
+def resolve_converge_source_root(preferred: Path | None = None) -> Path:
+    """Resolve the installed/source Converge root instead of trusting caller cwd."""
+    candidates: list[Path] = []
+    env_root = os.environ.get("OPENCLAW_CONVERGE_SOURCE_ROOT")
+    if env_root:
+        candidates.append(Path(env_root))
+    if preferred is not None:
+        candidates.append(preferred)
+    candidates.append(Path.cwd())
+    candidates.append(Path(__file__).resolve().parents[1])
+    for candidate in candidates:
+        root = candidate.expanduser().resolve()
+        if (root / "converge" / "target_refs.py").is_file():
+            return root
+    return (preferred or Path.cwd()).expanduser().resolve()
+
+
+def _target_refs_for_paths(paths: list[tuple[str, str]], *, source_root: Path) -> list[dict[str, Any]]:
     refs: list[dict[str, Any]] = []
-    for rel_path, role in DEFAULT_CONVERGE_TARGET_REF_PATHS[mode]:
-        if (root / rel_path).is_file():
-            refs.append({"kind": "file", "path": rel_path, "source_root": str(root), "role": role})
+    for rel_path, role in paths:
+        if (source_root / rel_path).is_file():
+            refs.append({"kind": "file", "path": rel_path, "source_root": str(source_root), "role": role})
     if not refs:
         return []
-    return validate_target_refs(refs, source_root=root)
+    return validate_target_refs(refs, source_root=source_root)
+
+
+def _comparison_target_refs(*, package_root: Path) -> list[dict[str, Any]]:
+    workspace_root = Path(os.environ.get("OPENCLAW_WORKSPACE_ROOT", Path.home() / ".openclaw" / "workspace")).expanduser().resolve()
+    refs: list[dict[str, Any]] = []
+    total_bytes = 0
+    for root_kind, rel_path, role in CONVERGE_COMPARISON_TARGET_REF_PATHS:
+        root = package_root if root_kind == "package" else workspace_root
+        path = root / rel_path
+        if not path.is_file():
+            continue
+        total_bytes += path.stat().st_size
+        if total_bytes > int(DEFAULT_BUDGET_POLICY["max_input_bytes"]):
+            break
+        refs.append({"kind": "file", "path": rel_path, "source_root": str(root), "role": role})
+    return refs
+
+
+def _is_legacy_comparison_target(target: str) -> bool:
+    lowered = target.lower()
+    return any(token in lowered for token in ("verification-convergence", "legacy", "과거 verify", "과거 verification", "goalflow"))
 
 
 def merge_inline_target_ref(

@@ -527,6 +527,8 @@ def coordinator_verified_tool_smoke_evidence(
         "verification_scope": "child_claim_bound_to_explicit_session_refs_with_openclaw_session_store_and_trajectory_tool_events",
         "child_tool_smoke_kind": evidence["kind"],
         "child_tool_smoke_checked_at": evidence["checked_at"],
+        "read_action": evidence["read_action"],
+        "status_action": evidence["status_action"],
         "child_read_action": evidence["read_action"],
         "child_status_action": evidence["status_action"],
         "session_store_proof": session_proof.as_dict(),

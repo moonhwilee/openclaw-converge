@@ -185,6 +185,8 @@ def assert_native_result_schema_requires_tool_smoke() -> None:
             "agent_session_ref": "session:child:contract",
             "kind": "coordinator_verified_fixture",
             "checked_at": "2026-05-28T00:01:00Z",
+            "read_action": "read_files",
+            "status_action": "shell_status",
         },
     ).as_dict()
     validate_native_child_result(result)
@@ -194,6 +196,14 @@ def assert_native_result_schema_requires_tool_smoke() -> None:
 
     no_smoke_evidence = {**result, "tool_smoke_evidence": None}
     expect_error(lambda: validate_native_child_result(no_smoke_evidence), "tool_smoke_evidence")
+
+    arbitrary_kind_without_read_status = {
+        **result,
+        "tool_smoke_evidence": {
+            key: value for key, value in result["tool_smoke_evidence"].items() if key not in {"read_action", "status_action"}
+        },
+    }
+    expect_error(lambda: validate_native_child_result(arbitrary_kind_without_read_status), "read_action")
 
     coordinator_without_child_read_action = {
         **result,
@@ -672,6 +682,8 @@ def assert_openclaw_native_panel_cli_backend_requires_coordinator_verified_smoke
         all(
             item.tool_smoke_evidence
             and item.tool_smoke_evidence["kind"] == "coordinator_verified_child_tool_smoke_session_and_trajectory_binding"
+            and item.tool_smoke_evidence["read_action"] == "read_files"
+            and item.tool_smoke_evidence["status_action"] == "shell_status"
             and item.tool_smoke_evidence["child_read_action"] == "read_files"
             and item.tool_smoke_evidence["child_status_action"] == "shell_status"
             and item.tool_smoke_evidence["session_store_proof"]["session_key"] == item.session_key

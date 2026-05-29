@@ -1753,6 +1753,8 @@ class FakeNativePanelBackend:
                         "verification_scope": "fixture_child_claim_bound_to_explicit_session_refs_with_openclaw_session_store_and_trajectory_tool_events",
                         "child_tool_smoke_kind": "fixture",
                         "child_tool_smoke_checked_at": completed_at,
+                        "read_action": "read_files",
+                        "status_action": "shell_status",
                         "child_read_action": "read_files",
                         "child_status_action": "shell_status",
                         "session_store_proof": {

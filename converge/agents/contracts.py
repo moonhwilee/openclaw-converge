@@ -780,6 +780,8 @@ def _tool_smoke_evidence(record: NativeSessionRecord) -> dict[str, Any]:
         "agent_session_ref": record.agent_session_ref,
         "kind": "coordinator_verified_fixture",
         "checked_at": record.started_at,
+        "read_action": "read_files",
+        "status_action": "shell_status",
     }
 
 
@@ -797,6 +799,10 @@ def _validate_tool_smoke_evidence(payload: dict[str, Any]) -> None:
         raise ValueError("native tool_smoke_evidence kind must be a non-empty string")
     if not isinstance(evidence.get("checked_at"), str) or not evidence["checked_at"]:
         raise ValueError("native tool_smoke_evidence checked_at must be a non-empty string")
+    if evidence.get("read_action") not in {"read_files", "read_artifacts"}:
+        raise ValueError("native tool_smoke_evidence requires read_action=read_files or read_artifacts")
+    if evidence.get("status_action") != "shell_status":
+        raise ValueError("native tool_smoke_evidence requires status_action=shell_status")
     if evidence.get("kind") == "coordinator_verified_child_tool_smoke_session_and_trajectory_binding":
         if evidence.get("child_read_action") not in {"read_files", "read_artifacts"}:
             raise ValueError("coordinator native tool_smoke_evidence requires child_read_action")

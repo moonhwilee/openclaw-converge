@@ -817,6 +817,55 @@ def assert_conv_records_structured_specialist_findings(state_root: Path) -> None
     )
     run("validate", "--workflow-id", "conv-block-specialist-findings", state_root=state_root)
 
+    plan_only_packet = specialist_packet()
+    plan_only_packet["findings"][0]["severity"] = "p2"
+    plan_only_packet_path = state_root / "conv-plan-only-specialist-findings.json"
+    plan_only_packet_path.write_text(json.dumps(plan_only_packet), encoding="utf-8")
+    plan_only = run(
+        "conv",
+        "--text",
+        "Converge execution-required target with plan-only accepted specialist fix",
+        "--workflow-id",
+        "conv-plan-only-specialist-findings",
+        "--owner-session-key",
+        "session:test",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        "--structured-findings-file",
+        str(plan_only_packet_path),
+        state_root=state_root,
+    )["workflow"]
+    assert_true(
+        plan_only["status"] == "failed_unreported",
+        "plan-only accepted changes should stop cleanly for visible reporting",
+    )
+    assert_true(plan_only["final_status"]["result"] == "blocked", "plan-only accepted changes should not pass")
+    assert_true(
+        plan_only["conv_state"]["fix_runner_required"] is False,
+        "plan-only accepted changes should not require a fix runner request",
+    )
+    assert_true(
+        plan_only["conv_state"]["fix_runner_collection_status"]["status"] == "plan_only",
+        "plan-only accepted changes should be classified explicitly",
+    )
+    assert_true(
+        plan_only["conv_state"]["fix_runner_collection_status"]["source"] == "plan_only",
+        "plan-only accepted changes should use plan_only source classification",
+    )
+    assert_true(
+        plan_only["conv_state"]["fix_runner_request_refs"] == [],
+        "plan-only accepted changes should not fabricate fix runner requests",
+    )
+    assert_true(
+        plan_only["conv_state"]["stop_condition"] == "blocked_specialist_follow_up_required",
+        "plan-only accepted changes should bind the same user-facing follow-up stop condition",
+    )
+    assert_true(
+        "implementation remains in the backlog" in plan_only["conv_state"]["final_report_summary"],
+        "plan-only accepted changes should explain the backlog state",
+    )
+    run("validate", "--workflow-id", "conv-plan-only-specialist-findings", state_root=state_root)
+
     fix_packet = specialist_packet()
     fix_packet["findings"][0]["severity"] = "p2"
     fix_runner_source_root = state_root / "fix-runner-source"

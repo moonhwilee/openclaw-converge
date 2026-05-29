@@ -34,6 +34,7 @@ from ..agents.contracts import (
     DEFAULT_TOOL_POLICY,
     NativeLaunchRequest,
     SOURCE_FIX_RUNNER,
+    SOURCE_PLAN_ONLY,
     stable_hash,
     validate_fix_runner_request,
     validate_fix_runner_result,
@@ -206,7 +207,9 @@ class ConvHandler(ModeHandler):
             _record_fix_runner_events(self, workflow_id, state=state)
             _append_fix_runner_evidence(state)
         state, residuals, block_reason = apply_execution_truth_block("conv", state, residuals=record.residuals)
-        if specialist_state and (residuals.get("blocking_remaining") or _fix_runner_follow_up_pending(state)):
+        fix_runner_pending = _fix_runner_follow_up_pending(state)
+        plan_only_backlog = _fix_runner_plan_only_backlog(state)
+        if specialist_state and (residuals.get("blocking_remaining") or fix_runner_pending or plan_only_backlog):
             specialist_block_reason = (
                 "blocked_specialist_findings"
                 if residuals.get("blocking_remaining")
@@ -217,7 +220,9 @@ class ConvHandler(ModeHandler):
             state["final_report_summary"] = (
                 "Convergence is blocked by high-severity specialist findings."
                 if residuals.get("blocking_remaining")
-                else "Convergence is blocked because accepted specialist fixes require a follow-up round."
+                else "Convergence recorded plan-only accepted changes; implementation remains in the backlog."
+                if plan_only_backlog
+                else "Convergence is blocked because accepted specialist fixes require a bounded follow-up round."
             )
             block_reason = specialist_block_reason
         render_record = ConvRecord(
@@ -244,7 +249,7 @@ class ConvHandler(ModeHandler):
             final_report_summary=state["final_report_summary"],
         )
         rendered_report = render_conv_report(render_record)
-        pending_fix_runner_follow_up = block_reason == "blocked_specialist_follow_up_required"
+        pending_fix_runner_follow_up = bool(fix_runner_pending)
         report_artifact_id = (
             f"{CONV_REPORT_ARTIFACT_ID}-pending-follow-up" if pending_fix_runner_follow_up else CONV_REPORT_ARTIFACT_ID
         )
@@ -311,6 +316,8 @@ class ConvHandler(ModeHandler):
                 summary=(
                     "Convergence is blocked pending bounded fix runner follow-up."
                     if pending_fix_runner_follow_up
+                    else "Convergence recorded accepted changes as implementation backlog."
+                    if _fix_runner_plan_only_backlog(state)
                     else "Convergence terminal success blocked because execution evidence is missing."
                     if block_reason
                     else "Final convergence record is ready for visible delivery."
@@ -331,7 +338,7 @@ class ConvHandler(ModeHandler):
                     None
                     if pending_fix_runner_follow_up
                     else _specialist_blocked_final_status(residuals)
-                    if block_reason == "blocked_specialist_findings"
+                    if block_reason in {"blocked_specialist_findings", "blocked_specialist_follow_up_required"}
                     else execution_blocked_final_status("conv", block_reason, residuals)
                     if block_reason
                     else success_final_status
@@ -696,7 +703,8 @@ def _validate_fix_runner_state(state: dict[str, Any]) -> None:
     if "review_panel_spec" not in state:
         return
     accepted_changes = state.get("accepted_change_refs") or []
-    required = bool(accepted_changes)
+    has_plan_only_changes = bool(accepted_changes) and not all(_has_bounded_local_file_edits(item) for item in accepted_changes)
+    required = bool(accepted_changes) and not has_plan_only_changes
     if state.get("fix_runner_required", required) is not required:
         raise ValueError("conv_state fix_runner_required must reflect accepted changes")
     requests = state.get("fix_runner_request_refs") or []
@@ -710,6 +718,14 @@ def _validate_fix_runner_state(state: dict[str, Any]) -> None:
     }
     if not isinstance(requests, list) or not isinstance(results, list) or not isinstance(status, dict):
         raise ValueError("conv_state fix_runner refs and status must be structured")
+    if has_plan_only_changes:
+        if requests or results:
+            raise ValueError("conv_state plan-only accepted changes must not create fix_runner refs")
+        if status.get("status") != "plan_only" or status.get("source") != SOURCE_PLAN_ONLY:
+            raise ValueError("conv_state plan-only accepted changes must use plan_only fix_runner status")
+        if status.get("requires_follow_up_round") is not True or status.get("follow_up_completed") is not False:
+            raise ValueError("conv_state plan-only accepted changes must require later implementation")
+        return
     if not required:
         if requests or results or status.get("status") not in {"not_required", None}:
             raise ValueError("conv_state must not carry fix_runner work without accepted changes")
@@ -763,10 +779,21 @@ def _validate_fix_runner_state(state: dict[str, Any]) -> None:
 def _fix_runner_follow_up_pending(state: dict[str, Any]) -> bool:
     if not state.get("follow_up_required"):
         return False
+    if _fix_runner_plan_only_backlog(state):
+        return False
     if not state.get("fix_runner_required"):
         return True
     status = state.get("fix_runner_collection_status") or {}
     return status.get("status") != "complete" or status.get("follow_up_completed") is not True
+
+
+def _fix_runner_plan_only_backlog(state: dict[str, Any]) -> bool:
+    status = state.get("fix_runner_collection_status") or {}
+    return status.get("status") == "plan_only" and status.get("source") == SOURCE_PLAN_ONLY
+
+
+def _has_bounded_local_file_edits(change: Any) -> bool:
+    return isinstance(change, dict) and isinstance(change.get("local_file_edits"), list) and bool(change["local_file_edits"])
 
 
 def _conv_finding_from_arbitration(item: dict[str, Any]) -> dict[str, Any]:
@@ -1222,9 +1249,29 @@ def _attach_fix_runner_state(
             }
         )
         return state
-    for change in accepted_changes:
-        if not isinstance(change.get("local_file_edits"), list) or not change["local_file_edits"]:
-            raise ValueError("fix_runner accepted changes require bounded local_file_edits")
+    if not all(_has_bounded_local_file_edits(change) for change in accepted_changes):
+        state.update(
+            {
+                "fix_runner_required": False,
+                "fix_runner_request_refs": [],
+                "fix_runner_result_refs": [],
+                "fix_runner_collection_status": {
+                    "status": "plan_only",
+                    "pending_request_ids": [],
+                    "completed_result_count": 0,
+                    "source": SOURCE_PLAN_ONLY,
+                    "requires_follow_up_round": True,
+                    "follow_up_completed": False,
+                    "plan_only_change_refs": [
+                        item["change_ref"]
+                        for item in accepted_changes
+                        if isinstance(item, dict) and item.get("change_ref")
+                    ],
+                    "reason": "accepted_changes_without_bounded_local_file_edits",
+                },
+            }
+        )
+        return state
     runner_id = f"conv-fix-runner-{workflow_id}-round-{state['round_index']}"
     request_status = "completed" if result_packet is not None else "pending"
     request = {

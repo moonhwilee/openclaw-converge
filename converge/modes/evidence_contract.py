@@ -68,7 +68,11 @@ def validate_phase5a_evidence_contract(kind: str, *, workflow: dict[str, Any], s
         if not _required_kind_matches_entry(item.get("evidence_kind"), entry):
             raise ValueError(f"{kind} Phase 5A required evidence kind is stale: {gate_id!r}")
         produced_after = entry.get("produced_after_change_refs") or []
-        if _terminal_status_requires_fresh_post_change_evidence(terminal_status) and any(change_id not in produced_after for change_id in current_accepted_changes):
+        if (
+            _terminal_status_requires_fresh_post_change_evidence(terminal_status)
+            and _evidence_gate_requires_post_change_freshness(item, entry)
+            and any(change_id not in produced_after for change_id in current_accepted_changes)
+        ):
             raise ValueError(f"{kind} Phase 5A evidence predates accepted material changes: {gate_id!r}")
         stale_if = entry.get("stale_if_change_refs") or []
         if any(change_id in stale_if for change_id in current_accepted_changes):
@@ -93,6 +97,12 @@ def _required_gates(kind: str, state: dict[str, Any], terminal_evidence: dict[st
         for ref in state.get("execution_evidence_refs") or []:
             if str(ref).endswith("specialist-findings"):
                 required.append(_required_gate(f"specialist:{ref}", "specialist_arbitration"))
+    for result in state.get("fix_runner_result_refs") or []:
+        if not isinstance(result, dict):
+            continue
+        for ref in result.get("artifact_refs") or []:
+            if isinstance(ref, str) and ref:
+                required.append(_required_gate(f"evidence:{ref}", "fix_runner_result"))
     if kind == "goal" and state.get("execution_performed") is True:
         for child in state.get("child_workflow_refs") or []:
             if isinstance(child, dict) and child.get("workflow_id"):
@@ -204,6 +214,15 @@ def _terminal_status_requires_fresh_post_change_evidence(terminal_status: Any) -
     return terminal_status in {"pass", "pass_with_risks", "evidence_sufficient"}
 
 
+def _evidence_gate_requires_post_change_freshness(required: dict[str, Any], entry: dict[str, Any]) -> bool:
+    if required.get("evidence_kind") == "specialist_arbitration":
+        return False
+    ref = entry.get("artifact_ref") or entry.get("workflow_ref") or ""
+    if isinstance(ref, str) and ref.endswith("specialist-findings"):
+        return False
+    return True
+
+
 def _terminal_status(kind: str, state: dict[str, Any], *, workflow: dict[str, Any]) -> str:
     final_status = workflow.get("final_status")
     if isinstance(final_status, dict) and isinstance(final_status.get("result"), str) and final_status["result"]:
@@ -231,6 +250,8 @@ def _required_kind_matches_entry(required_kind: Any, entry: dict[str, Any]) -> b
         return entry.get("evidence_kind") == "child_workflow"
     if required_kind == "specialist_arbitration":
         return entry.get("evidence_kind") == "specialist_arbitration"
+    if required_kind == "fix_runner_result":
+        return entry.get("evidence_kind") == "fix_runner_result"
     return False
 
 

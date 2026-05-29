@@ -590,7 +590,7 @@ reconstructing hidden chat context.
 
 ### Goal Flow
 
-1. `converge goal --text ...` creates a `goal` workflow.
+1. `converge goal --text ... --native-panel-openclaw-cli` creates a `goal` workflow on the user-facing execution path.
 2. Handler either runs the plan intake path or imports an accepted plan artifact.
 3. Handler records objective, non-goals, success criteria, assumptions, and
    approval boundaries.
@@ -625,7 +625,7 @@ or exhausted budget/retry policy.
 
 ### Verify Flow
 
-1. `converge verify --text ...` creates a `verify` workflow.
+1. `converge verify --text ... --native-panel-openclaw-cli` creates a `verify` workflow on the user-facing execution path.
 2. Handler records target, criteria, context artifacts, and check plan.
 3. Deterministic checks run first when available.
 4. Review findings are recorded as evidence, blocking remaining items, accepted
@@ -642,7 +642,7 @@ and does not imply hidden repair work.
 
 ### Conv Flow
 
-1. `converge conv --text ...` creates a `conv` workflow.
+1. `converge conv --text ... --native-panel-openclaw-cli` creates a `conv` workflow on the user-facing execution path.
 2. Round 1 records the original target, non-goals, failure modes, and baseline
    findings.
 3. Accepted findings are fixed, improved, or explicitly deferred.

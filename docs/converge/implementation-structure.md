@@ -100,9 +100,9 @@ Implemented commands through the common runtime foundation:
 ```bash
 converge start --kind plan|goal|verify|conv --text '<request>' [--owner-session-key ...] [--visible-delivery JSON]
 converge plan --text '<request>'
-converge goal --text '<request>'
-converge verify --text '<target>'
-converge conv --text '<target>'
+converge goal --text '<request>' --native-panel-openclaw-cli
+converge verify --text '<target>' --native-panel-openclaw-cli
+converge conv --text '<target>' --native-panel-openclaw-cli
 converge status --workflow-id <id> [--json]
 converge checkpoint --workflow-id <id> --checkpoint-type checkpoint|advance|terminal --summary-file <path> --state-update JSON [--next-action JSON] [--evidence JSON]
 converge advance --workflow-id <id> --summary-file <path> --evidence JSON [--next-action JSON]
@@ -114,6 +114,10 @@ converge append-round --workflow-id <id> --round <n> --summary-file <path>
 converge event --workflow-id <id> --type <event_type> --event-id <id> [--note '<text>'] [--payload JSON]
 converge validate [--workflow-id <id>] [--sample-docs]
 ```
+
+`--scaffold-only` is reserved for internal report/artifact contract checks.
+Exact user-facing `/goal`, `/verify`, and `/conv` routing must use a real
+execution backend such as `--native-panel-openclaw-cli`.
 
 Implemented recovery commands:
 
@@ -429,6 +433,13 @@ The JSON result shape is stable:
   "reason": null
 }
 ```
+
+`visible_delivery` is provider-agnostic OpenClaw route metadata, not a
+Telegram-specific schema. The route must include non-empty `channel` and
+`target` strings; callers may include additional route metadata such as
+`chat_type` or `account` when the delivery layer needs it. The examples use
+Telegram sample values, but actual delivery depends on the caller's configured
+connector and Gateway.
 
 When `send_authorized=false`, `reservation_id` is `null` unless the caller is
 being directed to reconcile an existing reservation, and `reason` must be one of
@@ -1259,9 +1270,10 @@ under `${OPENCLAW_CONVERGE_PLUGIN_DIR:-~/.openclaw/plugin-sources/openclaw-conve
 and prints post-install verification commands. `scripts/deploy-local.sh`
 currently delegates to `install-local.sh` only.
 
-The installed watchdog runner executes `converge watchdog-check --json` and
-emits the resulting packet with a local-only policy marker. It does not wake
-sessions, restart Gateway, route slash commands, or perform external delivery.
+The installed watchdog runner executes `converge watchdog-check --json`, appends
+a local JSONL heartbeat record, and persists a small latest-check state file. It
+does not notify, wake sessions, restart Gateway, route slash commands, or
+perform external delivery.
 
 Existing `/verify`, `/conv`, `/goal`, or Ledger adapters are not part of Phase
 C1-C6. C7.0-C7.4 now own the local inventory, dry-run adapter contract,

@@ -36,6 +36,8 @@
         "agent_panel_requested",
         "agent_findings_recorded",
         "finding_arbitrated",
+        "fix_runner_requested",
+        "fix_runner_completed",
         "parent_linked",
         "child_creation_intent",
         "child_workflow_created",

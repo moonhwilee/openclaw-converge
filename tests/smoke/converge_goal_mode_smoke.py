@@ -11,10 +11,15 @@ from typing import Any
 
 try:
     from smoke_helpers import VISIBLE_DELIVERY, assert_phase5a_contract, assert_phase5a_accepted_change_stale_rejected, assert_phase5a_freshness_rejected, assert_phase5a_missing_gate_rejected, assert_phase5a_stale_hash_rejected, assert_phase5a_terminal_status_rejected, assert_true, events, run, run_fail, workflow, write_events, write_workflow
+    from converge_verify_mode_smoke import _write_fake_openclaw_cli
 except ModuleNotFoundError:
     from tests.smoke.smoke_helpers import VISIBLE_DELIVERY, assert_phase5a_contract, assert_phase5a_accepted_change_stale_rejected, assert_phase5a_freshness_rejected, assert_phase5a_missing_gate_rejected, assert_phase5a_stale_hash_rejected, assert_phase5a_terminal_status_rejected, assert_true, events, run, run_fail, workflow, write_events, write_workflow
+    from tests.smoke.converge_verify_mode_smoke import _write_fake_openclaw_cli
 from converge.modes.goal import GoalRecord, _child_workflow_id, build_goal_record, render_goal_plan, validate_goal_state  # noqa: E402
 from converge.artifacts import sha256_file  # noqa: E402
+from converge.agents.contracts import NativeChildResult  # noqa: E402
+from converge.modes.goal import GoalHandler  # noqa: E402
+from converge.store import WorkflowStore  # noqa: E402
 
 
 def finalize_goal(state_root: Path, *, workflow_id: str, text: str) -> dict[str, Any]:
@@ -183,6 +188,7 @@ def assert_execution_required_goal_blocks_planned_children(state_root: Path) -> 
         "goal",
         "--text",
         "Implement execution-required goal workflow",
+        "--scaffold-only",
         "--workflow-id",
         "goal-execution-required-blocked",
         "--owner-session-key",
@@ -227,6 +233,22 @@ def assert_execution_required_goal_blocks_planned_children(state_root: Path) -> 
         "execution-required goal should fail terminally instead of completing",
     )
     run("validate", "--workflow-id", "goal-execution-required-blocked", state_root=state_root)
+    implicit_scaffold = run_fail(
+        "goal",
+        "--text",
+        "Implement execution-required goal workflow",
+        "--workflow-id",
+        "goal-implicit-planned-children-rejected",
+        "--owner-session-key",
+        "session:test",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        state_root=state_root,
+    )
+    assert_true(
+        "goal execution_backend_missing" in implicit_scaffold["error"],
+        "goal should reject implicit scaffold child workflows without a real execution backend",
+    )
 
 
 def assert_execution_required_goal_collects_child_evidence(state_root: Path) -> None:
@@ -288,6 +310,10 @@ def assert_execution_required_goal_collects_child_evidence(state_root: Path) -> 
         assert_true(child["parent_workflow_id"] == wf["workflow_id"], "child should point back to parent")
         assert_true(child["status"] == "completed_unreported", "child should reach terminal unreported")
         assert_true(child["final_status"]["result"] in {"pass", "pass_with_risks"}, "child terminal result should pass")
+    assert_true(
+        {item.get("native_agent_panel_proof") for item in goal_state["child_workflow_refs"]} == {None},
+        "default goal child collection should not invent native panel proof",
+    )
     goal_events = [event["event_type"] for event in events(state_root, "goal-execution-required-real-children")]
     assert_true(goal_events.count("child_creation_intent") == 2, "goal should record two child intent events")
     assert_true(goal_events.count("child_workflow_created") == 2, "goal should record two child creation events")
@@ -647,6 +673,7 @@ def assert_material_goal_blocks_without_fix_runner_child(state_root: Path) -> No
         "goal",
         "--text",
         f"Implement execution-required goal workflow for {target}",
+        "--scaffold-only",
         "--workflow-id",
         "goal-execution-required-material-child-blocked",
         "--owner-session-key",
@@ -687,6 +714,142 @@ def assert_material_goal_blocks_without_fix_runner_child(state_root: Path) -> No
     )
     run("validate", "--workflow-id", "goal-execution-required-material-child-blocked", state_root=state_root)
     assert_phase5a_contract(wf, "goal_state")
+
+    implicit_scaffold = run_fail(
+        "goal",
+        "--text",
+        f"Implement execution-required goal workflow for {target}",
+        "--workflow-id",
+        "goal-implicit-scaffold-rejected",
+        "--owner-session-key",
+        "session:test",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        state_root=state_root,
+    )
+    assert_true(
+        "goal execution_backend_missing" in implicit_scaffold["error"],
+        "goal should reject implicit scaffold child workflows without a real execution backend",
+    )
+
+
+def assert_goal_collects_native_child_panel_evidence(state_root: Path) -> None:
+    store = WorkflowStore(state_root)
+    parent = store.create_workflow(
+        kind="goal",
+        text="Read-only audit execution-required native goal workflow",
+        workflow_id="goal-native-child-panel",
+        owner_session_key="session:test",
+        visible_delivery={"channel": "telegram", "target": "test"},
+    )
+    GoalHandler(store).finalize_goal(parent["workflow_id"], native_agent_backend=FakeNativePanelBackend())
+    wf = workflow(state_root, "goal-native-child-panel")
+    goal_state = wf["goal_state"]
+    assert_true(wf["status"] == "completed_unreported", "native child goal should complete with passing child evidence")
+    assert_true({item["kind"] for item in goal_state["child_workflow_refs"]} == {"verify", "conv"}, "native goal should collect verify and conv children")
+    for child_ref in goal_state["child_workflow_refs"]:
+        proof = child_ref.get("native_agent_panel_proof")
+        assert_true(isinstance(proof, dict), "native child refs should carry native panel proof")
+        assert_true(proof["source"] == "native_agent_panel", "native child proof should bind native source")
+        assert_true(proof["satisfies_native_agent_panel"] is True, "native child proof should satisfy native panel")
+        assert_true(len(proof["session_keys"]) == 3 and len(proof["request_ids"]) == 3, "native child proof should expose child sessions and requests")
+        assert_true(proof["tool_smoke_status"] == "passed", "native child proof should require passed tool smoke")
+        assert_true(
+            len(proof["tool_smoke_proofs"]) == 3
+            and all(item["tool_smoke_evidence"]["trajectory_proof"]["tool_call_count"] >= 1 for item in proof["tool_smoke_proofs"]),
+            "native child proof should preserve per-result tool-smoke trajectory proof",
+        )
+        child = workflow(state_root, child_ref["workflow_id"])
+        state = child[f"{child_ref['kind']}_state"]
+        assert_true(state["execution_source"] == "native_agent_panel", "child workflow should persist native execution source")
+        assert_true(state["satisfies_native_agent_panel"] is True, "child workflow should satisfy native parity")
+    run("validate", "--workflow-id", "goal-native-child-panel", state_root=state_root)
+    assert_phase5a_contract(wf, "goal_state")
+
+    forged = json.loads(json.dumps(wf))
+    forged["goal_state"]["child_workflow_refs"][0]["native_agent_panel_proof"]["session_keys"][0] = "agent:main:converge-forged"
+    persist_goal_state(state_root, "goal-native-child-panel", forged)
+    result = run_fail("validate", "--workflow-id", "goal-native-child-panel", state_root=state_root)
+    assert_true("native_agent_panel_proof" in result["error"], "goal validate should reject forged parent native proof")
+    persist_goal_state(state_root, "goal-native-child-panel", wf)
+
+    tampered_child_ref = wf["goal_state"]["child_workflow_refs"][0]
+    tampered_child = workflow(state_root, tampered_child_ref["workflow_id"])
+    original_child = json.loads(json.dumps(tampered_child))
+    tampered_state = tampered_child[f"{tampered_child_ref['kind']}_state"]
+    tampered_state["agent_result_refs"][0]["tool_smoke_evidence"].pop("session_store_proof", None)
+    write_workflow(state_root, tampered_child_ref["workflow_id"], tampered_child)
+    matching_tampered_parent = json.loads(json.dumps(wf))
+    matching_tampered_parent["goal_state"]["child_workflow_refs"][0]["native_agent_panel_proof"]["tool_smoke_proofs"][0][
+        "tool_smoke_evidence"
+    ].pop("session_store_proof", None)
+    persist_goal_state(state_root, "goal-native-child-panel", matching_tampered_parent)
+    result = run_fail("validate", "--workflow-id", "goal-native-child-panel", state_root=state_root)
+    assert_true(
+        "session_store_proof" in result["error"] or "specialist artifact must match mode state" in result["error"],
+        "goal validate should deep-validate child native tool-smoke proof instead of only matching parent summary",
+    )
+    write_workflow(state_root, tampered_child_ref["workflow_id"], original_child)
+    persist_goal_state(state_root, "goal-native-child-panel", wf)
+
+    cli_workflow_id = "goal-native-cli-child-panel"
+    goal_record = build_goal_record(
+        {
+            "workflow_id": cli_workflow_id,
+            "source_request": "Read-only audit execution-required native goal CLI workflow",
+            "continuation_plan": {"steps": []},
+        }
+    )
+    fake_openclaw = _write_fake_openclaw_cli(
+        state_root / "fake-goal-openclaw",
+        include_tool_smoke_evidence=True,
+        extra_workflow_ids=[
+            _child_workflow_id(cli_workflow_id, role="verify", objective=goal_record.objective),
+            _child_workflow_id(cli_workflow_id, role="conv", objective=goal_record.objective),
+        ],
+    )
+    cli_result = run(
+        "goal",
+        "--text",
+        "Read-only audit execution-required native goal CLI workflow",
+        "--workflow-id",
+        cli_workflow_id,
+        "--owner-session-key",
+        "session:test",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        "--native-panel-openclaw-cli",
+        "--native-panel-openclaw-bin",
+        str(fake_openclaw),
+        state_root=state_root,
+    )["workflow"]
+    assert_true(
+        all(isinstance(item.get("native_agent_panel_proof"), dict) for item in cli_result["goal_state"]["child_workflow_refs"]),
+        "goal CLI native flag should propagate native proof into child refs",
+    )
+    for child_ref in cli_result["goal_state"]["child_workflow_refs"]:
+        proof = child_ref["native_agent_panel_proof"]
+        assert_true(len(proof["tool_smoke_proofs"]) == 3, "goal CLI native proof should preserve every child tool-smoke proof")
+        assert_true(
+            all(
+                item["tool_smoke_evidence"]["session_key"] == item["session_key"]
+                and item["tool_smoke_evidence"]["agent_session_ref"] == item["agent_session_ref"]
+                for item in proof["tool_smoke_proofs"]
+            ),
+            "goal CLI native proof should preserve per-result session-bound smoke proof",
+        )
+        assert_true(
+            all(
+                item["tool_smoke_evidence"]["trajectory_proof"]["tool_call_count"] >= 1
+                for item in proof["tool_smoke_proofs"]
+            ),
+            "goal CLI native proof should preserve per-result trajectory proof",
+        )
+        assert_true(
+            all(session_key.startswith("agent:main:converge-") for session_key in proof["session_keys"]),
+            "goal CLI native proof should expose explicit native child session keys",
+        )
+    run("validate", "--workflow-id", cli_workflow_id, state_root=state_root)
 
 
 def assert_phase5b_visible_child_mode_positive_path(state_root: Path) -> None:
@@ -975,6 +1138,7 @@ def assert_completion_criteria_plan_only_wording_does_not_downgrade_goal(state_r
             "목표는 Phase 1만 완료하는 것이다. "
             "완료 기준: plan-only 케이스는 execution_required=false로 유지된다."
         ),
+        "--scaffold-only",
         "--workflow-id",
         "goal-plan-only-criteria-still-execution-required",
         "--owner-session-key",
@@ -1288,6 +1452,7 @@ def main() -> int:
         assert_execution_required_goal_blocks_planned_children(state_root)
         assert_execution_required_goal_collects_child_evidence(state_root)
         assert_material_goal_blocks_without_fix_runner_child(state_root)
+        assert_goal_collects_native_child_panel_evidence(state_root)
         assert_phase5b_visible_child_mode_positive_path(state_root)
         assert_phase5b_waived_child_mode_requires_owner_proof(state_root)
         assert_goal_child_ids_handle_long_parent_ids(state_root)
@@ -1319,6 +1484,71 @@ def _goal_record_from_state(state: dict[str, Any]) -> GoalRecord:
         residuals=state["residuals"],
         final_report_summary=state["final_report_summary"],
     )
+
+
+class FakeNativePanelBackend:
+    def run_panel(self, requests):
+        results = []
+        for index, request in enumerate(requests, start=1):
+            completed_at = f"2026-05-29T01:0{index}:00Z"
+            results.append(
+                NativeChildResult(
+                    request_id=request.request_id,
+                    result_id=f"goal-native-result-{request.mode}-{index}",
+                    agent_session_ref=request.session_key,
+                    session_key=request.session_key,
+                    tool_smoke_status="passed",
+                    profile_ref=request.profile_ref,
+                    context_hash=request.context_hash,
+                    status="completed",
+                    findings=[
+                        {
+                            "finding_id": f"goal-native-finding-{request.mode}-{index}",
+                            "profile_id": request.profile_ref,
+                            "finding": f"Native {request.mode} child produced passing evidence.",
+                            "severity": "p3",
+                            "evidence": f"agent_session_ref:{request.session_key}",
+                            "why_it_matters": "Goal parent success depends on collected native child proof.",
+                            "minimal_fix_or_test": "Keep parent collection bound to child session refs and smoke proof.",
+                            "scope_risk": "goal-child-native-panel",
+                            "confidence": 0.82,
+                            "failure_mode": "goal child evidence binding",
+                            "source_provenance": "native_openclaw_session",
+                        }
+                    ],
+                    started_at=f"2026-05-29T01:0{index}:00Z",
+                    deadline_at=f"2026-05-29T01:1{index}:00Z",
+                    completed_at=completed_at,
+                    tool_smoke_evidence={
+                        "status": "passed",
+                        "session_key": request.session_key,
+                        "agent_session_ref": request.session_key,
+                        "kind": "coordinator_verified_child_tool_smoke_session_and_trajectory_binding",
+                        "checked_at": completed_at,
+                        "verification_scope": "fixture_goal_parent_child_native_panel_binding",
+                        "child_tool_smoke_kind": "fixture",
+                        "child_tool_smoke_checked_at": completed_at,
+                        "session_store_proof": {
+                            "session_key": request.session_key,
+                            "session_id": f"fixture-goal-child-session-{request.mode}-{index}",
+                            "updated_at": 1779981795923 + index,
+                            "agent_id": "converge",
+                            "kind": "spawn-child",
+                        },
+                        "trajectory_proof": {
+                            "session_key": request.session_key,
+                            "output_dir": f"/tmp/fixture-goal-child-trajectory-{request.mode}-{index}",
+                            "event_count": 2,
+                            "runtime_event_count": 0,
+                            "transcript_event_count": 2,
+                            "tool_call_count": 1,
+                            "tool_result_count": 1,
+                            "tool_names": ["fixture_tool"],
+                        },
+                    },
+                )
+            )
+        return results
 
 
 if __name__ == "__main__":

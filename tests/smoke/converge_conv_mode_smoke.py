@@ -11,9 +11,14 @@ from typing import Any
 
 try:
     from smoke_helpers import VISIBLE_DELIVERY, assert_phase5a_contract, assert_phase5a_accepted_change_stale_rejected, assert_phase5a_freshness_rejected, assert_phase5a_missing_gate_rejected, assert_phase5a_stale_hash_rejected, assert_phase5a_terminal_status_rejected, assert_true, events, run, run_fail, workflow, write_workflow
+    from converge_verify_mode_smoke import _write_fake_openclaw_cli
 except ModuleNotFoundError:
     from tests.smoke.smoke_helpers import VISIBLE_DELIVERY, assert_phase5a_contract, assert_phase5a_accepted_change_stale_rejected, assert_phase5a_freshness_rejected, assert_phase5a_missing_gate_rejected, assert_phase5a_stale_hash_rejected, assert_phase5a_terminal_status_rejected, assert_true, events, run, run_fail, workflow, write_workflow
+    from tests.smoke.converge_verify_mode_smoke import _write_fake_openclaw_cli
+from converge.agents.contracts import NativeChildResult, stable_hash  # noqa: E402
 from converge.modes.conv import ConvRecord, ConvRound, _material_change_record, _max_round_record, build_conv_record, render_conv_report, validate_conv_state  # noqa: E402
+from converge.modes.conv import ConvHandler  # noqa: E402
+from converge.store import WorkflowStore  # noqa: E402
 
 
 def finalize_conv(state_root: Path, *, workflow_id: str, text: str) -> dict[str, Any]:
@@ -127,6 +132,7 @@ def assert_execution_required_conv_blocks_synthetic_round(state_root: Path) -> N
         "conv",
         "--text",
         "Improve execution-required target until convergence",
+        "--scaffold-only",
         "--workflow-id",
         "conv-execution-required-blocked",
         "--owner-session-key",
@@ -154,6 +160,22 @@ def assert_execution_required_conv_blocks_synthetic_round(state_root: Path) -> N
         "execution-required conv should fail terminally instead of completing",
     )
     run("validate", "--workflow-id", "conv-execution-required-blocked", state_root=state_root)
+    implicit_scaffold = run_fail(
+        "conv",
+        "--text",
+        "Improve execution-required target until convergence",
+        "--workflow-id",
+        "conv-implicit-scaffold-rejected",
+        "--owner-session-key",
+        "session:test",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        state_root=state_root,
+    )
+    assert_true(
+        "conv execution_backend_missing" in implicit_scaffold["error"],
+        "conv should reject implicit scaffold mode without a real execution backend",
+    )
 
 
 def assert_execution_required_conv_records_real_round_evidence(state_root: Path) -> None:
@@ -212,6 +234,7 @@ def assert_execution_required_conv_records_real_round_evidence(state_root: Path)
         "conv",
         "--text",
         f"Improve execution-required target {target}",
+        "--scaffold-only",
         "--workflow-id",
         "conv-execution-required-material-blocked",
         "--owner-session-key",
@@ -238,6 +261,7 @@ def assert_execution_required_conv_records_real_round_evidence(state_root: Path)
         "conv",
         "--text",
         f"Review and fix execution-required target {target}",
+        "--scaffold-only",
         "--workflow-id",
         "conv-execution-required-mixed-material-blocked",
         "--owner-session-key",
@@ -260,6 +284,7 @@ def assert_execution_required_conv_records_real_round_evidence(state_root: Path)
         "conv",
         "--text",
         f"검토 후 수정 execution-required target {target}",
+        "--scaffold-only",
         "--workflow-id",
         "conv-execution-required-korean-mixed-material-blocked",
         "--owner-session-key",
@@ -615,8 +640,10 @@ def assert_conv_records_structured_specialist_findings(state_root: Path) -> None
     conv_state = wf["conv_state"]
     assert_true(wf["status"] == "completed_unreported", "structured specialist conv should complete")
     assert_true(conv_state["execution_capability"] == "delegated_agents", "conv structured findings should use delegated_agents")
+    assert_true(conv_state["execution_source"] == "runner_provided_packet", "conv structured findings should expose runner packet execution source")
+    assert_true(conv_state["satisfies_native_agent_panel"] is False, "conv structured findings should not satisfy native panel parity")
     assert_true(conv_state["execution_evidence_refs"] == ["conv-specialist-findings"], "conv should bind specialist evidence")
-    assert_true(conv_state["max_rounds_default"] == 5, "conv should preserve Phase 4 max_rounds default")
+    assert_true(conv_state["max_rounds_default"] == 1, "conv should use native adapter max_rounds default")
     assert_true(conv_state["round_count"] == 1, "conv specialist adapter should record one bounded round")
     assert_true(
         conv_state["raw_finding_to_group_map"][0]["group_id"] == conv_state["raw_finding_to_group_map"][1]["group_id"],
@@ -624,6 +651,28 @@ def assert_conv_records_structured_specialist_findings(state_root: Path) -> None
     )
     assert_true(len(conv_state["agent_request_refs"]) == 3, "conv should persist one agent request per profile")
     assert_true(len(conv_state["agent_result_refs"]) == len(conv_state["agent_finding_refs"]), "conv should persist specialist result refs")
+    assert_true(
+        all(
+            request["execution_source"] == "runner_provided_packet"
+            and request["satisfies_native_agent_panel"] is False
+            and request["tool_smoke_status"] == "not_applicable"
+            and request["session_key"] is None
+            and request["agent_session_ref"] is None
+            for request in conv_state["agent_request_refs"]
+        ),
+        "conv runner packet requests should not satisfy native agent panel parity",
+    )
+    assert_true(
+        all(
+            result["execution_source"] == "runner_provided_packet"
+            and result["satisfies_native_agent_panel"] is False
+            and result["tool_smoke_status"] == "not_applicable"
+            and result["session_key"] is None
+            and result["agent_session_ref"] is None
+            for result in conv_state["agent_result_refs"]
+        ),
+        "conv runner packet results should not invent native session evidence",
+    )
     assert_true(len(conv_state["profile_registry_refs"]) == 5, "conv should persist reviewer/check/runner profile specs")
     assert_true(
         {item["kind"] for item in conv_state["profile_registry_refs"]} == {"reviewer", "check", "runner"},
@@ -770,6 +819,17 @@ def assert_conv_records_structured_specialist_findings(state_root: Path) -> None
 
     fix_packet = specialist_packet()
     fix_packet["findings"][0]["severity"] = "p2"
+    fix_runner_source_root = state_root / "fix-runner-source"
+    fix_runner_source_root.mkdir()
+    fix_runner_target = fix_runner_source_root / "target.txt"
+    fix_runner_target.write_text("before fix\n", encoding="utf-8")
+    fix_packet["findings"][0]["local_file_edits"] = [
+        {
+            "path": "target.txt",
+            "old": "before fix\n",
+            "new": "after fix\n",
+        }
+    ]
     fix_packet_path = state_root / "conv-fix-specialist-findings.json"
     fix_packet_path.write_text(json.dumps(fix_packet), encoding="utf-8")
     needs_follow_up = run(
@@ -786,18 +846,646 @@ def assert_conv_records_structured_specialist_findings(state_root: Path) -> None
         str(fix_packet_path),
         state_root=state_root,
     )["workflow"]
-    assert_true(needs_follow_up["status"] == "failed_unreported", "accepted specialist fixes should require follow-up before completion")
-    assert_true(needs_follow_up["final_status"]["result"] == "blocked", "accepted specialist fixes should not pass before follow-up")
+    assert_true(needs_follow_up["status"] == "running", "accepted specialist fixes should remain resumable until fix runner result is supplied")
+    assert_true(
+        needs_follow_up["final_status"] is None,
+        "accepted specialist fixes should not create a terminal final_status before bounded fix runner proof",
+    )
+    assert_true(needs_follow_up["conv_state"]["round_count"] == 1, "accepted specialist fixes should not synthesize a follow-up round")
     assert_true(needs_follow_up["conv_state"]["follow_up_required"] is True, "accepted specialist fixes should record follow-up required")
+    assert_true(needs_follow_up["conv_state"]["fix_runner_required"] is True, "accepted specialist fixes should require coordinator fix runner")
+    assert_true(
+        needs_follow_up["conv_state"]["fix_runner_collection_status"]["status"] == "pending",
+        "accepted specialist fixes should leave coordinator fix runner collection pending without a result",
+    )
+    assert_true(
+        needs_follow_up["conv_state"]["fix_runner_collection_status"]["follow_up_completed"] is False,
+        "accepted specialist fixes should not prove follow-up completion without a result",
+    )
+    assert_true(
+        needs_follow_up["conv_state"]["fix_runner_request_refs"][0]["source_classification"] == "fix_runner",
+        "accepted specialist fixes should create a fix_runner-classified request",
+    )
+    assert_true(needs_follow_up["conv_state"]["fix_runner_result_refs"] == [], "accepted specialist fixes should not fabricate a fix runner result")
     assert_true(
         needs_follow_up["conv_state"]["stop_condition"] == "blocked_specialist_follow_up_required",
-        "accepted specialist fixes should bind follow-up stop condition",
+        "accepted specialist fixes should stop on pending follow-up proof",
     )
     assert_true(
         needs_follow_up["conv_state"]["required_evidence_contract"]["terminal_status"] == "blocked",
-        "accepted specialist fixes should bind Phase 5A contract to blocked terminal status",
+        "accepted specialist fixes should bind pending follow-up to blocked terminal status",
     )
     run("validate", "--workflow-id", "conv-fix-specialist-findings", state_root=state_root)
+
+    fix_runner_events = [event for event in events(state_root, "conv-fix-specialist-findings") if event["event_type"] == "fix_runner_requested"]
+    assert_true(len(fix_runner_events) == 1, "accepted specialist fixes should record fix_runner_requested proof")
+    assert_true(
+        fix_runner_events[0]["payload"]["request_ids"]
+        == [needs_follow_up["conv_state"]["fix_runner_request_refs"][0]["runner_id"]],
+        "fix_runner_requested event should bind request ids to state",
+    )
+    assert_true(
+        not [event for event in events(state_root, "conv-fix-specialist-findings") if event["event_type"] == "fix_runner_completed"],
+        "pending accepted specialist fixes should not record fix_runner_completed proof",
+    )
+
+    accepted_changes = needs_follow_up["conv_state"]["accepted_change_refs"]
+    fix_runner_result_path = state_root / "conv-fix-runner-result.json"
+    fix_runner_output = run(
+        "fix-runner",
+        "--workflow-id",
+        "conv-fix-specialist-findings",
+        "--source-root",
+        str(fix_runner_source_root),
+        "--output-file",
+        str(fix_runner_result_path),
+        state_root=state_root,
+    )
+    assert_true(fix_runner_output["result"]["workflow_id"] == "conv-fix-specialist-findings", "fix-runner should bind result to pending workflow")
+    assert_true(fix_runner_target.read_text(encoding="utf-8") == "after fix\n", "fix-runner should apply the bounded local file edit")
+    assert_true(
+        fix_runner_output["result"]["focused_check_results"][0]["status"] == "pass",
+        "fix-runner should produce focused check proof for the accepted change",
+    )
+    completed_follow_up = run(
+        "conv",
+        "--text",
+        "Converge execution-required target with accepted specialist fix",
+        "--workflow-id",
+        "conv-fix-specialist-findings",
+        "--owner-session-key",
+        "session:test",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        "--structured-findings-file",
+        str(fix_packet_path),
+        "--fix-runner-result-file",
+        str(fix_runner_result_path),
+        "--fix-runner-source-root",
+        str(fix_runner_source_root),
+        state_root=state_root,
+    )["workflow"]
+    assert_true(completed_follow_up["status"] == "completed_unreported", "accepted specialist fixes should complete after supplied fix runner follow-up")
+    assert_true(
+        completed_follow_up["final_status"]["result"] == "pass_with_risks",
+        "accepted specialist fixes should pass with bounded residual scope after real follow-up proof",
+    )
+    assert_true(completed_follow_up["conv_state"]["round_count"] == 2, "accepted specialist fixes should record the material round and follow-up round")
+    assert_true(
+        completed_follow_up["conv_state"]["fix_runner_collection_status"]["status"] == "complete",
+        "accepted specialist fixes should complete coordinator fix runner collection only with a result",
+    )
+    assert_true(
+        completed_follow_up["conv_state"]["fix_runner_collection_status"]["follow_up_completed"] is True,
+        "accepted specialist fixes should prove follow-up completion after a supplied result",
+    )
+    assert_true(
+        completed_follow_up["conv_state"]["fix_runner_result_refs"][0]["source_classification"] == "fix_runner",
+        "accepted specialist fixes should record a fix_runner-classified result",
+    )
+    assert_true(
+        completed_follow_up["conv_state"]["fix_runner_result_refs"][0]["material_change_applied"] is True,
+        "fix runner result should mark bounded material change application",
+    )
+    assert_true(
+        completed_follow_up["conv_state"]["fix_runner_request_refs"][0]["agent_session_ref"] is None,
+        "fix runner request should be coordinator-owned rather than a reviewer child session",
+    )
+    assert_true(
+        completed_follow_up["conv_state"]["fix_runner_request_refs"][0]["tool_policy"]["target_mutation"]
+        == "bounded_by_accepted_change_refs",
+        "fix runner request should only allow bounded accepted-change mutation",
+    )
+    assert_true(
+        completed_follow_up["conv_state"]["fix_runner_request_refs"][0]["tool_policy"]["push_or_pr"] == "forbidden",
+        "fix runner request should forbid push/PR side effects",
+    )
+    assert_true(
+        completed_follow_up["conv_state"]["stop_condition"] == "evidence_sufficient",
+        "accepted specialist fixes should stop after follow-up evidence sufficiency",
+    )
+    assert_true(
+        completed_follow_up["conv_state"]["required_evidence_contract"]["terminal_status"] == "pass_with_risks",
+        "accepted specialist fixes should bind Phase 5A contract to pass_with_risks terminal status",
+    )
+    fix_runner_artifact_ref = completed_follow_up["conv_state"]["fix_runner_result_refs"][0]["artifact_refs"][0]
+    assert_true(
+        any(
+            item.get("gate_id") == f"evidence:{fix_runner_artifact_ref}" and item.get("evidence_kind") == "fix_runner_result"
+            for item in completed_follow_up["conv_state"]["required_evidence_contract"]["required"]
+        ),
+        "fix runner result artifact should be a required Phase 5A evidence gate",
+    )
+    run("validate", "--workflow-id", "conv-fix-specialist-findings", state_root=state_root)
+    fix_runner_target.write_text("after fix but stale\n", encoding="utf-8")
+    stale_source_result = run_fail("validate", "--workflow-id", "conv-fix-specialist-findings", state_root=state_root)
+    assert_true(
+        "after_sha256 must match current source root" in stale_source_result["error"],
+        "conv validate should reject stale fix-runner source content after completed result proof",
+    )
+    fix_runner_target.write_text("after fix\n", encoding="utf-8")
+    run("validate", "--workflow-id", "conv-fix-specialist-findings", state_root=state_root)
+
+    partial_result_path = state_root / "conv-fix-runner-result-partial.json"
+    partial_result_path.write_text(
+        json.dumps(
+            {
+                "applied_change_refs": accepted_changes,
+                "focused_check_results": [
+                    {
+                        "check_id": f"focused-check-{item['change_ref']}",
+                        "change_ref": item["change_ref"],
+                        "status": "pass",
+                    }
+                    for item in accepted_changes
+                ],
+                "material_change_applied": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    partial_result = run_fail(
+        "conv",
+        "--text",
+        "Converge execution-required target with accepted specialist fix",
+        "--workflow-id",
+        "conv-fix-specialist-findings-partial-result",
+        "--owner-session-key",
+        "session:test",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        "--structured-findings-file",
+        str(fix_packet_path),
+        "--fix-runner-result-file",
+        str(partial_result_path),
+        "--fix-runner-source-root",
+        str(fix_runner_source_root),
+        state_root=state_root,
+    )
+    assert_true(
+        "fix_runner result runner_id must match request" in partial_result["error"],
+        "conv should reject partial fix runner results instead of filling required identity fields",
+    )
+
+    false_material_path = state_root / "conv-fix-runner-result-false-material.json"
+    false_material = json.loads(fix_runner_result_path.read_text(encoding="utf-8"))
+    false_material["workflow_id"] = "conv-fix-specialist-findings-false-material"
+    false_runner_id = "conv-fix-runner-conv-fix-specialist-findings-false-material-round-1"
+    false_material["runner_id"] = false_runner_id
+    false_material["result_id"] = f"{false_runner_id}-result"
+    false_material["artifact_refs"] = [f"{false_runner_id}-result"]
+    false_material["material_change_applied"] = False
+    false_material_path.write_text(json.dumps(false_material), encoding="utf-8")
+    false_material_result = run_fail(
+        "conv",
+        "--text",
+        "Converge execution-required target with accepted specialist fix",
+        "--workflow-id",
+        "conv-fix-specialist-findings-false-material",
+        "--owner-session-key",
+        "session:test",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        "--structured-findings-file",
+        str(fix_packet_path),
+        "--fix-runner-result-file",
+        str(false_material_path),
+        "--fix-runner-source-root",
+        str(fix_runner_source_root),
+        state_root=state_root,
+    )
+    assert_true(
+        "material_change_applied must be true" in false_material_result["error"]
+        or "idempotency_key must match mutation proof" in false_material_result["error"],
+        "conv should reject fix runner results that did not apply the accepted material change",
+    )
+
+    forged_result_path = state_root / "conv-fix-runner-result-forged.json"
+    forged_result = json.loads(fix_runner_result_path.read_text(encoding="utf-8"))
+    forged_result["workflow_id"] = "conv-fix-specialist-findings-forged-result"
+    forged_runner_id = "conv-fix-runner-conv-fix-specialist-findings-forged-result-round-1"
+    forged_result["runner_id"] = forged_runner_id
+    forged_result["result_id"] = f"{forged_runner_id}-result"
+    forged_result["artifact_refs"] = [f"{forged_runner_id}-result"]
+    forged_result.pop("file_mutations", None)
+    forged_result_path.write_text(json.dumps(forged_result), encoding="utf-8")
+    forged_result_rejected = run_fail(
+        "conv",
+        "--text",
+        "Converge execution-required target with accepted specialist fix",
+        "--workflow-id",
+        "conv-fix-specialist-findings-forged-result",
+        "--owner-session-key",
+        "session:test",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        "--structured-findings-file",
+        str(fix_packet_path),
+        "--fix-runner-result-file",
+        str(forged_result_path),
+        "--fix-runner-source-root",
+        str(fix_runner_source_root),
+        state_root=state_root,
+    )
+    assert_true(
+        "file_mutations" in forged_result_rejected["error"],
+        "conv should reject forged fix runner results without file mutation proof",
+    )
+
+    weak_check_path = state_root / "conv-fix-runner-result-weak-check.json"
+    weak_check = json.loads(fix_runner_result_path.read_text(encoding="utf-8"))
+    weak_check["workflow_id"] = "conv-fix-specialist-findings-weak-check"
+    weak_check_runner_id = "conv-fix-runner-conv-fix-specialist-findings-weak-check-round-1"
+    weak_check["runner_id"] = weak_check_runner_id
+    weak_check["result_id"] = f"{weak_check_runner_id}-result"
+    weak_check["artifact_refs"] = [f"{weak_check_runner_id}-result"]
+    weak_check["focused_check_results"][0].pop("mutation_hashes", None)
+    weak_check["idempotency_key"] = stable_hash(
+        {
+            "runner_id": weak_check["runner_id"],
+            "workflow_id": weak_check["workflow_id"],
+            "source_root": weak_check["source_root"],
+            "accepted_change_refs": weak_check["accepted_change_refs"],
+            "file_mutations": weak_check["file_mutations"],
+        }
+    )
+    weak_check_path.write_text(json.dumps(weak_check), encoding="utf-8")
+    weak_check_rejected = run_fail(
+        "conv",
+        "--text",
+        "Converge execution-required target with accepted specialist fix",
+        "--workflow-id",
+        "conv-fix-specialist-findings-weak-check",
+        "--owner-session-key",
+        "session:test",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        "--structured-findings-file",
+        str(fix_packet_path),
+        "--fix-runner-result-file",
+        str(weak_check_path),
+        "--fix-runner-source-root",
+        str(fix_runner_source_root),
+        state_root=state_root,
+    )
+    assert_true(
+        "focused checks must bind mutation hashes" in weak_check_rejected["error"],
+        "conv should reject fix runner results whose focused checks do not bind mutation hashes",
+    )
+
+    wrong_before_path = state_root / "conv-fix-runner-result-wrong-before.json"
+    wrong_before = json.loads(fix_runner_result_path.read_text(encoding="utf-8"))
+    wrong_before["workflow_id"] = "conv-fix-specialist-findings-wrong-before"
+    wrong_before_runner_id = "conv-fix-runner-conv-fix-specialist-findings-wrong-before-round-1"
+    wrong_before["runner_id"] = wrong_before_runner_id
+    wrong_before["result_id"] = f"{wrong_before_runner_id}-result"
+    wrong_before["artifact_refs"] = [f"{wrong_before_runner_id}-result"]
+    wrong_before["file_mutations"][0]["before_sha256"] = "0" * 64
+    wrong_before["focused_check_results"][0]["mutation_hashes"][0]["before_sha256"] = "0" * 64
+    wrong_before["idempotency_key"] = stable_hash(
+        {
+            "runner_id": wrong_before["runner_id"],
+            "workflow_id": wrong_before["workflow_id"],
+            "source_root": wrong_before["source_root"],
+            "accepted_change_refs": wrong_before["accepted_change_refs"],
+            "file_mutations": wrong_before["file_mutations"],
+        }
+    )
+    wrong_before_path.write_text(json.dumps(wrong_before), encoding="utf-8")
+    wrong_before_rejected = run_fail(
+        "conv",
+        "--text",
+        "Converge execution-required target with accepted specialist fix",
+        "--workflow-id",
+        "conv-fix-specialist-findings-wrong-before",
+        "--owner-session-key",
+        "session:test",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        "--structured-findings-file",
+        str(fix_packet_path),
+        "--fix-runner-result-file",
+        str(wrong_before_path),
+        "--fix-runner-source-root",
+        str(fix_runner_source_root),
+        state_root=state_root,
+    )
+    assert_true(
+        "mutation proof must match accepted local_file_edits" in wrong_before_rejected["error"],
+        "conv should reject fix runner mutation proof that is not bound to accepted local_file_edits",
+    )
+
+    wrong_source_root = state_root / "wrong-fix-runner-source"
+    wrong_source_root.mkdir()
+    (wrong_source_root / "target.txt").write_text("before fix\n", encoding="utf-8")
+    wrong_source_result_path = state_root / "conv-fix-runner-result-wrong-source.json"
+    wrong_source_packet = json.loads(fix_runner_result_path.read_text(encoding="utf-8"))
+    wrong_source_packet["workflow_id"] = "conv-fix-specialist-findings-wrong-source"
+    wrong_source_runner_id = "conv-fix-runner-conv-fix-specialist-findings-wrong-source-round-1"
+    wrong_source_packet["runner_id"] = wrong_source_runner_id
+    wrong_source_packet["result_id"] = f"{wrong_source_runner_id}-result"
+    wrong_source_packet["artifact_refs"] = [f"{wrong_source_runner_id}-result"]
+    wrong_source_packet["idempotency_key"] = stable_hash(
+        {
+            "runner_id": wrong_source_packet["runner_id"],
+            "workflow_id": wrong_source_packet["workflow_id"],
+            "source_root": wrong_source_packet["source_root"],
+            "accepted_change_refs": wrong_source_packet["accepted_change_refs"],
+            "file_mutations": wrong_source_packet["file_mutations"],
+        }
+    )
+    wrong_source_result_path.write_text(json.dumps(wrong_source_packet), encoding="utf-8")
+    wrong_source_result = run_fail(
+        "conv",
+        "--text",
+        "Converge execution-required target with accepted specialist fix",
+        "--workflow-id",
+        "conv-fix-specialist-findings-wrong-source",
+        "--owner-session-key",
+        "session:test",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        "--structured-findings-file",
+        str(fix_packet_path),
+        "--fix-runner-result-file",
+        str(wrong_source_result_path),
+        "--fix-runner-source-root",
+        str(wrong_source_root),
+        state_root=state_root,
+    )
+    assert_true(
+        "source_root must match supplied source root" in wrong_source_result["error"],
+        "conv should reject fix runner results produced against a different source root",
+    )
+
+    atomic_packet = specialist_packet()
+    atomic_packet["findings"][0]["severity"] = "p2"
+    atomic_source_root = state_root / "fix-runner-atomic-source"
+    atomic_source_root.mkdir()
+    atomic_first = atomic_source_root / "first.txt"
+    atomic_second = atomic_source_root / "second.txt"
+    atomic_first.write_text("first before\n", encoding="utf-8")
+    atomic_second.write_text("second before\n", encoding="utf-8")
+    atomic_packet["findings"][0]["local_file_edits"] = [
+        {"path": "first.txt", "old": "first before\n", "new": "first after\n"},
+        {"path": "second.txt", "old": "missing old text\n", "new": "second after\n"},
+    ]
+    atomic_packet_path = state_root / "conv-fix-specialist-atomic.json"
+    atomic_packet_path.write_text(json.dumps(atomic_packet), encoding="utf-8")
+    run(
+        "conv",
+        "--text",
+        "Converge execution-required target with multi-edit accepted specialist fix",
+        "--workflow-id",
+        "conv-fix-specialist-atomic",
+        "--owner-session-key",
+        "session:test",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        "--structured-findings-file",
+        str(atomic_packet_path),
+        state_root=state_root,
+    )
+    atomic_failure = run_fail(
+        "fix-runner",
+        "--workflow-id",
+        "conv-fix-specialist-atomic",
+        "--source-root",
+        str(atomic_source_root),
+        state_root=state_root,
+    )
+    assert_true(
+        "old text must match exactly once" in atomic_failure["error"],
+        "fix-runner should fail before applying any edit when one bounded edit is invalid",
+    )
+    assert_true(
+        atomic_first.read_text(encoding="utf-8") == "first before\n",
+        "fix-runner should not leave partial file mutations after preflight failure",
+    )
+
+    fix_runner_completed_events = [event for event in events(state_root, "conv-fix-specialist-findings") if event["event_type"] == "fix_runner_completed"]
+    assert_true(len(fix_runner_completed_events) == 1, "accepted specialist fixes should record fix_runner_completed proof")
+    assert_true(
+        fix_runner_completed_events[0]["payload"]["result_ids"]
+        == [completed_follow_up["conv_state"]["fix_runner_result_refs"][0]["result_id"]],
+        "fix_runner_completed event should bind result ids to state",
+    )
+    fix_runner_original_events = events(state_root, "conv-fix-specialist-findings")
+    fix_runner_events_path = state_root / "workflows" / "conv-fix-specialist-findings" / "events.jsonl"
+    fix_runner_event_drift = json.loads(json.dumps(fix_runner_original_events))
+    for event in fix_runner_event_drift:
+        if event["event_type"] == "fix_runner_completed":
+            event["payload"]["collection_cursor"] = "stale-fix-runner-cursor"
+    fix_runner_events_path.write_text(
+        "\n".join(json.dumps(event, ensure_ascii=False, sort_keys=True) for event in fix_runner_event_drift) + "\n",
+        encoding="utf-8",
+    )
+    fix_runner_drift_result = run_fail("validate", "--workflow-id", "conv-fix-specialist-findings", state_root=state_root)
+    assert_true(
+        "conv fix_runner completed event collection_cursor must match state" in fix_runner_drift_result["error"],
+        "conv should bind completed fix runner event cursor to state",
+    )
+    fix_runner_events_path.write_text(
+        "\n".join(json.dumps(event, ensure_ascii=False, sort_keys=True) for event in fix_runner_original_events) + "\n",
+        encoding="utf-8",
+    )
+    fix_runner_event_drift = json.loads(json.dumps(fix_runner_original_events))
+    for event in fix_runner_event_drift:
+        if event["event_type"] == "fix_runner_completed":
+            event["payload"]["result_ids"] = []
+    fix_runner_events_path.write_text(
+        "\n".join(json.dumps(event, ensure_ascii=False, sort_keys=True) for event in fix_runner_event_drift) + "\n",
+        encoding="utf-8",
+    )
+    fix_runner_completed_drift = run_fail("validate", "--workflow-id", "conv-fix-specialist-findings", state_root=state_root)
+    assert_true(
+        "conv fix_runner completed event result_ids must match state" in fix_runner_completed_drift["error"],
+        "conv should bind fix runner completed event result ids to state",
+    )
+    fix_runner_events_path.write_text(
+        "\n".join(json.dumps(event, ensure_ascii=False, sort_keys=True) for event in fix_runner_original_events) + "\n",
+        encoding="utf-8",
+    )
+    fix_runner_event_drift = json.loads(json.dumps(fix_runner_original_events))
+    for event in fix_runner_event_drift:
+        if event["event_type"] == "fix_runner_completed":
+            event["payload"]["artifact_refs"] = ["stale-artifact"]
+    fix_runner_events_path.write_text(
+        "\n".join(json.dumps(event, ensure_ascii=False, sort_keys=True) for event in fix_runner_event_drift) + "\n",
+        encoding="utf-8",
+    )
+    fix_runner_artifact_drift = run_fail("validate", "--workflow-id", "conv-fix-specialist-findings", state_root=state_root)
+    assert_true(
+        "conv fix_runner completed event artifact_refs must match state" in fix_runner_artifact_drift["error"],
+        "conv should bind fix runner completed event artifact refs to state",
+    )
+    fix_runner_events_path.write_text(
+        "\n".join(json.dumps(event, ensure_ascii=False, sort_keys=True) for event in fix_runner_original_events) + "\n",
+        encoding="utf-8",
+    )
+
+
+def assert_conv_records_native_specialist_panel(state_root: Path) -> None:
+    native_store = WorkflowStore(state_root)
+    native_workflow = native_store.create_workflow(
+        kind="conv",
+        text="Converge with native OpenClaw child panel",
+        workflow_id="conv-native-panel",
+        owner_session_key="session:test",
+        visible_delivery={"channel": "telegram", "target": "test"},
+    )
+    ConvHandler(native_store).finalize_conv(native_workflow["workflow_id"], native_agent_backend=FakeNativePanelBackend())
+    native_conv = workflow(state_root, "conv-native-panel")
+    native_state = native_conv["conv_state"]
+    assert_true(native_conv["status"] == "completed_unreported", "native conv panel should allow completion")
+    assert_true(native_state["execution_source"] == "native_agent_panel", "native conv should carry native execution source")
+    assert_true(native_state["satisfies_native_agent_panel"] is True, "native conv should satisfy native panel parity")
+    assert_true(native_state["round_count"] == 1, "native conv should remain a single bounded round")
+    assert_true(len(native_state["agent_request_refs"]) == 3, "native conv should launch exactly three child requests")
+    assert_true(len(native_state["agent_result_refs"]) == 3, "native conv should collect one result per child")
+    assert_true(
+        all(item["session_key"].startswith("agent:main:converge-") for item in native_state["agent_request_refs"]),
+        "native conv should persist explicit child session keys",
+    )
+    assert_true(
+        all(
+            item["tool_policy"]["filesystem"] == "read_only"
+            and item["tool_policy"]["shell"] == "status_only"
+            and item["tool_policy"]["target_mutation"] == "forbidden"
+            and item["tool_policy"]["visible_messages"] == "forbidden"
+            and item["tool_policy"]["external_actions"] == "forbidden"
+            for item in native_state["agent_request_refs"]
+        ),
+        "native conv requests should carry explicit read-only reviewer tool policy",
+    )
+    assert_true(
+        all(item["tool_smoke_status"] == "passed" and item["tool_smoke_evidence"] for item in native_state["agent_result_refs"]),
+        "native conv results should carry coordinator-verified tool-smoke evidence",
+    )
+    assert_true(
+        all(
+            item["profile_id"].startswith("native-conv-")
+            and item["source_provenance"] == "native_openclaw_session"
+            for item in native_state["agent_finding_refs"]
+        ),
+        "native conv should force native finding profile/provenance onto child findings",
+    )
+    assert_conv_report_matches_state(native_conv)
+    run("validate", "--workflow-id", "conv-native-panel", state_root=state_root)
+
+    fake_openclaw = _write_fake_openclaw_cli(state_root / "fake-openclaw-conv", include_tool_smoke_evidence=True)
+    native_cli_conv = run(
+        "conv",
+        "--text",
+        "Converge native CLI child panel",
+        "--workflow-id",
+        "conv-native-cli-panel",
+        "--owner-session-key",
+        "session:test",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        "--native-panel-openclaw-cli",
+        "--native-panel-openclaw-bin",
+        str(fake_openclaw),
+        state_root=state_root,
+    )
+    native_cli_state = native_cli_conv["workflow"]["conv_state"]
+    assert_true(native_cli_conv["workflow"]["status"] == "completed_unreported", "native CLI conv panel should complete")
+    assert_true(native_cli_state["execution_source"] == "native_agent_panel", "native CLI conv should carry native source")
+    assert_true(native_cli_state["satisfies_native_agent_panel"] is True, "native CLI conv should satisfy native panel only after proof")
+    assert_true(
+        all(
+            item["tool_smoke_evidence"]["kind"] == "coordinator_verified_child_tool_smoke_session_and_trajectory_binding"
+            and item["tool_smoke_evidence"]["session_store_proof"]["session_key"] == item["session_key"]
+            and item["tool_smoke_evidence"]["trajectory_proof"]["session_key"] == item["session_key"]
+            and item["tool_smoke_evidence"]["trajectory_proof"]["tool_call_count"] >= 1
+            and item["tool_smoke_evidence"]["trajectory_proof"]["tool_result_count"] >= 1
+            for item in native_cli_state["agent_result_refs"]
+        ),
+        "native CLI conv should persist coordinator-verified smoke, session, and trajectory proof",
+    )
+    run("validate", "--workflow-id", "conv-native-cli-panel", state_root=state_root)
+
+    fake_openclaw_no_evidence = _write_fake_openclaw_cli(state_root / "fake-openclaw-conv-no-evidence", include_tool_smoke_evidence=False)
+    native_cli_missing_smoke = run_fail(
+        "conv",
+        "--text",
+        "Converge native CLI child panel without smoke evidence",
+        "--workflow-id",
+        "conv-native-cli-missing-smoke",
+        "--owner-session-key",
+        "session:test",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        "--native-panel-openclaw-cli",
+        "--native-panel-openclaw-bin",
+        str(fake_openclaw_no_evidence),
+        state_root=state_root,
+    )
+    assert_true(
+        "tool_smoke_evidence" in native_cli_missing_smoke["error"],
+        "native CLI conv should fail closed when coordinator cannot verify child smoke evidence",
+    )
+
+    fake_openclaw_failed_smoke = _write_fake_openclaw_cli(
+        state_root / "fake-openclaw-conv-failed-smoke",
+        include_tool_smoke_evidence=True,
+        tool_smoke_status="failed",
+    )
+    native_cli_failed_smoke = run_fail(
+        "conv",
+        "--text",
+        "Converge native CLI child panel with failed smoke evidence",
+        "--workflow-id",
+        "conv-native-cli-failed-smoke",
+        "--owner-session-key",
+        "session:test",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        "--native-panel-openclaw-cli",
+        "--native-panel-openclaw-bin",
+        str(fake_openclaw_failed_smoke),
+        state_root=state_root,
+    )
+    assert_true(
+        "tool_smoke_status=passed" in native_cli_failed_smoke["error"],
+        "native CLI conv should fail closed when child tool smoke fails",
+    )
+
+    fake_openclaw_no_session = _write_fake_openclaw_cli(
+        state_root / "fake-openclaw-conv-no-session",
+        include_tool_smoke_evidence=True,
+        include_session_store_proof=False,
+    )
+    native_cli_missing_session = run_fail(
+        "conv",
+        "--text",
+        "Converge native CLI child panel without session store proof",
+        "--workflow-id",
+        "conv-native-cli-missing-session-proof",
+        "--owner-session-key",
+        "session:test",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        "--native-panel-openclaw-cli",
+        "--native-panel-openclaw-bin",
+        str(fake_openclaw_no_session),
+        state_root=state_root,
+    )
+    assert_true(
+        "session_key" in native_cli_missing_session["error"],
+        "native CLI conv should fail closed when OpenClaw session store proof is missing",
+    )
+
+    tampered_cli = json.loads(json.dumps(native_cli_conv["workflow"]))
+    tampered_cli["conv_state"]["agent_result_refs"][0]["tool_smoke_evidence"]["trajectory_proof"]["tool_result_count"] = 0
+    write_workflow(state_root, "conv-native-cli-panel", tampered_cli)
+    tampered_cli_result = run_fail("validate", "--workflow-id", "conv-native-cli-panel", state_root=state_root)
+    assert_true(
+        "conv_state must match terminal checkpoint" in tampered_cli_result["error"],
+        "native CLI conv should fail closed if persisted trajectory proof is altered",
+    )
+    write_workflow(state_root, "conv-native-cli-panel", native_cli_conv["workflow"])
 
 
 def main() -> int:
@@ -813,6 +1501,7 @@ def main() -> int:
         assert_conv_preterminal_state_is_validated(state_root)
         assert_reserve_validates_conv_terminal_material_before_send(state_root)
         assert_conv_records_structured_specialist_findings(state_root)
+        assert_conv_records_native_specialist_panel(state_root)
     return 0
 
 
@@ -899,6 +1588,70 @@ def specialist_packet() -> dict[str, Any]:
         ],
         "side_effects_performed": [],
     }
+
+
+class FakeNativePanelBackend:
+    def run_panel(self, requests):
+        results = []
+        for index, request in enumerate(requests, start=1):
+            completed_at = f"2026-05-29T00:0{index}:00Z"
+            finding = {
+                "finding_id": "child-supplied-duplicate-native-finding",
+                "profile_id": "child-supplied-wrong-profile",
+                "finding": f"Native child {index} inspected the conv target without blocking findings.",
+                "severity": "p3",
+                "evidence": f"agent_session_ref:{request.session_key}",
+                "why_it_matters": "Conv native parity requires explicit child session evidence.",
+                "minimal_fix_or_test": "Keep conv validation bound to native child session refs and tool-smoke evidence.",
+                "scope_risk": "native-panel",
+                "confidence": 0.81,
+                "failure_mode": "native evidence binding",
+                "source_provenance": "runner_provided",
+            }
+            results.append(
+                NativeChildResult(
+                    request_id=request.request_id,
+                    result_id=f"native-conv-result-{index}",
+                    agent_session_ref=request.session_key,
+                    session_key=request.session_key,
+                    tool_smoke_status="passed",
+                    profile_ref=request.profile_ref,
+                    context_hash=request.context_hash,
+                    status="completed",
+                    findings=[finding],
+                    started_at=f"2026-05-29T00:0{index}:00Z",
+                    deadline_at=f"2026-05-29T00:1{index}:00Z",
+                    completed_at=completed_at,
+                    tool_smoke_evidence={
+                        "status": "passed",
+                        "session_key": request.session_key,
+                        "agent_session_ref": request.session_key,
+                        "kind": "coordinator_verified_child_tool_smoke_session_and_trajectory_binding",
+                        "checked_at": completed_at,
+                        "verification_scope": "fixture_child_claim_bound_to_explicit_session_refs_with_openclaw_session_store_and_trajectory_tool_events",
+                        "child_tool_smoke_kind": "fixture",
+                        "child_tool_smoke_checked_at": completed_at,
+                        "session_store_proof": {
+                            "session_key": request.session_key,
+                            "session_id": f"fixture-conv-session-{index}",
+                            "updated_at": 1779981795923 + index,
+                            "agent_id": "converge",
+                            "kind": "spawn-child",
+                        },
+                        "trajectory_proof": {
+                            "session_key": request.session_key,
+                            "output_dir": f"/tmp/fixture-conv-trajectory-{index}",
+                            "event_count": 2,
+                            "runtime_event_count": 0,
+                            "transcript_event_count": 2,
+                            "tool_call_count": 1,
+                            "tool_result_count": 1,
+                            "tool_names": ["fixture_tool"],
+                        },
+                    },
+                )
+            )
+        return results
 
 
 if __name__ == "__main__":

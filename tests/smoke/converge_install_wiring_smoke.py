@@ -259,6 +259,7 @@ def test_local_install_wires_cli_and_runner() -> None:
                 "goal",
                 "--text",
                 "install wiring smoke",
+                "--scaffold-only",
             ],
             env=env,
         )
@@ -301,17 +302,31 @@ def test_local_install_wires_cli_and_runner() -> None:
         fake_converge.chmod(0o755)
         runner_env = env.copy()
         runner_env.pop("OPENCLAW_CONVERGE_BIN", None)
+        runner_env["OPENCLAW_CONVERGE_WATCHDOG_LOG"] = str(root / "watchdog.jsonl")
+        runner_env["OPENCLAW_CONVERGE_WATCHDOG_STATE"] = str(root / "watchdog-state.json")
         runner_env["PATH"] = f"{fake_dir}{os.pathsep}{runner_env.get('PATH', '')}"
         packet = run_json([str(runner), "--state-root", str(state_root), "--json"], env=runner_env)
         assert_true(packet["ok"] is True, "installed watchdog runner should emit a valid packet")
         assert_true(packet.get("runner", {}).get("local_only") is True, "runner should declare local-only policy")
+        heartbeat = packet.get("runner", {}).get("heartbeat", {})
+        assert_true(isinstance(heartbeat, dict) and "checked_at" in heartbeat, "runner should include log-only heartbeat metadata")
         assert_true(
             packet.get("runner", {}).get("converge_bin") == str((install_root / "bin" / "converge").resolve()),
             "runner should prefer its package-local installed CLI over PATH",
         )
+        assert_true((root / "watchdog.jsonl").exists(), "watchdog runner should append a JSONL heartbeat")
+        assert_true((root / "watchdog-state.json").exists(), "watchdog runner should persist fingerprint state")
+        heartbeat_log = [json.loads(line) for line in (root / "watchdog.jsonl").read_text(encoding="utf-8").splitlines()]
+        assert_true(len(heartbeat_log) == 1, "watchdog runner should append one heartbeat record per run")
+        assert_true(heartbeat_log[0]["fingerprint"] == heartbeat["fingerprint"], "heartbeat log should preserve the runner fingerprint")
+        assert_true(heartbeat_log[0]["needs_wake"] == packet["needs_wake"], "heartbeat log should preserve wake status")
+        heartbeat_state = json.loads((root / "watchdog-state.json").read_text(encoding="utf-8"))
+        assert_true(heartbeat_state["last_fingerprint"] == heartbeat["fingerprint"], "runner state should persist the latest fingerprint")
+        assert_true(heartbeat_state["last_needs_wake"] == packet["needs_wake"], "runner state should persist the latest wake status")
+        assert_true(heartbeat_state["last_recovery_count"] == len(packet.get("recoveries", [])), "runner state should persist recovery count")
         missing_runner = subprocess.run(
             [str(runner), "--converge-bin", str(root / "missing-converge"), "--json"],
-            env=env,
+            env=runner_env,
             text=True,
             capture_output=True,
             check=False,
@@ -323,7 +338,7 @@ def test_local_install_wires_cli_and_runner() -> None:
         bad_exit.chmod(0o755)
         bad_exit_runner = subprocess.run(
             [str(runner), "--converge-bin", str(bad_exit), "--json"],
-            env=env,
+            env=runner_env,
             text=True,
             capture_output=True,
             check=False,
@@ -335,7 +350,7 @@ def test_local_install_wires_cli_and_runner() -> None:
         bad_json.chmod(0o755)
         bad_json_runner = subprocess.run(
             [str(runner), "--converge-bin", str(bad_json), "--json"],
-            env=env,
+            env=runner_env,
             text=True,
             capture_output=True,
             check=False,
@@ -347,7 +362,7 @@ def test_local_install_wires_cli_and_runner() -> None:
         bad_shape.chmod(0o755)
         bad_shape_runner = subprocess.run(
             [str(runner), "--converge-bin", str(bad_shape), "--json"],
-            env=env,
+            env=runner_env,
             text=True,
             capture_output=True,
             check=False,

@@ -13,19 +13,23 @@ from pathlib import Path
 from typing import Any
 
 from .acceptance import validate_acceptance_payload
+from .agents.contracts import SOURCE_FIX_RUNNER, validate_fix_runner_request, validate_fix_runner_result
+from .agents.openclaw_cli import OpenClawAgentCliBackend, OpenClawNativePanelCliBackend
 from .checkpoint import record_checkpoint, validate_evidence_artifact_refs, validate_evidence_object
 from .command_adapter import EXPECTED_PRODUCTION_ROUTE_PARITY, build_dry_run_packet
 from .continuation import TERMINAL_CONTINUATION_TARGETS, current_cursor, default_continuation_plan
 from .messages import VALID_VERDICTS, lint_verdict_residuals, normalize_residuals, progress_block
-from .modes.conv import CONV_REPORT_ARTIFACT_ID, ConvHandler, ConvRecord, ConvRound, render_conv_report, validate_conv_state
+from .modes.conv import CONV_REPORT_ARTIFACT_ID, ConvHandler, ConvRecord, ConvRound, _validate_fix_runner_mutation_proof, render_conv_report, validate_conv_state
 from .modes.conv_execution import CONV_LOCAL_RUNNER_REF, CONV_ROUND_EXECUTION_ARTIFACT_ID
 from .modes.evidence_contract import validate_phase5a_evidence_contract
+from .modes.fix_runner import run_bounded_local_fix_runner, write_fix_runner_result
 from .modes.goal import (
     GOAL_PLAN_ARTIFACT_ID,
     PHASE5B_PARENT_SUMMARY_MODE,
     PHASE5B_OWNER_WAIVER_MODE,
     GoalHandler,
     GoalRecord,
+    _native_child_panel_proof,
     phase5b_child_delivery_mode,
     render_goal_plan,
     validate_goal_state,
@@ -33,7 +37,16 @@ from .modes.goal import (
 )
 from .modes.plan import PlanHandler
 from .modes.verify import VERIFY_REPORT_ARTIFACT_ID, VerifyHandler, VerifyRecord, render_verify_report
-from .modes.specialist_panel import SPECIALIST_REVIEW_RUNNER_REF, load_specialist_packet, specialist_artifact_id, validate_specialist_state
+from .modes.specialist_panel import (
+    NATIVE_PANEL_RUNNER_REF,
+    SOURCE_NATIVE_AGENT_PANEL,
+    SOURCE_RUNNER_PROVIDED_PACKET,
+    SPECIALIST_REVIEW_RUNNER_REF,
+    load_specialist_packet,
+    specialist_artifact_id,
+    validate_native_specialist_state,
+    validate_specialist_state,
+)
 from .recovery import recover_workflow, scan_workflows, watchdog_check
 from .route_parity import validate_phase6_route_parity_evidence
 from .artifacts import now_iso, record_workflow_artifact, sha256_file, validate_manifest_entry
@@ -131,6 +144,8 @@ def cmd_plan(args: argparse.Namespace) -> int:
 def cmd_verify(args: argparse.Namespace) -> int:
     if args.visible_delivery:
         _validate_visible_delivery_arg(args.visible_delivery)
+    native_agent_backend = _native_verify_backend(args)
+    _validate_verify_execution_inputs(args, native_agent_backend=native_agent_backend)
     store = WorkflowStore(args.state_root)
     _validate_recovery_resume_target(args, store)
     try:
@@ -153,17 +168,112 @@ def cmd_verify(args: argparse.Namespace) -> int:
     verify = VerifyHandler(store).finalize_verify(
         workflow["workflow_id"],
         specialist_findings=load_specialist_packet(getattr(args, "structured_findings_file", None)),
+        native_agent_backend=native_agent_backend,
         recovery_lease_id=args.recovery_lease_id,
         recovery_lease_holder=args.recovery_lease_holder,
     )
     workflow = store.load_workflow(workflow["workflow_id"])
+    _reject_implicit_scaffold_result(args, workflow, mode="verify")
     print_json({"ok": True, "workflow": workflow, **verify})
     return 0
+
+
+def _native_verify_backend(args: argparse.Namespace) -> OpenClawNativePanelCliBackend | None:
+    if not getattr(args, "native_panel_openclaw_cli", False):
+        return None
+    return OpenClawNativePanelCliBackend(
+        child_backend=OpenClawAgentCliBackend(openclaw_bin=getattr(args, "native_panel_openclaw_bin", "openclaw"))
+    )
+
+
+def _uses_structured_findings(args: argparse.Namespace) -> bool:
+    return bool(getattr(args, "structured_findings_file", None))
+
+
+def _validate_verify_execution_inputs(
+    args: argparse.Namespace,
+    *,
+    native_agent_backend: OpenClawNativePanelCliBackend | None,
+) -> None:
+    if native_agent_backend is not None and _uses_structured_findings(args):
+        raise ValueError("verify native OpenClaw CLI panel cannot be combined with runner-provided structured findings")
+    _reject_scaffold_with_real_inputs(args, mode="verify", native_agent_backend=native_agent_backend, runner_inputs=("structured_findings_file",))
+
+
+def _validate_conv_execution_inputs(
+    args: argparse.Namespace,
+    *,
+    native_agent_backend: OpenClawNativePanelCliBackend | None,
+) -> None:
+    if native_agent_backend is not None and _uses_structured_findings(args):
+        raise ValueError("conv native OpenClaw CLI panel cannot be combined with runner-provided structured findings")
+    _reject_scaffold_with_real_inputs(
+        args,
+        mode="conv",
+        native_agent_backend=native_agent_backend,
+        runner_inputs=("structured_findings_file", "fix_runner_result_file"),
+    )
+
+
+def _validate_goal_execution_inputs(
+    args: argparse.Namespace,
+    *,
+    native_agent_backend: OpenClawNativePanelCliBackend | None,
+) -> None:
+    _reject_scaffold_with_real_inputs(args, mode="goal", native_agent_backend=native_agent_backend, runner_inputs=())
+
+
+def _reject_scaffold_with_real_inputs(
+    args: argparse.Namespace,
+    *,
+    mode: str,
+    native_agent_backend: OpenClawNativePanelCliBackend | None,
+    runner_inputs: tuple[str, ...],
+) -> None:
+    if not getattr(args, "scaffold_only", False):
+        return
+    active_runner_inputs = [name for name in runner_inputs if getattr(args, name, None)]
+    if native_agent_backend is not None or active_runner_inputs:
+        raise ValueError(f"{mode} --scaffold-only cannot be combined with real execution inputs")
+
+
+def _reject_implicit_scaffold_result(args: argparse.Namespace, workflow: dict[str, Any], *, mode: str) -> None:
+    if getattr(args, "scaffold_only", False):
+        return
+    final_status = workflow.get("final_status") or {}
+    state = workflow.get(f"{mode}_state") or {}
+    if mode == "goal":
+        child_status = state.get("child_collection_status") or {}
+        child_reasons = [
+            child.get("stop_reason")
+            for child in child_status.get("children") or []
+            if isinstance(child, dict)
+        ]
+        implicit_scaffold = final_status.get("stop_reason") == "blocked_child_workflow_failed" and "blocked_no_execution_evidence" in child_reasons
+    else:
+        implicit_scaffold = (
+            final_status.get("stop_reason") == "blocked_no_execution_evidence"
+            and state.get("execution_performed") is not True
+            and state.get("synthetic_report") is True
+        )
+    if not implicit_scaffold:
+        return
+    options = {
+        "verify": "--native-panel-openclaw-cli or --structured-findings-file",
+        "conv": "--native-panel-openclaw-cli, --structured-findings-file, or --fix-runner-result-file",
+        "goal": "--native-panel-openclaw-cli",
+    }[mode]
+    raise ValueError(
+        f"{mode} execution_backend_missing: user-facing Converge {mode} requires a real execution backend "
+        f"({options}); use --scaffold-only only for internal scaffold/report contract checks"
+    )
 
 
 def cmd_conv(args: argparse.Namespace) -> int:
     if args.visible_delivery:
         _validate_visible_delivery_arg(args.visible_delivery)
+    native_agent_backend = _native_verify_backend(args)
+    _validate_conv_execution_inputs(args, native_agent_backend=native_agent_backend)
     store = WorkflowStore(args.state_root)
     _validate_recovery_resume_target(args, store)
     try:
@@ -186,17 +296,44 @@ def cmd_conv(args: argparse.Namespace) -> int:
     conv = ConvHandler(store).finalize_conv(
         workflow["workflow_id"],
         specialist_findings=load_specialist_packet(getattr(args, "structured_findings_file", None)),
+        native_agent_backend=native_agent_backend,
+        fix_runner_result=_load_optional_json_object(getattr(args, "fix_runner_result_file", None)),
+        fix_runner_source_root=getattr(args, "fix_runner_source_root", None),
         recovery_lease_id=args.recovery_lease_id,
         recovery_lease_holder=args.recovery_lease_holder,
     )
     workflow = store.load_workflow(workflow["workflow_id"])
+    _reject_implicit_scaffold_result(args, workflow, mode="conv")
     print_json({"ok": True, "workflow": workflow, **conv})
     return 0
+
+
+def cmd_fix_runner(args: argparse.Namespace) -> int:
+    store = WorkflowStore(args.state_root)
+    workflow = store.load_workflow(args.workflow_id)
+    if workflow.get("kind") != "conv":
+        raise ValueError("fix-runner can only operate on conv workflows")
+    result = run_bounded_local_fix_runner(workflow, source_root=args.source_root)
+    if args.output_file:
+        write_fix_runner_result(args.output_file, result)
+    print_json({"ok": True, "result": result, "output_file": str(args.output_file) if args.output_file else None})
+    return 0
+
+
+def _load_optional_json_object(path: str | None) -> dict[str, Any] | None:
+    if not path:
+        return None
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("JSON input file must contain an object")
+    return payload
 
 
 def cmd_goal(args: argparse.Namespace) -> int:
     if args.visible_delivery:
         _validate_visible_delivery_arg(args.visible_delivery)
+    native_agent_backend = _native_verify_backend(args)
+    _validate_goal_execution_inputs(args, native_agent_backend=native_agent_backend)
     store = WorkflowStore(args.state_root)
     _validate_recovery_resume_target(args, store)
     try:
@@ -218,10 +355,12 @@ def cmd_goal(args: argparse.Namespace) -> int:
             return 0
     goal = GoalHandler(store).finalize_goal(
         workflow["workflow_id"],
+        native_agent_backend=native_agent_backend,
         recovery_lease_id=args.recovery_lease_id,
         recovery_lease_holder=args.recovery_lease_holder,
     )
     workflow = store.load_workflow(workflow["workflow_id"])
+    _reject_implicit_scaffold_result(args, workflow, mode="goal")
     print_json({"ok": True, "workflow": workflow, **goal})
     return 0
 
@@ -2118,6 +2257,14 @@ def _validate_goal_child_execution(
         ]
         if child_ref.get("evidence_refs") != expected_evidence_refs:
             raise ValueError("goal child workflow ref evidence_refs must match child workflow")
+        expected_native_proof = _native_child_panel_proof(child, role=child_ref["kind"])
+        if child_ref.get("native_agent_panel_proof") != expected_native_proof:
+            raise ValueError("goal child workflow native_agent_panel_proof must match child workflow")
+        if expected_native_proof is not None:
+            child_state = child.get(f"{child_ref['kind']}_state")
+            if not isinstance(child_state, dict):
+                raise ValueError("goal child workflow native_agent_panel_proof requires child mode state")
+            _validate_specialist_execution_evidence(store, child, child_state, mode=child_ref["kind"])
         intent_events = [
             event
             for event in events
@@ -2484,10 +2631,22 @@ def _validate_specialist_execution_evidence(
     refs = state.get("execution_evidence_refs")
     if not isinstance(refs, list) or artifact_id not in refs:
         raise ValueError(f"{mode} specialist execution evidence refs must include {artifact_id}")
-    if state.get("runner_ref") != SPECIALIST_REVIEW_RUNNER_REF:
-        raise ValueError(f"{mode} specialist execution has untrusted runner_ref")
     specialist_state = _specialist_state_from_mode_state(state)
-    validate_specialist_state(specialist_state)
+    runner_ref = state.get("runner_ref")
+    if runner_ref == SPECIALIST_REVIEW_RUNNER_REF:
+        if state.get("execution_source") != SOURCE_RUNNER_PROVIDED_PACKET:
+            raise ValueError(f"{mode} runner-provided specialist evidence must carry runner_provided_packet execution_source")
+        if state.get("satisfies_native_agent_panel") is not False:
+            raise ValueError(f"{mode} runner-provided specialist evidence must not satisfy native_agent_panel parity")
+        validate_specialist_state(specialist_state)
+    elif runner_ref == NATIVE_PANEL_RUNNER_REF:
+        if state.get("execution_source") != SOURCE_NATIVE_AGENT_PANEL:
+            raise ValueError(f"{mode} native specialist evidence must carry native_agent_panel execution_source")
+        if state.get("satisfies_native_agent_panel") is not True:
+            raise ValueError(f"{mode} native specialist evidence must satisfy native_agent_panel parity")
+        validate_native_specialist_state(specialist_state)
+    else:
+        raise ValueError(f"{mode} specialist execution has untrusted runner_ref")
     evidence = [
         item
         for item in state.get("evidence", [])
@@ -2518,8 +2677,8 @@ def _validate_specialist_execution_evidence(
         if len(matches) != 1:
             raise ValueError(f"{mode} specialist execution requires exactly one {event_type} event")
         payload = matches[0].get("payload") or {}
-        if payload.get("runner_ref") != SPECIALIST_REVIEW_RUNNER_REF:
-            raise ValueError(f"{mode} specialist event has untrusted runner_ref")
+        if payload.get("runner_ref") != runner_ref:
+            raise ValueError(f"{mode} specialist event runner_ref must match state")
         if payload.get("mode") != mode:
             raise ValueError(f"{mode} specialist event mode must match")
         if payload.get("finding_count") != len(specialist_state["agent_finding_refs"]):
@@ -2546,7 +2705,7 @@ def _validate_specialist_execution_evidence(
 
 
 def _specialist_state_from_mode_state(state: dict[str, Any]) -> dict[str, Any]:
-    return {key: state[key] for key in (
+    specialist_state = {key: state[key] for key in (
         "review_panel_spec",
         "deterministic_check_results",
         "agent_finding_refs",
@@ -2569,6 +2728,9 @@ def _specialist_state_from_mode_state(state: dict[str, Any]) -> dict[str, Any]:
         "agent_result_collection_status",
         "recovery_resume_cursor",
     )}
+    if "specialist_max_rounds" in state:
+        specialist_state["max_rounds"] = state["specialist_max_rounds"]
+    return specialist_state
 
 
 def _validate_conv_state_integrity(store: WorkflowStore, workflow: dict[str, Any]) -> None:
@@ -2640,6 +2802,7 @@ def _validate_conv_state_integrity(store: WorkflowStore, workflow: dict[str, Any
         raise ValueError("conv report artifact must match conv_state")
     if state.get("execution_performed") is True:
         _validate_conv_execution_evidence(store, workflow, state)
+    _validate_conv_fix_runner_evidence(store, workflow, state)
 
 
 def _validate_conv_execution_evidence(store: WorkflowStore, workflow: dict[str, Any], state: dict[str, Any]) -> None:
@@ -2744,6 +2907,97 @@ def _validate_conv_execution_evidence(store: WorkflowStore, workflow: dict[str, 
             raise ValueError("conv round_summary follow_up_required must match conv_state")
         if summary_payload.get("evidence_sufficient") != round_state["evidence_sufficient"]:
             raise ValueError("conv round_summary evidence_sufficient must match conv_state")
+
+
+def _validate_conv_fix_runner_evidence(store: WorkflowStore, workflow: dict[str, Any], state: dict[str, Any]) -> None:
+    if not state.get("fix_runner_required"):
+        return
+    requests = state.get("fix_runner_request_refs")
+    results = state.get("fix_runner_result_refs") or []
+    status = state.get("fix_runner_collection_status")
+    if not isinstance(requests, list) or not requests or not isinstance(status, dict):
+        raise ValueError("conv fix_runner evidence requires request refs and collection status")
+    for request in requests:
+        validate_fix_runner_request(request)
+    for result in results:
+        validate_fix_runner_result(result)
+    events = _read_workflow_events(store, workflow["workflow_id"])
+    matches = [event for event in events if event.get("event_type") == "fix_runner_requested"]
+    if len(matches) != 1:
+        raise ValueError("conv fix_runner evidence requires exactly one fix_runner_requested event")
+    payload = matches[0].get("payload") or {}
+    if payload.get("source") != SOURCE_FIX_RUNNER:
+        raise ValueError("conv fix_runner event source must match fix_runner")
+    if payload.get("request_ids") != [item["runner_id"] for item in requests]:
+        raise ValueError("conv fix_runner event request_ids must match state")
+    accepted_change_refs = [
+        item["change_ref"]
+        for request in requests
+        for item in request["accepted_change_refs"]
+    ]
+    if payload.get("accepted_change_refs") != accepted_change_refs:
+        raise ValueError("conv fix_runner event accepted_change_refs must match state")
+    if results:
+        if payload.get("collection_status") not in {"pending", status.get("status")}:
+            raise ValueError("conv fix_runner event collection_status must match request or final state")
+        if payload.get("collection_status") == status.get("status") and payload.get("collection_cursor") != status.get("collection_cursor"):
+            raise ValueError("conv fix_runner event collection_cursor must match state")
+    else:
+        if payload.get("collection_status") != status.get("status"):
+            raise ValueError("conv fix_runner event collection_status must match state")
+        if payload.get("collection_cursor") != status.get("collection_cursor"):
+            raise ValueError("conv fix_runner event collection_cursor must match state")
+    if payload.get("requires_follow_up_round") != status.get("requires_follow_up_round"):
+        raise ValueError("conv fix_runner event follow-up marker must match state")
+    if not results:
+        return
+    if status.get("status") != "complete":
+        raise ValueError("conv fix_runner completed results require complete collection status")
+    if status.get("completed_result_ids") != [item["result_id"] for item in results]:
+        raise ValueError("conv fix_runner completed_result_ids must match state")
+    request_ids = {item["runner_id"] for item in requests}
+    for result in results:
+        _validate_fix_runner_mutation_proof(result, source_root=Path(result["source_root"]))
+        if result["runner_id"] not in request_ids:
+            raise ValueError("conv fix_runner result runner_id must match request ids")
+        artifact_refs = result.get("artifact_refs") or []
+        if len(artifact_refs) != 1:
+            raise ValueError("conv fix_runner result requires exactly one artifact ref")
+        artifacts = [
+            artifact
+            for artifact in workflow.get("artifacts", [])
+            if isinstance(artifact, dict) and artifact.get("artifact_id") == artifact_refs[0]
+        ]
+        if len(artifacts) != 1 or artifacts[0].get("kind") != "evidence":
+            raise ValueError("conv fix_runner result artifact must be registered exactly once as evidence")
+        artifact_payload = json.loads(Path(artifacts[0]["path"]).read_text(encoding="utf-8"))
+        request = next(item for item in requests if item["runner_id"] == result["runner_id"])
+        if artifact_payload != {"request": request, "result": result}:
+            raise ValueError("conv fix_runner result artifact must match state")
+    completed = [event for event in events if event.get("event_type") == "fix_runner_completed"]
+    if len(completed) != 1:
+        raise ValueError("conv fix_runner completed results require exactly one fix_runner_completed event")
+    completed_payload = completed[0].get("payload") or {}
+    if completed_payload.get("source") != SOURCE_FIX_RUNNER:
+        raise ValueError("conv fix_runner completed event source must match fix_runner")
+    if completed_payload.get("request_ids") != [item["runner_id"] for item in requests]:
+        raise ValueError("conv fix_runner completed event request_ids must match state")
+    if completed_payload.get("result_ids") != [item["result_id"] for item in results]:
+        raise ValueError("conv fix_runner completed event result_ids must match state")
+    if completed_payload.get("artifact_refs") != [
+        artifact_id
+        for result in results
+        for artifact_id in result["artifact_refs"]
+    ]:
+        raise ValueError("conv fix_runner completed event artifact_refs must match state")
+    if completed_payload.get("completed_result_count") != len(results):
+        raise ValueError("conv fix_runner completed event count must match state")
+    if completed_payload.get("collection_cursor") != status.get("collection_cursor"):
+        raise ValueError("conv fix_runner completed event collection_cursor must match state")
+    if completed_payload.get("requires_follow_up_round") != status.get("requires_follow_up_round"):
+        raise ValueError("conv fix_runner completed event follow-up marker must match state")
+    if completed_payload.get("follow_up_completed") is not True:
+        raise ValueError("conv fix_runner completed event must prove follow-up completion")
 
 
 def _validate_report_event_integrity(
@@ -2889,6 +3143,13 @@ def build_parser() -> argparse.ArgumentParser:
     verify.add_argument("--owner-session-key")
     verify.add_argument("--visible-delivery", type=parse_json)
     verify.add_argument("--structured-findings-file")
+    verify.add_argument("--native-panel-openclaw-cli", action="store_true")
+    verify.add_argument("--native-panel-openclaw-bin", default="openclaw")
+    verify.add_argument(
+        "--scaffold-only",
+        action="store_true",
+        help="internal/dev-only report scaffold mode; user-facing verify requires a real execution backend",
+    )
     verify.add_argument("--recovery-lease-id")
     verify.add_argument("--recovery-lease-holder")
     verify.add_argument("--json", action="store_true", help=json_help)
@@ -2899,6 +3160,13 @@ def build_parser() -> argparse.ArgumentParser:
     goal.add_argument("--workflow-id")
     goal.add_argument("--owner-session-key")
     goal.add_argument("--visible-delivery", type=parse_json)
+    goal.add_argument("--native-panel-openclaw-cli", action="store_true")
+    goal.add_argument("--native-panel-openclaw-bin", default="openclaw")
+    goal.add_argument(
+        "--scaffold-only",
+        action="store_true",
+        help="internal/dev-only child workflow scaffold mode; user-facing goal requires a real execution backend",
+    )
     goal.add_argument("--recovery-lease-id")
     goal.add_argument("--recovery-lease-holder")
     goal.add_argument("--json", action="store_true", help=json_help)
@@ -2910,10 +3178,26 @@ def build_parser() -> argparse.ArgumentParser:
     conv.add_argument("--owner-session-key")
     conv.add_argument("--visible-delivery", type=parse_json)
     conv.add_argument("--structured-findings-file")
+    conv.add_argument("--fix-runner-result-file")
+    conv.add_argument("--fix-runner-source-root", type=Path)
+    conv.add_argument("--native-panel-openclaw-cli", action="store_true")
+    conv.add_argument("--native-panel-openclaw-bin", default="openclaw")
+    conv.add_argument(
+        "--scaffold-only",
+        action="store_true",
+        help="internal/dev-only report scaffold mode; user-facing conv requires a real execution backend",
+    )
     conv.add_argument("--recovery-lease-id")
     conv.add_argument("--recovery-lease-holder")
     conv.add_argument("--json", action="store_true", help=json_help)
     conv.set_defaults(func=cmd_conv)
+
+    fix_runner = sub.add_parser("fix-runner")
+    fix_runner.add_argument("--workflow-id", required=True)
+    fix_runner.add_argument("--source-root", type=Path, required=True)
+    fix_runner.add_argument("--output-file", type=Path)
+    fix_runner.add_argument("--json", action="store_true", help=json_help)
+    fix_runner.set_defaults(func=cmd_fix_runner)
 
     command_dry_run = sub.add_parser("command-dry-run")
     command_dry_run.add_argument("--raw-message", required=True)

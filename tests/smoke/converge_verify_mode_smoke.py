@@ -13,9 +13,11 @@ try:
 except ModuleNotFoundError:
     from tests.smoke.smoke_helpers import ROOT, assert_phase5a_contract, assert_phase5a_accepted_change_stale_rejected, assert_phase5a_freshness_rejected, assert_phase5a_missing_gate_rejected, assert_phase5a_stale_hash_rejected, assert_phase5a_terminal_status_rejected, assert_true, events, run, run_fail, workflow, write_events, write_workflow
 from converge.artifacts import sha256_file  # noqa: E402
+from converge.agents.contracts import NativeChildResult  # noqa: E402
 from converge.messages import format_final  # noqa: E402
 from converge.modes.specialist_panel import _stable_hash, validate_specialist_state  # noqa: E402
-from converge.modes.verify import build_verify_record, render_verify_report  # noqa: E402
+from converge.modes.verify import VerifyHandler, build_verify_record, render_verify_report  # noqa: E402
+from converge.store import WorkflowStore  # noqa: E402
 
 
 def main() -> int:
@@ -61,6 +63,7 @@ def main() -> int:
             "verify",
             "--text",
             "Audit execution-required target",
+            "--scaffold-only",
             "--workflow-id",
             "verify-execution-required-blocked",
             "--owner-session-key",
@@ -86,10 +89,28 @@ def main() -> int:
         )
         run("validate", "--workflow-id", "verify-execution-required-blocked", state_root=state_root)
 
+        implicit_scaffold = run_fail(
+            "verify",
+            "--text",
+            "Audit execution-required target",
+            "--workflow-id",
+            "verify-implicit-scaffold-rejected",
+            "--owner-session-key",
+            "session:test",
+            "--visible-delivery",
+            visible_delivery,
+            state_root=state_root,
+        )
+        assert_true(
+            "verify execution_backend_missing" in implicit_scaffold["error"],
+            "verify should reject implicit scaffold mode without a real execution backend",
+        )
+
         read_only_verify = run(
             "verify",
             "--text",
             "Review PR read-only with no code changes but verify execution evidence",
+            "--scaffold-only",
             "--workflow-id",
             "verify-read-only-still-execution-required",
             "--owner-session-key",
@@ -213,6 +234,28 @@ def main() -> int:
         write_events(state_root, "verify-deterministic-file-evidence", deterministic_events)
 
         packet = specialist_packet()
+        false_native_packet = json.loads(json.dumps(packet))
+        false_native_packet["findings"][0]["source_provenance"] = "native_openclaw_session"
+        false_native_path = state_root / "verify-false-native-packet.json"
+        false_native_path.write_text(json.dumps(false_native_packet), encoding="utf-8")
+        false_native_result = run_fail(
+            "verify",
+            "--text",
+            "Verify runner packet must not claim native provenance",
+            "--workflow-id",
+            "verify-false-native-packet",
+            "--owner-session-key",
+            "session:test",
+            "--visible-delivery",
+            visible_delivery,
+            "--structured-findings-file",
+            str(false_native_path),
+            state_root=state_root,
+        )
+        assert_true(
+            "must not claim native_openclaw_session provenance" in false_native_result["error"],
+            "runner-provided packets must not claim native source provenance",
+        )
         packet_path = state_root / "verify-specialist-findings.json"
         packet_path.write_text(json.dumps(packet), encoding="utf-8")
         specialist_verify = run(
@@ -232,6 +275,8 @@ def main() -> int:
         specialist_state = specialist_verify["verify_state"]
         assert_true(specialist_verify["status"] == "completed_unreported", "structured findings should allow verify completion")
         assert_true(specialist_state["execution_capability"] == "delegated_agents", "structured findings should use delegated_agents capability")
+        assert_true(specialist_state["execution_source"] == "runner_provided_packet", "structured findings should expose runner packet execution source")
+        assert_true(specialist_state["satisfies_native_agent_panel"] is False, "structured findings should not satisfy native panel parity")
         assert_true(specialist_state["execution_evidence_refs"] == ["verify-specialist-findings"], "structured findings should bind specialist evidence")
         assert_true(len(specialist_state["review_panel_spec"]["profiles"]) == 3, "structured findings should preserve panel profiles")
         assert_true(
@@ -246,6 +291,28 @@ def main() -> int:
         )
         assert_true(len(specialist_state["agent_request_refs"]) == 3, "structured findings should persist one agent request per profile")
         assert_true(len(specialist_state["agent_result_refs"]) == len(specialist_state["agent_finding_refs"]), "structured findings should persist agent results")
+        assert_true(
+            all(
+                request["execution_source"] == "runner_provided_packet"
+                and request["satisfies_native_agent_panel"] is False
+                and request["tool_smoke_status"] == "not_applicable"
+                and request["session_key"] is None
+                and request["agent_session_ref"] is None
+                for request in specialist_state["agent_request_refs"]
+            ),
+            "structured runner packet requests should not satisfy native agent panel parity",
+        )
+        assert_true(
+            all(
+                result["execution_source"] == "runner_provided_packet"
+                and result["satisfies_native_agent_panel"] is False
+                and result["tool_smoke_status"] == "not_applicable"
+                and result["session_key"] is None
+                and result["agent_session_ref"] is None
+                for result in specialist_state["agent_result_refs"]
+            ),
+            "structured runner packet results should not invent native session evidence",
+        )
         assert_true(len(specialist_state["profile_registry_refs"]) == 5, "structured findings should persist reviewer/check/runner profile specs")
         assert_true(
             {item["kind"] for item in specialist_state["profile_registry_refs"]} == {"reviewer", "check", "runner"},
@@ -320,6 +387,173 @@ def main() -> int:
         )
         run("validate", "--workflow-id", "verify-specialist-findings", state_root=state_root)
         specialist_events = events(state_root, "verify-specialist-findings")
+
+        native_store = WorkflowStore(state_root)
+        native_workflow = native_store.create_workflow(
+            kind="verify",
+            text="Verify with native OpenClaw child panel",
+            workflow_id="verify-native-panel",
+            owner_session_key="session:test",
+            visible_delivery={"channel": "telegram", "target": "test"},
+        )
+        VerifyHandler(native_store).finalize_verify(native_workflow["workflow_id"], native_agent_backend=FakeNativePanelBackend())
+        native_verify = workflow(state_root, "verify-native-panel")
+        native_state = native_verify["verify_state"]
+        assert_true(native_verify["status"] == "completed_unreported", "native verify panel should allow completion")
+        assert_true(native_state["execution_source"] == "native_agent_panel", "native verify should carry native execution source")
+        assert_true(native_state["satisfies_native_agent_panel"] is True, "native verify should satisfy native panel parity")
+        assert_true(len(native_state["agent_request_refs"]) == 3, "native verify should launch exactly three child requests")
+        assert_true(len(native_state["agent_result_refs"]) == 3, "native verify should collect one result per child")
+        assert_true(
+            all(item["session_key"].startswith("agent:main:converge-") for item in native_state["agent_request_refs"]),
+            "native verify should persist explicit child session keys",
+        )
+        assert_true(
+            all(item["tool_smoke_status"] == "passed" and item["tool_smoke_evidence"] for item in native_state["agent_result_refs"]),
+            "native verify results should carry coordinator-verified tool-smoke evidence",
+        )
+        assert_true(
+            all(
+                item["profile_id"].startswith("native-verify-")
+                and item["source_provenance"] == "native_openclaw_session"
+                for item in native_state["agent_finding_refs"]
+            ),
+            "native verify should force native finding profile/provenance onto child findings",
+        )
+        run("validate", "--workflow-id", "verify-native-panel", state_root=state_root)
+
+        fake_openclaw = _write_fake_openclaw_cli(state_root / "fake-openclaw", include_tool_smoke_evidence=True)
+        native_cli_verify = run(
+            "verify",
+            "--text",
+            "Verify native CLI child panel",
+            "--workflow-id",
+            "verify-native-cli-panel",
+            "--owner-session-key",
+            "session:test",
+            "--visible-delivery",
+            visible_delivery,
+            "--native-panel-openclaw-cli",
+            "--native-panel-openclaw-bin",
+            str(fake_openclaw),
+            state_root=state_root,
+        )
+        native_cli_state = native_cli_verify["workflow"]["verify_state"]
+        assert_true(native_cli_verify["workflow"]["status"] == "completed_unreported", "native CLI verify panel should complete")
+        assert_true(native_cli_state["execution_source"] == "native_agent_panel", "native CLI verify should carry native source")
+        assert_true(native_cli_state["satisfies_native_agent_panel"] is True, "native CLI verify should satisfy panel only after coordinator smoke")
+        assert_true(
+            all(
+                item["tool_smoke_evidence"]["kind"] == "coordinator_verified_child_tool_smoke_session_and_trajectory_binding"
+                and item["tool_smoke_evidence"]["session_store_proof"]["session_key"] == item["session_key"]
+                and item["tool_smoke_evidence"]["trajectory_proof"]["session_key"] == item["session_key"]
+                and item["tool_smoke_evidence"]["trajectory_proof"]["tool_call_count"] >= 1
+                for item in native_cli_state["agent_result_refs"]
+            ),
+            "native CLI verify should persist coordinator-verified smoke, session, and trajectory proof",
+        )
+        run("validate", "--workflow-id", "verify-native-cli-panel", state_root=state_root)
+
+        fake_openclaw_no_evidence = _write_fake_openclaw_cli(state_root / "fake-openclaw-no-evidence", include_tool_smoke_evidence=False)
+        native_cli_missing_smoke = run_fail(
+            "verify",
+            "--text",
+            "Verify native CLI child panel without smoke evidence",
+            "--workflow-id",
+            "verify-native-cli-missing-smoke",
+            "--owner-session-key",
+            "session:test",
+            "--visible-delivery",
+            visible_delivery,
+            "--native-panel-openclaw-cli",
+            "--native-panel-openclaw-bin",
+            str(fake_openclaw_no_evidence),
+            state_root=state_root,
+        )
+        assert_true(
+            "tool_smoke_evidence" in native_cli_missing_smoke["error"],
+            "native CLI verify should fail closed when coordinator cannot verify child smoke evidence",
+        )
+
+        fake_openclaw_failed_smoke = _write_fake_openclaw_cli(
+            state_root / "fake-openclaw-failed-smoke",
+            include_tool_smoke_evidence=True,
+            tool_smoke_status="failed",
+        )
+        native_cli_failed_smoke = run_fail(
+            "verify",
+            "--text",
+            "Verify native CLI child panel with failed smoke",
+            "--workflow-id",
+            "verify-native-cli-failed-smoke",
+            "--owner-session-key",
+            "session:test",
+            "--visible-delivery",
+            visible_delivery,
+            "--native-panel-openclaw-cli",
+            "--native-panel-openclaw-bin",
+            str(fake_openclaw_failed_smoke),
+            state_root=state_root,
+        )
+        assert_true(
+            "did not complete" in native_cli_failed_smoke["error"] or "tool smoke" in native_cli_failed_smoke["error"],
+            "native CLI verify should not promote failed child tool smoke",
+        )
+
+        fake_openclaw_no_session = _write_fake_openclaw_cli(
+            state_root / "fake-openclaw-no-session",
+            include_tool_smoke_evidence=True,
+            include_session_store_proof=False,
+        )
+        native_cli_missing_session = run_fail(
+            "verify",
+            "--text",
+            "Verify native CLI child panel without session store proof",
+            "--workflow-id",
+            "verify-native-cli-missing-session-proof",
+            "--owner-session-key",
+            "session:test",
+            "--visible-delivery",
+            visible_delivery,
+            "--native-panel-openclaw-cli",
+            "--native-panel-openclaw-bin",
+            str(fake_openclaw_no_session),
+            state_root=state_root,
+        )
+        assert_true(
+            "session_key" in native_cli_missing_session["error"],
+            "native CLI verify should fail closed when OpenClaw session store proof is missing",
+        )
+
+        broken_native = json.loads(json.dumps(native_verify))
+        broken_native["verify_state"]["agent_result_refs"][0]["tool_smoke_evidence"] = None
+        write_workflow(state_root, "verify-native-panel", broken_native)
+        broken_native_result = run_fail("validate", "--workflow-id", "verify-native-panel", state_root=state_root)
+        assert_true(
+            "verify_state must match terminal checkpoint" in broken_native_result["error"],
+            "native verify should fail closed if persisted evidence is altered",
+        )
+        write_workflow(state_root, "verify-native-panel", native_verify)
+
+        tampered_cli = json.loads(json.dumps(native_cli_verify["workflow"]))
+        tampered_cli["verify_state"]["agent_result_refs"][0]["tool_smoke_evidence"]["session_store_proof"]["session_key"] = "agent:main:converge-other"
+        write_workflow(state_root, "verify-native-cli-panel", tampered_cli)
+        tampered_cli_result = run_fail("validate", "--workflow-id", "verify-native-cli-panel", state_root=state_root)
+        assert_true(
+            "verify_state must match terminal checkpoint" in tampered_cli_result["error"],
+            "native CLI verify should fail closed if persisted session-store proof is altered",
+        )
+        write_workflow(state_root, "verify-native-cli-panel", native_cli_verify["workflow"])
+
+        tampered_trajectory = json.loads(json.dumps(native_cli_verify["workflow"]))
+        tampered_trajectory["verify_state"]["agent_result_refs"][0]["tool_smoke_evidence"]["trajectory_proof"]["tool_call_count"] = 0
+        write_workflow(state_root, "verify-native-cli-panel", tampered_trajectory)
+        tampered_trajectory_result = run_fail("validate", "--workflow-id", "verify-native-cli-panel", state_root=state_root)
+        assert_true(
+            "verify_state must match terminal checkpoint" in tampered_trajectory_result["error"],
+            "native CLI verify should fail closed if persisted trajectory proof is altered",
+        )
+        write_workflow(state_root, "verify-native-cli-panel", native_cli_verify["workflow"])
 
         p2_packet = json.loads(json.dumps(packet))
         p2_packet["findings"][0]["severity"] = "p2"
@@ -460,6 +694,8 @@ def main() -> int:
             state_root=state_root,
         )["workflow"]
         assert_true(mixed_verify["verify_state"]["execution_capability"] == "delegated_agents", "specialist proof should not be bypassed by deterministic evidence")
+        assert_true(mixed_verify["verify_state"]["execution_source"] == "runner_provided_packet", "mixed specialist proof should remain packet-sourced")
+        assert_true(mixed_verify["verify_state"]["satisfies_native_agent_panel"] is False, "mixed specialist proof should not satisfy native panel parity")
         mixed_events = events(state_root, "verify-mixed-specialist-findings")
         write_events(
             state_root,
@@ -1147,6 +1383,182 @@ def main() -> int:
             )
             assert_true(relative_resumed["workflow"]["status"] == "completed_unreported", "relative state-root report retry should finalize")
     return 0
+
+
+def _write_fake_openclaw_cli(
+    path: Path,
+    *,
+    include_tool_smoke_evidence: bool,
+    tool_smoke_status: str = "passed",
+    include_session_store_proof: bool = True,
+    extra_workflow_ids: list[str] | None = None,
+) -> Path:
+    extra_workflow_ids = list(extra_workflow_ids or [])
+    script = f"""#!/usr/bin/env python3
+import json
+import sys
+
+if len(sys.argv) > 1 and sys.argv[1:3] == ["sessions", "--json"]:
+    sessions = []
+    if {include_session_store_proof!r}:
+        workflow_ids = [
+            "verify-native-cli-panel",
+            "verify-native-cli-missing-smoke",
+            "verify-native-cli-failed-smoke",
+            "conv-native-cli-panel",
+            "conv-native-cli-missing-smoke",
+            "conv-native-cli-failed-smoke",
+            *{extra_workflow_ids!r},
+        ]
+        for workflow_id in workflow_ids:
+            for index in range(1, 4):
+                sessions.append({{
+                    "key": f"agent:main:converge-{{workflow_id}}-{{index}}",
+                    "sessionId": f"fake-session-{{workflow_id}}-{{index}}",
+                    "updatedAt": 1779981795923 + index,
+                    "agentId": "main",
+                    "kind": "spawn-child",
+                }})
+    print(json.dumps({{"sessions": sessions}}, sort_keys=True))
+    raise SystemExit(0)
+
+if len(sys.argv) > 2 and sys.argv[1:3] == ["sessions", "export-trajectory"]:
+    import tempfile
+    session_key = sys.argv[sys.argv.index("--session-key") + 1]
+    output_name = sys.argv[sys.argv.index("--output") + 1]
+    output_dir = tempfile.mkdtemp(prefix=output_name + "-")
+    events = [
+        {{
+            "traceSchema": "openclaw-trajectory",
+            "schemaVersion": 1,
+            "traceId": "trace-fake",
+            "source": "transcript",
+            "type": "tool.call",
+            "sessionKey": session_key,
+            "data": {{"toolCallId": "call-1", "name": "exec_command", "arguments": {{"cmd": "pwd"}}}},
+        }},
+        {{
+            "traceSchema": "openclaw-trajectory",
+            "schemaVersion": 1,
+            "traceId": "trace-fake",
+            "source": "transcript",
+            "type": "tool.result",
+            "sessionKey": session_key,
+            "data": {{"toolCallId": "call-1", "name": "exec_command"}},
+        }},
+    ]
+    with open(output_dir + "/events.jsonl", "w", encoding="utf-8") as handle:
+        for event in events:
+            handle.write(json.dumps(event, sort_keys=True) + "\\n")
+    print(json.dumps({{
+        "outputDir": output_dir,
+        "displayPath": output_name,
+        "sessionId": "fake-session-" + session_key.rsplit(":", 1)[-1],
+        "eventCount": len(events),
+        "runtimeEventCount": 0,
+        "transcriptEventCount": len(events),
+        "files": ["events.jsonl"],
+    }}, sort_keys=True))
+    raise SystemExit(0)
+
+session_key = sys.argv[sys.argv.index("--session-key") + 1]
+message = sys.argv[sys.argv.index("--message") + 1]
+request = json.loads(message.split("REQUEST_JSON:\\n", 1)[1])
+finding = {{
+    "finding_id": "cli-native-" + request["profile_ref"],
+    "profile_id": request["profile_ref"],
+    "finding": "CLI child inspected the target with coordinator-verifiable tool smoke.",
+    "severity": "p3",
+    "evidence": "agent_session_ref:" + session_key,
+    "why_it_matters": "Native parity requires explicit child session evidence.",
+    "minimal_fix_or_test": "Keep coordinator tool-smoke verification required.",
+    "scope_risk": "native-cli-panel",
+    "confidence": 0.82,
+    "failure_mode": "native evidence binding",
+    "source_provenance": "native_openclaw_session",
+}}
+payload = {{
+    "tool_smoke_status": {tool_smoke_status!r},
+    "findings": [finding],
+    "error": None,
+}}
+if {include_tool_smoke_evidence!r}:
+    payload["tool_smoke_evidence"] = {{
+        "status": {tool_smoke_status!r},
+        "kind": "child_file_read_and_status_check",
+        "checked_at": "2026-05-29T00:00:00Z",
+        "session_key": session_key,
+        "agent_session_ref": session_key,
+    }}
+print(json.dumps({{"response": json.dumps(payload, sort_keys=True)}}, sort_keys=True))
+"""
+    path.write_text(script, encoding="utf-8")
+    path.chmod(0o755)
+    return path
+
+
+class FakeNativePanelBackend:
+    def run_panel(self, requests):
+        results = []
+        for index, request in enumerate(requests, start=1):
+            completed_at = f"2026-05-28T00:0{index}:00Z"
+            finding = {
+                "finding_id": "child-supplied-duplicate-native-finding",
+                "profile_id": "child-supplied-wrong-profile",
+                "finding": f"Native child {index} inspected the verify target without blocking findings.",
+                "severity": "p3",
+                "evidence": f"agent_session_ref:{request.session_key}",
+                "why_it_matters": "Verify native parity requires explicit child session evidence.",
+                "minimal_fix_or_test": "Keep validation bound to native child session refs and tool-smoke evidence.",
+                "scope_risk": "native-panel",
+                "confidence": 0.81,
+                "failure_mode": "native evidence binding",
+                "source_provenance": "runner_provided",
+            }
+            results.append(
+                NativeChildResult(
+                    request_id=request.request_id,
+                    result_id=f"native-result-{index}",
+                    agent_session_ref=request.session_key,
+                    session_key=request.session_key,
+                    tool_smoke_status="passed",
+                    profile_ref=request.profile_ref,
+                    context_hash=request.context_hash,
+                    status="completed",
+                    findings=[finding],
+                    started_at=f"2026-05-28T00:0{index}:00Z",
+                    deadline_at=f"2026-05-28T00:1{index}:00Z",
+                    completed_at=completed_at,
+                    tool_smoke_evidence={
+                        "status": "passed",
+                        "session_key": request.session_key,
+                        "agent_session_ref": request.session_key,
+                        "kind": "coordinator_verified_child_tool_smoke_session_and_trajectory_binding",
+                        "checked_at": completed_at,
+                        "verification_scope": "fixture_child_claim_bound_to_explicit_session_refs_with_openclaw_session_store_and_trajectory_tool_events",
+                        "child_tool_smoke_kind": "fixture",
+                        "child_tool_smoke_checked_at": completed_at,
+                        "session_store_proof": {
+                            "session_key": request.session_key,
+                            "session_id": f"fixture-session-{index}",
+                            "updated_at": 1779981795923 + index,
+                            "agent_id": "converge",
+                            "kind": "spawn-child",
+                        },
+                        "trajectory_proof": {
+                            "session_key": request.session_key,
+                            "output_dir": f"/tmp/fixture-trajectory-{index}",
+                            "event_count": 2,
+                            "runtime_event_count": 0,
+                            "transcript_event_count": 2,
+                            "tool_call_count": 1,
+                            "tool_result_count": 1,
+                            "tool_names": ["fixture_tool"],
+                        },
+                    },
+                )
+            )
+        return results
 
 
 def specialist_packet() -> dict:

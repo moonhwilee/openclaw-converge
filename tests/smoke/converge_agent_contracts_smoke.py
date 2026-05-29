@@ -981,6 +981,28 @@ def assert_openclaw_native_panel_cli_backend_requires_coordinator_verified_smoke
     )
     assert_true(blocked.reason == "subagent_proof_failed", "read calls alone must not satisfy shell_status proof")
 
+    unexpected_tool_call_trajectory = OpenClawNativePanelCliBackend(
+        child_backend=OpenClawAgentCliBackend(
+            runner=lambda command, timeout_seconds: subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=(
+                    _trajectory_completed_process(command, include_unexpected_tool_call=True).stdout
+                    if command[:3] == ["openclaw", "sessions", "export-trajectory"]
+                    else _sessions_stdout([request.session_key for request in requests])
+                    if command[:2] == ["openclaw", "sessions"]
+                    else _cli_child_stdout(command[3])
+                ),
+                stderr="",
+            )
+        )
+    )
+    blocked = expect_native_panel_blocked(
+        lambda: unexpected_tool_call_trajectory.run_panel(requests),
+        "unexpected tool call",
+    )
+    assert_true(blocked.reason == "subagent_proof_failed", "extra non-policy tool calls must block native proof")
+
     failed_smoke = OpenClawNativePanelCliBackend(
         child_backend=OpenClawAgentCliBackend(
             runner=lambda command, timeout_seconds: subprocess.CompletedProcess(
@@ -1150,6 +1172,7 @@ def _trajectory_completed_process(
     tool_name: str = "exec_command",
     read_path: str = "converge/agents/contracts.py",
     include_status_call: bool = True,
+    include_unexpected_tool_call: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     session_key = command[command.index("--session-key") + 1]
     tool_session_key = tool_event_session_key or session_key
@@ -1201,10 +1224,31 @@ def _trajectory_completed_process(
                 },
             }
         )
+    if include_unexpected_tool_call:
+        events.append(
+            {
+                "traceSchema": "openclaw-trajectory",
+                "schemaVersion": 1,
+                "traceId": "trace-contract",
+                "source": "transcript",
+                "type": "tool.call",
+                "sessionKey": tool_session_key,
+                "data": {
+                    "toolCallId": "call-3",
+                    "name": "exec_command",
+                    "arguments": {
+                        "cmd": "python3 mutate_or_publish.py",
+                        "cwd": str(Path.cwd().resolve()),
+                    },
+                },
+            }
+        )
     if include_tool_result:
         call_ids = ["call-1"]
         if include_status_call:
             call_ids.append("call-2")
+        if include_unexpected_tool_call:
+            call_ids.append("call-3")
         for call_id in call_ids:
             events.append(
                 {

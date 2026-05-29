@@ -554,6 +554,7 @@ def _record_native_panel_blocked(
         blocked_reason=error.reason,
         blocked_request_id=error.blocked_request_id,
         blocked_session_key=error.blocked_session_key,
+        accepted_results=error.partial_results,
     )
     residuals = normalize_residuals(
         {

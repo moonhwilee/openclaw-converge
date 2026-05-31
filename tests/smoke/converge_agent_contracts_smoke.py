@@ -46,10 +46,16 @@ from converge.agents.contracts import (  # noqa: E402
 from converge.agents.openclaw_cli import (  # noqa: E402
     NativePanelBlockedError,
     OPENCLAW_AGENT_COMMAND_TIMEOUT_CAP_SECONDS,
+    OpenClawToolCallRef,
     OpenClawAgentCliBackend,
     OpenClawNativePanelCliBackend,
     SUBAGENT_SPAWN_TIMEOUT,
     build_child_prompt,
+    _tool_call_ref_is_allowed_readonly_context,
+    _tool_call_ref_is_allowed_startup_read,
+    _tool_call_ref_is_harmless_status,
+    _tool_call_ref_is_readonly_context,
+    _tool_call_ref_covers_target_ref,
     validate_openclaw_agent_session_key,
 )
 from converge.cli import _target_refs_from_args  # noqa: E402
@@ -289,6 +295,18 @@ def assert_target_refs_manifest_validation() -> None:
         merged = merge_inline_target_ref("verify", "Audit target refs", refs, source_root=root)
         assert_true(merged[0] == {"kind": "verify_target", "text": "Audit target refs", "source_root": str(root.resolve())}, "inline target ref should be first and source-rooted")
         assert_true(merged[1] == refs[0], "manifest file ref should remain source-rooted after merge")
+        expect_error(
+            lambda: merge_inline_target_ref("verify", "Audit target refs", [{"kind": "file", "path": "/tmp/verify.py"}], source_root=root),
+            "relative",
+        )
+        expect_error(
+            lambda: merge_inline_target_ref("verify", "Audit target refs", [{"kind": "file", "path": "../verify.py"}], source_root=root),
+            "relative",
+        )
+        expect_error(
+            lambda: merge_inline_target_ref("verify", "Audit target refs", [{"kind": "file", "path": "missing.py"}], source_root=root),
+            "does not exist",
+        )
         expect_error(lambda: merge_inline_target_ref("goal", "Audit target refs", refs, source_root=root), "verify or conv")
         expect_error(lambda: merge_inline_target_ref("verify", "x" * (NATIVE_INLINE_TARGET_MAX_BYTES + 1), refs, source_root=root), "too large")
         expect_error(lambda: merge_inline_target_ref("verify", "\n".join(["line"] * (NATIVE_INLINE_TARGET_MAX_LINES + 1)), refs, source_root=root), "too many lines")
@@ -781,6 +799,289 @@ def assert_openclaw_cli_backend_uses_explicit_session_and_structured_result() ->
         "read_action must be read_files or read_artifacts" in prompt and "status_action must be shell_status" in prompt,
         "child prompt should require structured read/status smoke proof",
     )
+    assert_true(
+        "read every file target ref" in prompt
+        and "trajectory tool-call arguments" in prompt
+        and "rejects claimed refs" in prompt,
+        "child prompt should align child read claims with coordinator trajectory proof",
+    )
+    redacted_converge_read = OpenClawToolCallRef(
+        tool_call_id="read-1",
+        name="bash",
+        cwd="$WORKSPACE_DIR",
+        argument_text=json.dumps({"command": "sed -n '1,240p' $WORKSPACE_DIR/converge/modes/verify.py"}),
+    )
+    assert_true(
+        _tool_call_ref_covers_target_ref(
+            redacted_converge_read,
+            path="converge/modes/verify.py",
+            source_root=str(Path.cwd().resolve()),
+            workspace_dir=str(Path.cwd().resolve()),
+        ),
+        "trajectory proof should accept redacted $WORKSPACE_DIR paths when workspace_dir matches the Converge source root",
+    )
+    assert_true(
+        not _tool_call_ref_covers_target_ref(
+            redacted_converge_read,
+            path="converge/modes/verify.py",
+            source_root=str(Path.cwd().resolve()),
+            workspace_dir=str(Path.cwd().parent.resolve()),
+        ),
+        "trajectory proof should reject redacted $WORKSPACE_DIR paths when workspace_dir is not the Converge source root",
+    )
+    redacted_startup_read = OpenClawToolCallRef(
+        tool_call_id="startup-1",
+        name="bash",
+        cwd="$OPENCLAW_STATE_DIR/workspace",
+        argument_text=json.dumps(
+            {
+                "command": "/bin/zsh -lc \"test -f memory/2026-05-31.md && sed -n '1,220p' memory/2026-05-31.md || true\""
+            }
+        ),
+    )
+    assert_true(
+        _tool_call_ref_is_allowed_startup_read(redacted_startup_read),
+        "trajectory proof should allow redacted workspace startup memory reads",
+    )
+    harmless_date_status = OpenClawToolCallRef(
+        tool_call_id="status-1",
+        name="bash",
+        cwd="$WORKSPACE_DIR",
+        argument_text=json.dumps({"command": "/bin/zsh -lc 'date -Iseconds'"}),
+    )
+    assert_true(
+        _tool_call_ref_is_harmless_status(harmless_date_status),
+        "trajectory proof should allow a read-only timestamp shell_status check",
+    )
+    harmless_git_c_status = OpenClawToolCallRef(
+        tool_call_id="status-git-c",
+        name="bash",
+        cwd="$WORKSPACE_DIR",
+        argument_text=json.dumps({"command": f"git -C {Path.cwd().resolve()} status --short"}),
+    )
+    assert_true(
+        _tool_call_ref_is_harmless_status(harmless_git_c_status),
+        "trajectory proof should allow source-root git -C status --short as harmless shell_status",
+    )
+    source_root_rg_context = OpenClawToolCallRef(
+        tool_call_id="readonly-root-rg",
+        name="bash",
+        cwd="$WORKSPACE_DIR",
+        argument_text=json.dumps(
+            {
+                "command": "/bin/zsh -lc \"rg -n \\\"finalize_goal\\\" $WORKSPACE_DIR/converge -g '*.py'\"",
+                "cwd": "$WORKSPACE_DIR",
+            }
+        ),
+    )
+    assert_true(
+        _tool_call_ref_is_allowed_readonly_context(
+            source_root_rg_context,
+            {
+                "_workspace_dir": str(Path.cwd().resolve()),
+                "read_target_refs": [
+                    {
+                        "path": "converge/modes/goal.py",
+                        "source_root": str(Path.cwd().resolve()),
+                    }
+                ]
+            },
+        ),
+        "trajectory proof should allow read-only rg over redacted source-root prefix paths",
+    )
+    simple_read = OpenClawToolCallRef(
+        tool_call_id="read-simple",
+        name="bash",
+        cwd=str(Path.cwd().resolve()),
+        argument_text=json.dumps({"command": "sed -n '1,80p' converge/agents/contracts.py"}),
+    )
+    assert_true(_tool_call_ref_is_readonly_context(simple_read), "simple sed -n target read should be allowed")
+    chained_read = OpenClawToolCallRef(
+        tool_call_id="read-chained",
+        name="bash",
+        cwd=str(Path.cwd().resolve()),
+        argument_text=json.dumps(
+            {
+                "command": "sed -n '1,80p' converge/agents/contracts.py && sed -n '1,80p' converge/agents/openclaw_cli.py"
+            }
+        ),
+    )
+    assert_true(_tool_call_ref_is_readonly_context(chained_read), "chained read-only sed commands should be allowed")
+    readonly_pipeline = OpenClawToolCallRef(
+        tool_call_id="read-pipeline",
+        name="bash",
+        cwd=str(Path.cwd().resolve()),
+        argument_text=json.dumps({"command": "nl -ba converge/agents/contracts.py | sed -n '1,80p'"}),
+    )
+    assert_true(_tool_call_ref_is_readonly_context(readonly_pipeline), "read-only nl|sed pipeline should be allowed")
+    compact_readonly_pipeline = OpenClawToolCallRef(
+        tool_call_id="read-compact-pipeline",
+        name="bash",
+        cwd=str(Path.cwd().resolve()),
+        argument_text=json.dumps({"command": "nl -ba converge/agents/contracts.py|sed -n '1,80p'"}),
+    )
+    assert_true(
+        _tool_call_ref_is_readonly_context(compact_readonly_pipeline),
+        "compact read-only nl|sed pipeline should be allowed",
+    )
+    readonly_tail = OpenClawToolCallRef(
+        tool_call_id="read-tail",
+        name="bash",
+        cwd=str(Path.cwd().resolve()),
+        argument_text=json.dumps({"command": "tail -n 80 converge/agents/contracts.py"}),
+    )
+    assert_true(_tool_call_ref_is_readonly_context(readonly_tail), "tail target read should be allowed")
+    readonly_head = OpenClawToolCallRef(
+        tool_call_id="read-head",
+        name="bash",
+        cwd=str(Path.cwd().resolve()),
+        argument_text=json.dumps({"command": "head -n 80 converge/agents/contracts.py"}),
+    )
+    assert_true(_tool_call_ref_is_readonly_context(readonly_head), "head target read should be allowed")
+    quoted_redirection_regex = OpenClawToolCallRef(
+        tool_call_id="read-quoted-redirection-regex",
+        name="bash",
+        cwd=str(Path.cwd().resolve()),
+        argument_text=json.dumps({"command": 'rg -n "quoted|regex|>|<|head" converge/agents/contracts.py'}),
+    )
+    assert_true(
+        _tool_call_ref_is_readonly_context(quoted_redirection_regex),
+        "quoted rg regex containing redirection-looking characters should be allowed",
+    )
+    quoted_leading_output_regex = OpenClawToolCallRef(
+        tool_call_id="read-quoted-leading-output-regex",
+        name="bash",
+        cwd=str(Path.cwd().resolve()),
+        argument_text=json.dumps({"command": 'rg -n ">needle" converge/agents/contracts.py'}),
+    )
+    assert_true(
+        _tool_call_ref_is_readonly_context(quoted_leading_output_regex),
+        "quoted rg regex starting with > should be allowed",
+    )
+    quoted_leading_input_regex = OpenClawToolCallRef(
+        tool_call_id="read-quoted-leading-input-regex",
+        name="bash",
+        cwd=str(Path.cwd().resolve()),
+        argument_text=json.dumps({"command": 'rg -n "<needle" converge/agents/contracts.py'}),
+    )
+    assert_true(
+        _tool_call_ref_is_readonly_context(quoted_leading_input_regex),
+        "quoted rg regex starting with < should be allowed",
+    )
+    unquoted_redirection = OpenClawToolCallRef(
+        tool_call_id="read-unquoted-redirection",
+        name="bash",
+        cwd=str(Path.cwd().resolve()),
+        argument_text=json.dumps({"command": "cat converge/agents/contracts.py > /tmp/converge-contracts.txt"}),
+    )
+    assert_true(
+        not _tool_call_ref_is_readonly_context(unquoted_redirection),
+        "actual shell redirection must not count as read proof",
+    )
+    compact_redirection = OpenClawToolCallRef(
+        tool_call_id="read-compact-redirection",
+        name="bash",
+        cwd=str(Path.cwd().resolve()),
+        argument_text=json.dumps({"command": "cat converge/agents/contracts.py>/tmp/converge-contracts.txt"}),
+    )
+    assert_true(
+        not _tool_call_ref_is_readonly_context(compact_redirection),
+        "compact output redirection must not count as read proof",
+    )
+    compact_append_redirection = OpenClawToolCallRef(
+        tool_call_id="read-compact-append-redirection",
+        name="bash",
+        cwd=str(Path.cwd().resolve()),
+        argument_text=json.dumps({"command": "cat converge/agents/contracts.py>>/tmp/converge-contracts.txt"}),
+    )
+    assert_true(
+        not _tool_call_ref_is_readonly_context(compact_append_redirection),
+        "compact append redirection must not count as read proof",
+    )
+    compact_input_redirection = OpenClawToolCallRef(
+        tool_call_id="read-compact-input-redirection",
+        name="bash",
+        cwd=str(Path.cwd().resolve()),
+        argument_text=json.dumps({"command": "cat <converge/agents/contracts.py"}),
+    )
+    assert_true(
+        not _tool_call_ref_is_readonly_context(compact_input_redirection),
+        "compact input redirection must not count as read proof",
+    )
+    descriptor_redirection = OpenClawToolCallRef(
+        tool_call_id="read-descriptor-redirection",
+        name="bash",
+        cwd=str(Path.cwd().resolve()),
+        argument_text=json.dumps({"command": "cat converge/agents/contracts.py 2>/tmp/converge-contracts.err"}),
+    )
+    assert_true(
+        not _tool_call_ref_is_readonly_context(descriptor_redirection),
+        "descriptor redirection must not count as read proof",
+    )
+    marker_bypass = OpenClawToolCallRef(
+        tool_call_id="read-marker-bypass",
+        name="bash",
+        cwd=str(Path.cwd().resolve()),
+        argument_text=json.dumps({"command": "echo 'cat converge/agents/contracts.py'"}),
+    )
+    assert_true(not _tool_call_ref_is_readonly_context(marker_bypass), "read marker text inside echo must not count as read proof")
+    compound_mutation = OpenClawToolCallRef(
+        tool_call_id="read-compound-mutating",
+        name="bash",
+        cwd=str(Path.cwd().resolve()),
+        argument_text=json.dumps({"command": "sed -n '1,80p' converge/agents/contracts.py && python3 mutate.py"}),
+    )
+    assert_true(not _tool_call_ref_is_readonly_context(compound_mutation), "read command plus mutation must not count as read proof")
+    semicolon_mutation = OpenClawToolCallRef(
+        tool_call_id="read-semicolon-mutating",
+        name="bash",
+        cwd=str(Path.cwd().resolve()),
+        argument_text=json.dumps({"command": "sed -n '1,80p' converge/agents/contracts.py; python3 mutate.py"}),
+    )
+    assert_true(
+        not _tool_call_ref_is_readonly_context(semicolon_mutation),
+        "semicolon-separated mutation must not count as read proof",
+    )
+    semicolon_status = OpenClawToolCallRef(
+        tool_call_id="read-semicolon-status",
+        name="bash",
+        cwd=str(Path.cwd().resolve()),
+        argument_text=json.dumps({"command": "sed -n '1,80p' converge/agents/contracts.py; date"}),
+    )
+    assert_true(
+        not _tool_call_ref_is_readonly_context(semicolon_status),
+        "semicolon-separated compound command must not count as read proof",
+    )
+    newline_mutation = OpenClawToolCallRef(
+        tool_call_id="read-newline-mutating",
+        name="bash",
+        cwd=str(Path.cwd().resolve()),
+        argument_text=json.dumps({"command": "sed -n '1,80p' converge/agents/contracts.py\npython3 mutate.py"}),
+    )
+    assert_true(
+        not _tool_call_ref_is_readonly_context(newline_mutation),
+        "newline-separated mutation must not count as read proof",
+    )
+    compact_pipeline_mutation = OpenClawToolCallRef(
+        tool_call_id="read-compact-pipeline-mutating",
+        name="bash",
+        cwd=str(Path.cwd().resolve()),
+        argument_text=json.dumps({"command": "cat converge/agents/contracts.py|python3 mutate.py"}),
+    )
+    assert_true(
+        not _tool_call_ref_is_readonly_context(compact_pipeline_mutation),
+        "compact pipeline mutation must not count as read proof",
+    )
+    compact_pipeline_tee = OpenClawToolCallRef(
+        tool_call_id="read-compact-pipeline-tee",
+        name="bash",
+        cwd=str(Path.cwd().resolve()),
+        argument_text=json.dumps({"command": "sed -n '1,80p' converge/agents/contracts.py|tee /tmp/converge-contracts.txt"}),
+    )
+    assert_true(
+        not _tool_call_ref_is_readonly_context(compact_pipeline_tee),
+        "compact pipeline to tee must not count as read proof",
+    )
 
     missing_smoke = subprocess.CompletedProcess(
         ["openclaw"],
@@ -1096,6 +1397,72 @@ def assert_openclaw_native_panel_cli_backend_requires_coordinator_verified_smoke
     )
     assert_true(blocked.reason == "subagent_proof_failed", "extra non-policy tool calls must block native proof")
 
+    nonreadonly_target_path_trajectory = OpenClawNativePanelCliBackend(
+        child_backend=OpenClawAgentCliBackend(
+            runner=lambda command, timeout_seconds: subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=(
+                    _trajectory_completed_process(command, include_nonreadonly_target_path_call=True).stdout
+                    if command[:3] == ["openclaw", "sessions", "export-trajectory"]
+                    else _sessions_stdout([request.session_key for request in requests])
+                    if command[:2] == ["openclaw", "sessions"]
+                    else _cli_child_stdout(command[3])
+                ),
+                stderr="",
+            )
+        )
+    )
+    blocked = expect_native_panel_blocked(
+        lambda: nonreadonly_target_path_trajectory.run_panel(requests),
+        "trajectory proof lacks target_ref read argument",
+    )
+    assert_true(blocked.reason == "subagent_proof_failed", "non-read shell commands must not count as target_ref reads")
+
+    target_path_status_trajectory = OpenClawNativePanelCliBackend(
+        child_backend=OpenClawAgentCliBackend(
+            runner=lambda command, timeout_seconds: subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=(
+                    _trajectory_completed_process(command, include_target_path_status_call=True).stdout
+                    if command[:3] == ["openclaw", "sessions", "export-trajectory"]
+                    else _sessions_stdout([request.session_key for request in requests])
+                    if command[:2] == ["openclaw", "sessions"]
+                    else _cli_child_stdout(command[3])
+                ),
+                stderr="",
+            )
+        )
+    )
+    blocked = expect_native_panel_blocked(
+        lambda: target_path_status_trajectory.run_panel(requests),
+        "non-read status command mentioning target_ref path",
+    )
+    assert_true(blocked.reason == "subagent_proof_failed", "status commands mentioning target refs must block native proof")
+
+    read_marker_bypass_trajectory = OpenClawNativePanelCliBackend(
+        child_backend=OpenClawAgentCliBackend(
+            runner=lambda command, timeout_seconds: subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=(
+                    _trajectory_completed_process(command, include_read_marker_bypass_target_path_call=True).stdout
+                    if command[:3] == ["openclaw", "sessions", "export-trajectory"]
+                    else _sessions_stdout([request.session_key for request in requests])
+                    if command[:2] == ["openclaw", "sessions"]
+                    else _cli_child_stdout(command[3])
+                ),
+                stderr="",
+            )
+        )
+    )
+    blocked = expect_native_panel_blocked(
+        lambda: read_marker_bypass_trajectory.run_panel(requests),
+        "trajectory proof lacks target_ref read argument",
+    )
+    assert_true(blocked.reason == "subagent_proof_failed", "read marker strings inside non-read commands must not count as target_ref reads")
+
     status_marker_bypass_trajectory = OpenClawNativePanelCliBackend(
         child_backend=OpenClawAgentCliBackend(
             runner=lambda command, timeout_seconds: subprocess.CompletedProcess(
@@ -1314,6 +1681,9 @@ def _trajectory_completed_process(
     include_readonly_search_call: bool = False,
     include_readonly_related_read_call: bool = False,
     include_status_marker_bypass_call: bool = False,
+    include_nonreadonly_target_path_call: bool = False,
+    include_target_path_status_call: bool = False,
+    include_read_marker_bypass_target_path_call: bool = False,
     include_overflow_tool_calls: bool = False,
     include_unexpected_tool_call: bool = False,
 ) -> subprocess.CompletedProcess[str]:
@@ -1481,6 +1851,35 @@ def _trajectory_completed_process(
                 },
             }
         )
+    if include_nonreadonly_target_path_call:
+        events[1]["data"]["arguments"] = {
+            "cmd": f"rm {read_path}",
+            "cwd": str(Path.cwd().resolve()),
+        }
+    if include_target_path_status_call:
+        events.append(
+            {
+                "traceSchema": "openclaw-trajectory",
+                "schemaVersion": 1,
+                "traceId": "trace-contract",
+                "source": "transcript",
+                "type": "tool.call",
+                "sessionKey": tool_session_key,
+                "data": {
+                    "toolCallId": "call-target-path-status",
+                    "name": tool_name,
+                    "arguments": {
+                        "cmd": f"test -f {read_path}",
+                        "cwd": str(Path.cwd().resolve()),
+                    },
+                },
+            }
+        )
+    if include_read_marker_bypass_target_path_call:
+        events[1]["data"]["arguments"] = {
+            "cmd": f"echo 'cat {read_path}'",
+            "cwd": str(Path.cwd().resolve()),
+        }
     if include_overflow_tool_calls:
         for index in range(81):
             events.append(

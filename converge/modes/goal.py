@@ -11,12 +11,14 @@ from typing import Any
 from ..acceptance import validate_acceptance_payload
 from ..artifacts import now_iso
 from ..messages import normalize_residuals
+from ..store import structured_next_action
 from .base import ModeHandler, ModeOutcome, apply_execution_truth_block, execution_blocked_final_status
 from .evidence_contract import attach_phase5a_evidence_contract
 from .execution_truth import classify_execution_markers
 
 
 GOAL_PLAN_ARTIFACT_ID = "goal-promoted-plan"
+GOAL_DRAFT_ARTIFACT_ID = "goal-draft"
 PHASE5B_PARENT_SUMMARY_MODE = "parent_summary_only"
 PHASE5B_VISIBLE_CHILD_REPORT_MODE = "visible_child_report_required"
 PHASE5B_OWNER_WAIVER_MODE = "waived_with_owner_proof"
@@ -83,12 +85,104 @@ class GoalHandler(ModeHandler):
 
     kind = "goal"
 
+    def prepare_goal_draft(
+        self,
+        workflow_id: str,
+        *,
+        recovery_lease_id: str | None = None,
+        recovery_lease_holder: str | None = None,
+    ) -> dict[str, Any]:
+        self.validate_recovery_preflight(
+            workflow_id,
+            recovery_lease_id=recovery_lease_id,
+            recovery_lease_holder=recovery_lease_holder,
+        )
+        workflow = self.load_workflow(workflow_id)
+        if _existing_plan_accepted_payload(self.store, workflow_id) is not None:
+            raise ValueError("goal draft cannot be prepared after plan_accepted")
+        record = build_goal_record(workflow, accepted_at=None)
+        artifact_path = (self.store.workflow_dir(workflow_id) / "artifacts" / "goal-draft.md").expanduser().resolve()
+        rendered_draft = render_goal_draft(record)
+        artifact = _existing_goal_draft_artifact(workflow, expected_path=artifact_path, rendered_draft=rendered_draft)
+        if artifact is None:
+            artifact_path.parent.mkdir(parents=True, exist_ok=True)
+            artifact_path.write_text(rendered_draft, encoding="utf-8")
+            artifact = self.record_artifact(
+                workflow_id,
+                kind="plan",
+                artifact_id=GOAL_DRAFT_ARTIFACT_ID,
+                path=artifact_path,
+                note="approval-required goal draft artifact",
+            )["artifact"]
+        cursor = "objective-gate"
+        state = {
+            "lifecycle_state": "awaiting_approval",
+            "persisted_state": "awaiting_approval",
+            "draft_required": True,
+            "approval_required": True,
+            "approval_status": "pending",
+            "plan_accepted": None,
+            "execution_required": False,
+            "execution_performed": False,
+            "child_workflow_refs": [],
+            "draft_artifact_id": artifact["artifact_id"],
+            "draft_artifact_path": artifact["path"],
+            "objective": record.objective,
+            "non_goals": record.non_goals,
+            "success_criteria": record.success_criteria,
+            "assumptions": record.assumptions,
+            "approval_boundaries": record.approval_boundaries,
+            "slice_queue": record.slice_queue,
+            "interview": {
+                "status": "skipped",
+                "reason": "draft could be produced from the current request and local goal defaults",
+                "questions": [],
+            },
+            "next_owner_action": "approve, rescope, or cancel the GoalDraft before execution",
+        }
+        residuals = normalize_residuals(
+            {
+                "blocking_remaining": [],
+                "accepted_risks": [],
+                "implementation_backlog": ["Implementation waits for explicit owner approval of the GoalDraft."],
+                "deferred_scope": ["No child verify/conv workflows are launched before approval."],
+            }
+        )
+        checkpoint = self.record_outcome(
+            workflow_id,
+            ModeOutcome(
+                summary="GoalDraft is ready and waiting for explicit owner approval.",
+                status_after="waiting_user",
+                phase_after="awaiting_approval",
+                checkpoint_type="checkpoint",
+                event_type="checkpoint",
+                worklog_block_kind="checkpoint_summary",
+                step_result="waiting",
+                cursor_after=cursor,
+                residuals=residuals,
+                mode_state_update=state,
+                next_action=structured_next_action(
+                    action_type="wait_for_goal_approval",
+                    summary="Wait for explicit owner approval, rescope, or cancellation before execution.",
+                    cursor=cursor,
+                    risk_class="read_only",
+                    requires_approval=True,
+                    approval_ref=f"goal-draft:{workflow_id}",
+                    side_effect_key=f"owner-decision:{workflow_id}:{cursor}",
+                    idempotency_policy="reconcile_first",
+                    expected_artifacts=["workflow.json", "events.jsonl", "goal-draft.md"],
+                ),
+            ),
+        )
+        return {"workflow_id": workflow_id, "artifact": artifact, "checkpoint": checkpoint, "goal_draft": state}
+
     def finalize_goal(
         self,
         workflow_id: str,
         *,
         native_agent_backend: Any | None = None,
         target_refs: list[dict[str, Any]] | None = None,
+        allow_scaffold_approval: bool = False,
         recovery_lease_id: str | None = None,
         recovery_lease_holder: str | None = None,
     ) -> dict[str, Any]:
@@ -99,7 +193,30 @@ class GoalHandler(ModeHandler):
         )
         workflow = self.load_workflow(workflow_id)
         existing_plan_accepted = _existing_plan_accepted_payload(self.store, workflow_id)
-        record = build_goal_record(workflow, accepted_at=existing_plan_accepted.get("accepted_at") if existing_plan_accepted else None)
+        existing_owner_approval = _existing_goal_approval_payload(self.store, workflow_id, include_scaffold=allow_scaffold_approval)
+        if existing_plan_accepted is None and existing_owner_approval is None:
+            raise ValueError("goal approval required before finalize_goal")
+        if existing_plan_accepted is not None and workflow.get("status") == "waiting_user":
+            self.record_outcome(
+                workflow_id,
+                ModeOutcome(
+                    summary="Explicit goal approval recorded; resuming goal execution.",
+                    status_after="running",
+                    phase_after="running",
+                    checkpoint_type="checkpoint",
+                    event_type="checkpoint",
+                    worklog_block_kind="checkpoint_summary",
+                    step_result="waiting",
+                    residuals=normalize_residuals({}),
+                ),
+            )
+            workflow = self.load_workflow(workflow_id)
+        accepted_at = None
+        if existing_plan_accepted:
+            accepted_at = existing_plan_accepted.get("accepted_at")
+        elif existing_owner_approval:
+            accepted_at = existing_owner_approval.get("accepted_at")
+        record = build_goal_record(workflow, accepted_at=accepted_at)
         child_collection = _ensure_goal_children(self, workflow, record, native_agent_backend=native_agent_backend, target_refs=target_refs)
         if child_collection is not None:
             record = _record_with_child_collection(record, child_collection)
@@ -162,6 +279,8 @@ class GoalHandler(ModeHandler):
             state.update(child_collection["execution_markers"])
             state["child_collection_status"] = child_collection["collection_status"]
         state, residuals, block_reason = apply_execution_truth_block("goal", state, residuals=residuals)
+        state["lifecycle_state"] = "blocked_or_cancelled" if block_reason or child_block_reason else "completed"
+        state["persisted_state"] = state["lifecycle_state"]
         if child_collection is not None:
             state = attach_phase5b_child_delivery_state(state, residuals=residuals)
         child_block_reason = child_block_reason or _child_block_reason(child_collection)
@@ -269,7 +388,7 @@ def build_goal_record(workflow: dict[str, Any], *, accepted_at: str | None = Non
         "Future child verify and conv workflows are referenced by durable ids, not copied state.",
     ]
     assumptions = [
-        "The current /goal request is the owner authorization for this local C4 behavior slice.",
+        "The current /goal request starts drafting only; execution requires a later explicit approval event.",
         "Real child workflow creation remains outside C4.",
     ]
     approval_boundaries = [
@@ -375,6 +494,32 @@ def _existing_plan_accepted_payload(store: Any, workflow_id: str) -> dict[str, A
     return first
 
 
+def _existing_goal_approval_payload(store: Any, workflow_id: str, *, include_scaffold: bool = False) -> dict[str, Any] | None:
+    events_path = store.workflow_dir(workflow_id) / "events.jsonl"
+    matches: list[dict[str, Any]] = []
+    for line in events_path.read_text(encoding="utf-8").splitlines() if events_path.exists() else []:
+        if not line.strip():
+            continue
+        event = json.loads(line)
+        if event.get("event_type") != "owner_decision":
+            continue
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            raise ValueError("existing goal owner_decision event payload must be an object")
+        if payload.get("scaffold_only") is True and not include_scaffold:
+            continue
+        if payload.get("decision") in {"approve_goal", "approve_goal_draft", "accept_goal_draft"}:
+            matches.append(payload)
+    if not matches:
+        return None
+    first = matches[0]
+    if any(item != first for item in matches[1:]):
+        raise ValueError("existing goal owner approval event payloads conflict")
+    if len(matches) > 1:
+        raise ValueError("existing goal owner approval event payloads are duplicated")
+    return first
+
+
 def _validate_existing_plan_acceptance_scope(workflow: dict[str, Any], existing: dict[str, Any], record: GoalRecord) -> None:
     for key in ("objective", "non_goals", "success_criteria", "assumptions", "approval_boundaries"):
         if existing.get(key) != getattr(record, key):
@@ -428,6 +573,8 @@ def _ensure_goal_children(
                 "stop_reason": (item.get("final_status") or {}).get("stop_reason"),
                 "residuals": (item.get("final_status") or {}).get("residuals"),
                 "evidence_refs": item.get("evidence_refs") or [],
+                "child_result_collection_mvp": item.get("child_result_collection_mvp"),
+                "unaccepted_preliminary_findings": item.get("unaccepted_preliminary_findings") or [],
             }
             for item in child_refs
         ],
@@ -989,7 +1136,7 @@ def _child_ref_from_workflow(child: dict[str, Any], *, role: str) -> dict[str, A
     result = (child.get("final_status") or {}).get("result")
     status = "completed" if child.get("status") in {"completed_unreported", "reported"} and result in {"pass", "pass_with_risks"} else "blocked"
     native_proof = _native_child_panel_proof(child, role=role)
-    return {
+    ref = {
         "workflow_id": child["workflow_id"],
         "kind": role,
         "purpose": f"required {role} child workflow execution evidence",
@@ -1010,6 +1157,13 @@ def _child_ref_from_workflow(child: dict[str, Any], *, role: str) -> dict[str, A
         "created_at": child.get("created_at"),
         "native_agent_panel_proof": native_proof,
     }
+    child_state = child.get(f"{role}_state")
+    if isinstance(child_state, dict):
+        if isinstance(child_state.get("child_result_collection_mvp"), dict):
+            ref["child_result_collection_mvp"] = child_state["child_result_collection_mvp"]
+        if isinstance(child_state.get("unaccepted_preliminary_findings"), list):
+            ref["unaccepted_preliminary_findings"] = child_state["unaccepted_preliminary_findings"]
+    return ref
 
 
 def _native_child_panel_proof(child: dict[str, Any], *, role: str) -> dict[str, Any] | None:
@@ -1111,6 +1265,57 @@ def render_goal_plan(record: GoalRecord) -> str:
     return "\n".join(lines)
 
 
+def render_goal_draft(record: GoalRecord) -> str:
+    lines = [
+        "# GoalDraft",
+        "",
+        "## Approval Required",
+        "",
+        "- Status: awaiting_approval",
+        "- Execution: not started",
+        "- Child workflows: not created",
+        "",
+        "## Objective",
+        "",
+        record.objective,
+        "",
+        "## Non-goals",
+        "",
+        *[f"- {item}" for item in record.non_goals],
+        "",
+        "## Approval Boundaries",
+        "",
+        *[f"- {item}" for item in record.approval_boundaries],
+        "",
+        "## Success Criteria",
+        "",
+        *[f"- {item}" for item in record.success_criteria],
+        "",
+        "## Slice Queue",
+        "",
+    ]
+    for item in record.slice_queue:
+        lines.extend(
+            [
+                f"### {item['step_id']}",
+                "",
+                f"- Objective: {item['objective']}",
+                f"- Next on pass: {item['next_on_pass']}",
+                f"- Status: {item['status']}",
+                "",
+            ]
+        )
+    lines.extend(
+        [
+            "## Next Action",
+            "",
+            "- Wait for explicit owner approval, rescope, or cancellation.",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def validate_goal_state(
     state: dict[str, Any],
     *,
@@ -1122,7 +1327,11 @@ def validate_goal_state(
         if terminal:
             raise ValueError("terminal or artifact-backed goal workflow requires populated goal_state")
         return normalize_residuals({})
+    if not terminal and state.get("lifecycle_state") == "awaiting_approval":
+        return _validate_goal_draft_state(state, workflow=workflow)
     required = {
+        "lifecycle_state",
+        "persisted_state",
         "final_plan_artifact_id",
         "final_plan_artifact_path",
         "objective",
@@ -1141,6 +1350,10 @@ def validate_goal_state(
     missing = sorted(required - set(state))
     if missing:
         raise ValueError(f"goal_state is missing required fields: {missing!r}")
+    if state.get("persisted_state") not in {"running", "completed", "blocked_or_cancelled"}:
+        raise ValueError("goal_state persisted_state must be running, completed, or blocked_or_cancelled")
+    if state.get("lifecycle_state") != state.get("persisted_state"):
+        raise ValueError("goal_state lifecycle_state must match persisted_state")
     for key in ("objective", "final_plan_artifact_id", "final_plan_artifact_path", "final_report_summary"):
         if not isinstance(state.get(key), str) or not state[key]:
             raise ValueError(f"goal_state {key} must be a non-empty string")
@@ -1200,6 +1413,63 @@ def validate_goal_state(
     return residuals
 
 
+def _validate_goal_draft_state(state: dict[str, Any], *, workflow: dict[str, Any] | None) -> dict[str, list[str]]:
+    required = {
+        "lifecycle_state",
+        "persisted_state",
+        "draft_required",
+        "approval_required",
+        "approval_status",
+        "plan_accepted",
+        "execution_required",
+        "execution_performed",
+        "child_workflow_refs",
+        "draft_artifact_id",
+        "draft_artifact_path",
+        "objective",
+        "non_goals",
+        "success_criteria",
+        "assumptions",
+        "approval_boundaries",
+        "slice_queue",
+        "interview",
+        "next_owner_action",
+    }
+    missing = sorted(required - set(state))
+    if missing:
+        raise ValueError(f"goal draft_state is missing required fields: {missing!r}")
+    if state.get("persisted_state") != "awaiting_approval":
+        raise ValueError("goal draft_state persisted_state must be awaiting_approval")
+    if state.get("draft_required") is not True or state.get("approval_required") is not True:
+        raise ValueError("goal draft_state must require draft approval")
+    if state.get("approval_status") != "pending":
+        raise ValueError("goal draft_state approval_status must be pending")
+    if state.get("plan_accepted") is not None:
+        raise ValueError("goal draft_state must not include plan_accepted before approval")
+    if state.get("execution_required") is not False or state.get("execution_performed") is not False:
+        raise ValueError("goal draft_state must not mark execution before approval")
+    if state.get("child_workflow_refs") != []:
+        raise ValueError("goal draft_state must not include child workflow refs before approval")
+    for key in ("draft_artifact_id", "draft_artifact_path", "objective", "next_owner_action"):
+        if not isinstance(state.get(key), str) or not state[key]:
+            raise ValueError(f"goal draft_state {key} must be a non-empty string")
+    for key in ("non_goals", "success_criteria", "assumptions", "approval_boundaries", "slice_queue"):
+        if not isinstance(state.get(key), list):
+            raise ValueError(f"goal draft_state {key} must be an array")
+    if not state["success_criteria"]:
+        raise ValueError("goal draft_state success_criteria must not be empty")
+    for item in state["slice_queue"]:
+        _validate_slice_queue_item(item)
+    if workflow is not None:
+        plan = workflow.get("continuation_plan") or {}
+        steps = plan.get("steps") if isinstance(plan, dict) else []
+        step_ids = [step.get("step_id") for step in steps if isinstance(step, dict)]
+        queue_ids = [item.get("step_id") for item in state["slice_queue"] if isinstance(item, dict)]
+        if step_ids != queue_ids:
+            raise ValueError("goal draft_state slice_queue must match continuation_plan.steps")
+    return normalize_residuals({})
+
+
 def _validate_slice_queue_item(item: dict[str, Any]) -> None:
     required = {"step_id", "objective", "gate", "next_on_pass", "expected_artifacts", "status"}
     missing = sorted(required - set(item))
@@ -1252,6 +1522,32 @@ def _existing_goal_artifact(workflow: dict[str, Any], *, expected_path: Path, re
         raise ValueError("goal plan artifact path is not the canonical goal output path")
     if Path(path).read_text(encoding="utf-8") != rendered_plan:
         raise ValueError("existing goal artifact does not match rendered goal plan")
+    return artifact
+
+
+def _existing_goal_draft_artifact(workflow: dict[str, Any], *, expected_path: Path, rendered_draft: str) -> dict[str, Any] | None:
+    matches = [
+        artifact
+        for artifact in workflow.get("artifacts", [])
+        if isinstance(artifact, dict) and artifact.get("artifact_id") == GOAL_DRAFT_ARTIFACT_ID
+    ]
+    if not matches:
+        return None
+    if len(matches) > 1:
+        raise ValueError(f"duplicate goal draft artifact id: {GOAL_DRAFT_ARTIFACT_ID}")
+    artifact = matches[0]
+    if artifact.get("kind") != "plan":
+        raise ValueError(f"goal draft artifact id has wrong kind: {artifact.get('kind')!r}")
+    artifact_path = artifact.get("path")
+    if not isinstance(artifact_path, str) or not artifact_path:
+        raise ValueError("goal draft artifact has no path")
+    path = Path(artifact_path).expanduser().resolve()
+    if path != expected_path.expanduser().resolve():
+        raise ValueError("goal draft artifact path is not canonical")
+    if not path.is_file():
+        raise ValueError("goal draft artifact path is missing")
+    if path.read_text(encoding="utf-8") != rendered_draft:
+        raise ValueError("goal draft artifact content does not match current draft")
     return artifact
 
 

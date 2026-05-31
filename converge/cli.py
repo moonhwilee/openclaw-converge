@@ -30,6 +30,7 @@ from .modes.goal import (
     GoalHandler,
     GoalRecord,
     _native_child_panel_proof,
+    build_goal_record,
     phase5b_child_delivery_mode,
     render_goal_plan,
     validate_goal_state,
@@ -369,17 +370,101 @@ def cmd_goal(args: argparse.Namespace) -> int:
         if workflow.get("status") in {"completed_unreported", "reported"}:
             print_json({"ok": True, "workflow": workflow, "result": "already_finalized"})
             return 0
-    goal = GoalHandler(store).finalize_goal(
-        workflow["workflow_id"],
-        native_agent_backend=native_agent_backend,
-        target_refs=_target_refs_from_args(args),
-        recovery_lease_id=args.recovery_lease_id,
-        recovery_lease_holder=args.recovery_lease_holder,
-    )
+    handler = GoalHandler(store)
+    if getattr(args, "scaffold_only", False) and not _goal_has_plan_accepted_event(store, workflow["workflow_id"]) and not _goal_has_approval_event(store, workflow["workflow_id"]):
+        _record_scaffold_goal_approval(store, workflow)
+    if getattr(args, "scaffold_only", False):
+        goal = handler.finalize_goal(
+            workflow["workflow_id"],
+            native_agent_backend=native_agent_backend,
+            target_refs=_target_refs_from_args(args),
+            allow_scaffold_approval=True,
+            recovery_lease_id=args.recovery_lease_id,
+            recovery_lease_holder=args.recovery_lease_holder,
+        )
+    elif _goal_has_plan_accepted_event(store, workflow["workflow_id"]) or _goal_has_approval_event(store, workflow["workflow_id"]):
+        goal = handler.finalize_goal(
+            workflow["workflow_id"],
+            native_agent_backend=native_agent_backend,
+            target_refs=_target_refs_from_args(args),
+            recovery_lease_id=args.recovery_lease_id,
+            recovery_lease_holder=args.recovery_lease_holder,
+        )
+    else:
+        goal = handler.prepare_goal_draft(
+            workflow["workflow_id"],
+            recovery_lease_id=args.recovery_lease_id,
+            recovery_lease_holder=args.recovery_lease_holder,
+        )
     workflow = store.load_workflow(workflow["workflow_id"])
     _reject_implicit_scaffold_result(args, workflow, mode="goal")
     print_json({"ok": True, "workflow": workflow, **goal})
     return 0
+
+
+def _goal_has_plan_accepted_event(store: WorkflowStore, workflow_id: str) -> bool:
+    return _goal_has_event_type(store, workflow_id, "plan_accepted")
+
+
+def _record_scaffold_goal_approval(store: WorkflowStore, workflow: dict[str, Any]) -> None:
+    record = build_goal_record(workflow)
+    payload = dict(record.plan_accepted)
+    payload["decision"] = "approve_goal_draft"
+    payload["scaffold_only"] = True
+    event_id = f"evt-scaffold-goal-approved-{workflow['workflow_id']}"
+    try:
+        store.append_event(
+            workflow["workflow_id"],
+            {
+                "schema_version": 1,
+                "event_id": event_id,
+                "workflow_id": workflow["workflow_id"],
+                "event_type": "owner_decision",
+                "created_at": now_iso(),
+                "note": "internal scaffold-only goal approval",
+                "payload": payload,
+            },
+        )
+    except ValueError as exc:
+        if "duplicate event_id" not in str(exc):
+            raise
+
+
+def _goal_has_approval_event(store: WorkflowStore, workflow_id: str) -> bool:
+    events_path = store.workflow_dir(workflow_id) / "events.jsonl"
+    if not events_path.exists():
+        return False
+    for line in events_path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if event.get("event_type") != "owner_decision":
+            continue
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        if payload.get("scaffold_only") is True:
+            continue
+        if payload.get("decision") in {"approve_goal", "approve_goal_draft", "accept_goal_draft"}:
+            return True
+    return False
+
+
+def _goal_has_event_type(store: WorkflowStore, workflow_id: str, event_type: str) -> bool:
+    events_path = store.workflow_dir(workflow_id) / "events.jsonl"
+    if not events_path.exists():
+        return False
+    for line in events_path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if event.get("event_type") == event_type:
+            return True
+    return False
 
 
 def cmd_command_dry_run(args: argparse.Namespace) -> int:
@@ -2105,6 +2190,23 @@ def _validate_goal_state_integrity(store: WorkflowStore, workflow: dict[str, Any
         terminal=terminal_goal,
         final_status=workflow.get("final_status") if isinstance(workflow.get("final_status"), dict) else None,
     )
+    if not terminal_goal and state.get("lifecycle_state") == "awaiting_approval":
+        artifact_id = state.get("draft_artifact_id")
+        if not isinstance(artifact_id, str) or not artifact_id:
+            raise ValueError("goal draft_state draft_artifact_id must be a non-empty string")
+        matches = [
+            artifact
+            for artifact in workflow.get("artifacts", [])
+            if isinstance(artifact, dict) and artifact.get("artifact_id") == artifact_id
+        ]
+        if len(matches) != 1:
+            raise ValueError(f"goal draft_state draft_artifact_id must match exactly one artifact: {artifact_id!r}")
+        artifact = matches[0]
+        if artifact.get("kind") != "plan":
+            raise ValueError("goal draft_state draft artifact must reference a plan artifact")
+        if state.get("draft_artifact_path") != artifact.get("path"):
+            raise ValueError("goal draft_state draft_artifact_path must match registered artifact path")
+        return
     artifact_id = state.get("final_plan_artifact_id")
     if not isinstance(artifact_id, str) or not artifact_id:
         raise ValueError("goal_state final_plan_artifact_id must be a non-empty string")

@@ -27,6 +27,7 @@ def finalize_goal(state_root: Path, *, workflow_id: str, text: str) -> dict[str,
         "goal",
         "--text",
         f"plan-only {text}",
+        "--scaffold-only",
         "--workflow-id",
         workflow_id,
         "--owner-session-key",
@@ -35,6 +36,118 @@ def finalize_goal(state_root: Path, *, workflow_id: str, text: str) -> dict[str,
         VISIBLE_DELIVERY,
         state_root=state_root,
     )["workflow"]
+
+
+def assert_goal_requires_approval_before_execution(state_root: Path) -> None:
+    wf = run(
+        "goal",
+        "--text",
+        "Implement execution-required goal workflow",
+        "--workflow-id",
+        "goal-approval-gate",
+        "--owner-session-key",
+        "session:test",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        state_root=state_root,
+    )["workflow"]
+    goal_state = wf["goal_state"]
+    assert_true(wf["status"] == "waiting_user", "user-facing goal should wait for approval before execution")
+    assert_true(wf["phase"] == "awaiting_approval", "user-facing goal should persist awaiting_approval phase")
+    assert_true(goal_state["lifecycle_state"] == "awaiting_approval", "goal_state should record awaiting_approval lifecycle")
+    assert_true(goal_state["approval_status"] == "pending", "goal draft should require explicit owner approval")
+    assert_true(
+        all("owner authorization" not in item for item in goal_state["assumptions"]),
+        "goal draft assumptions must not treat initial /goal as execution approval",
+    )
+    assert_true(goal_state["plan_accepted"] is None, "goal draft must not auto-accept a plan")
+    assert_true(goal_state["execution_performed"] is False, "goal draft must not mark execution performed")
+    assert_true(goal_state["child_workflow_refs"] == [], "goal draft must not create child workflow refs before approval")
+    assert_true(wf["child_workflow_ids"] == [], "goal draft must not create child workflows before approval")
+    assert_true(isinstance(wf["next_safe_action"], dict), "goal draft should carry next safe action")
+    assert_true(wf["next_safe_action"]["action_type"] == "wait_for_goal_approval", "goal draft should wait for owner approval")
+    artifact_path = Path(goal_state["draft_artifact_path"])
+    assert_true(artifact_path.is_file(), "goal draft artifact should be materialized")
+    goal_events = [event["event_type"] for event in events(state_root, "goal-approval-gate")]
+    assert_true(goal_events == ["start", "artifact", "checkpoint"], "goal draft should stop without acceptance or terminal events")
+    run("validate", "--workflow-id", "goal-approval-gate", state_root=state_root)
+
+
+def assert_direct_finalize_requires_explicit_approval(state_root: Path) -> None:
+    store = WorkflowStore(state_root)
+    created = store.create_workflow(
+        kind="goal",
+        text="Direct finalize should not bypass approval",
+        workflow_id="goal-direct-finalize-no-approval",
+        owner_session_key="session:test",
+        visible_delivery={"channel": "telegram", "target": "test"},
+    )
+    before_events = events(state_root, created["workflow_id"])
+    try:
+        GoalHandler(store).finalize_goal(created["workflow_id"])
+    except ValueError as exc:
+        assert_true("approval required" in str(exc), "direct finalize should require explicit approval")
+    else:
+        raise AssertionError("direct finalize should not execute without explicit approval")
+    after = workflow(state_root, created["workflow_id"])
+    assert_true(after["child_workflow_ids"] == [], "direct finalize without approval must not create children")
+    assert_true(after.get("goal_state") == {}, "direct finalize without approval must not persist goal state")
+    assert_true(events(state_root, created["workflow_id"]) == before_events, "direct finalize without approval must not append events")
+
+    malformed = store.create_workflow(
+        kind="goal",
+        text="Direct finalize should reject missing approval decision",
+        workflow_id="goal-direct-finalize-null-decision",
+        owner_session_key="session:test",
+        visible_delivery={"channel": "telegram", "target": "test"},
+    )
+    store.append_event(
+        malformed["workflow_id"],
+        {
+            "schema_version": 1,
+            "event_id": "evt-null-decision-owner-approval",
+            "workflow_id": malformed["workflow_id"],
+            "event_type": "owner_decision",
+            "created_at": "2026-05-31T00:00:00Z",
+            "note": "malformed fixture approval",
+            "payload": build_goal_record(malformed).plan_accepted,
+        },
+    )
+    try:
+        GoalHandler(store).finalize_goal(malformed["workflow_id"])
+    except ValueError as exc:
+        assert_true("approval required" in str(exc), "missing decision owner_decision should not approve goal")
+    else:
+        raise AssertionError("missing decision owner_decision should not approve goal")
+
+    scaffold_only = store.create_workflow(
+        kind="goal",
+        text="Direct finalize should ignore scaffold-only approval",
+        workflow_id="goal-direct-finalize-scaffold-only-approval",
+        owner_session_key="session:test",
+        visible_delivery={"channel": "telegram", "target": "test"},
+    )
+    scaffold_payload = dict(build_goal_record(scaffold_only).plan_accepted)
+    scaffold_payload["decision"] = "approve_goal_draft"
+    scaffold_payload["scaffold_only"] = True
+    store.append_event(
+        scaffold_only["workflow_id"],
+        {
+            "schema_version": 1,
+            "event_id": "evt-scaffold-only-owner-approval",
+            "workflow_id": scaffold_only["workflow_id"],
+            "event_type": "owner_decision",
+            "created_at": "2026-05-31T00:00:00Z",
+            "note": "scaffold-only fixture approval",
+            "payload": scaffold_payload,
+        },
+    )
+    try:
+        GoalHandler(store).finalize_goal(scaffold_only["workflow_id"])
+    except ValueError as exc:
+        assert_true("approval required" in str(exc), "scaffold-only owner_decision should not approve normal goal")
+    else:
+        raise AssertionError("scaffold-only owner_decision should not approve normal goal")
 
 
 def report_workflow(state_root: Path, workflow_id: str) -> dict[str, Any]:
@@ -111,6 +224,7 @@ def assert_default_goal_contract(state_root: Path) -> None:
         "goal terminal plan artifact should preserve the durable queue cursor",
     )
     assert_true(goal_state["plan_accepted"]["objective"] == goal_state["objective"], "plan_accepted objective should bind goal state")
+    assert_true(goal_state["persisted_state"] == "completed", "successful terminal goal should expose completed lifecycle state")
     assert_true(goal_state["plan_accepted"]["success_criteria"] == goal_state["success_criteria"], "plan_accepted criteria should bind goal state")
     assert_true(goal_state["evidence_completion_check"]["complete"] is True, "goal terminal success should require completed evidence")
     assert_true(goal_state["plan_artifact_promotion"]["promoted"] is True, "goal should promote a plan artifact")
@@ -123,15 +237,15 @@ def assert_default_goal_contract(state_root: Path) -> None:
     assert_true(wf["next_safe_action"]["action_type"] == "report_terminal_status", "goal terminal state should require report flow")
     goal_events = events(state_root, "goal-c4-smoke")
     assert_true(
-        [event["event_type"] for event in goal_events] == ["start", "artifact", "plan_accepted", "complete"],
+        [event["event_type"] for event in goal_events] == ["start", "owner_decision", "artifact", "plan_accepted", "complete"],
         "goal should record plan_accepted before terminal complete",
     )
     assert_true(
-        goal_events[2]["payload"] == goal_state["plan_accepted"],
+        goal_events[3]["payload"] == goal_state["plan_accepted"],
         "goal plan_accepted event should match accepted goal state",
     )
     assert_true(
-        goal_events[2]["event_id"] == "evt-plan-accepted-goal-c4-smoke",
+        goal_events[3]["event_id"] == "evt-plan-accepted-goal-c4-smoke",
         "goal plan_accepted event should use a deterministic idempotency key",
     )
 
@@ -203,6 +317,7 @@ def assert_execution_required_goal_blocks_planned_children(state_root: Path) -> 
         wf["final_status"]["stop_reason"] == "blocked_child_workflow_failed",
         "goal should block when required child workflows fail",
     )
+    assert_true(wf["goal_state"]["persisted_state"] == "blocked_or_cancelled", "blocked terminal goal should expose blocked lifecycle state")
     assert_true(
         wf["goal_state"]["execution_required"] is True and wf["goal_state"]["execution_performed"] is True,
         "goal should record child workflow execution truth markers",
@@ -233,22 +348,20 @@ def assert_execution_required_goal_blocks_planned_children(state_root: Path) -> 
         "execution-required goal should fail terminally instead of completing",
     )
     run("validate", "--workflow-id", "goal-execution-required-blocked", state_root=state_root)
-    implicit_scaffold = run_fail(
+    user_facing = run(
         "goal",
         "--text",
         "Implement execution-required goal workflow",
         "--workflow-id",
-        "goal-implicit-planned-children-rejected",
+        "goal-implicit-planned-children-awaits-approval",
         "--owner-session-key",
         "session:test",
         "--visible-delivery",
         VISIBLE_DELIVERY,
         state_root=state_root,
-    )
-    assert_true(
-        "goal execution_backend_missing" in implicit_scaffold["error"],
-        "goal should reject implicit scaffold child workflows without a real execution backend",
-    )
+    )["workflow"]
+    assert_true(user_facing["status"] == "waiting_user", "user-facing execution goal should wait for approval")
+    assert_true(user_facing["child_workflow_ids"] == [], "user-facing execution goal should not create child workflows before approval")
 
 
 def assert_execution_required_goal_collects_child_evidence(state_root: Path) -> None:
@@ -258,6 +371,7 @@ def assert_execution_required_goal_collects_child_evidence(state_root: Path) -> 
         "goal",
         "--text",
         f"Read-only audit execution-required goal workflow for {target}",
+        "--scaffold-only",
         "--workflow-id",
         "goal-execution-required-real-children",
         "--owner-session-key",
@@ -715,22 +829,20 @@ def assert_material_goal_blocks_without_fix_runner_child(state_root: Path) -> No
     run("validate", "--workflow-id", "goal-execution-required-material-child-blocked", state_root=state_root)
     assert_phase5a_contract(wf, "goal_state")
 
-    implicit_scaffold = run_fail(
+    user_facing = run(
         "goal",
         "--text",
         f"Implement execution-required goal workflow for {target}",
         "--workflow-id",
-        "goal-implicit-scaffold-rejected",
+        "goal-implicit-scaffold-awaits-approval",
         "--owner-session-key",
         "session:test",
         "--visible-delivery",
         VISIBLE_DELIVERY,
         state_root=state_root,
-    )
-    assert_true(
-        "goal execution_backend_missing" in implicit_scaffold["error"],
-        "goal should reject implicit scaffold child workflows without a real execution backend",
-    )
+    )["workflow"]
+    assert_true(user_facing["status"] == "waiting_user", "user-facing material goal should wait for approval")
+    assert_true(user_facing["child_workflow_ids"] == [], "user-facing material goal should not create child workflows before approval")
 
 
 def assert_goal_collects_native_child_panel_evidence(state_root: Path) -> None:
@@ -741,6 +853,20 @@ def assert_goal_collects_native_child_panel_evidence(state_root: Path) -> None:
         workflow_id="goal-native-child-panel",
         owner_session_key="session:test",
         visible_delivery={"channel": "telegram", "target": "test"},
+    )
+    approval_payload = dict(build_goal_record(parent).plan_accepted)
+    approval_payload["decision"] = "approve_goal_draft"
+    store.append_event(
+        parent["workflow_id"],
+        {
+            "schema_version": 1,
+            "event_id": "evt-goal-native-child-panel-approved",
+            "workflow_id": parent["workflow_id"],
+            "event_type": "owner_decision",
+            "created_at": "2026-05-29T01:00:00Z",
+            "note": "fixture owner approval",
+            "payload": approval_payload,
+        },
     )
     GoalHandler(store).finalize_goal(parent["workflow_id"], native_agent_backend=FakeNativePanelBackend())
     wf = workflow(state_root, "goal-native-child-panel")
@@ -793,12 +919,40 @@ def assert_goal_collects_native_child_panel_evidence(state_root: Path) -> None:
     persist_goal_state(state_root, "goal-native-child-panel", wf)
 
     cli_workflow_id = "goal-native-cli-child-panel"
+    run(
+        "start",
+        "--kind",
+        "goal",
+        "--text",
+        "Read-only audit execution-required native goal CLI workflow",
+        "--workflow-id",
+        cli_workflow_id,
+        "--owner-session-key",
+        "session:test",
+        "--visible-delivery",
+        VISIBLE_DELIVERY,
+        state_root=state_root,
+    )
     goal_record = build_goal_record(
         {
             "workflow_id": cli_workflow_id,
             "source_request": "Read-only audit execution-required native goal CLI workflow",
             "continuation_plan": {"steps": []},
         }
+    )
+    approval_payload = dict(goal_record.plan_accepted)
+    approval_payload["decision"] = "approve_goal_draft"
+    run(
+        "event",
+        "--workflow-id",
+        cli_workflow_id,
+        "--type",
+        "owner_decision",
+        "--event-id",
+        "evt-native-cli-goal-approved",
+        "--payload",
+        json.dumps(approval_payload),
+        state_root=state_root,
     )
     target_refs_file = state_root / "goal-target-refs.json"
     target_refs_file.write_text(
@@ -891,6 +1045,7 @@ def assert_phase5b_visible_child_mode_positive_path(state_root: Path) -> None:
         "goal",
         "--text",
         f"Read-only audit execution-required goal workflow for {target}",
+        "--scaffold-only",
         "--workflow-id",
         "goal-phase5b-visible-child",
         "--owner-session-key",
@@ -984,6 +1139,7 @@ def assert_phase5b_waived_child_mode_requires_owner_proof(state_root: Path) -> N
         "goal",
         "--text",
         f"Read-only audit execution-required goal workflow for {target}",
+        "--scaffold-only",
         "--workflow-id",
         "goal-phase5b-waived-child",
         "--owner-session-key",
@@ -1112,6 +1268,7 @@ def assert_goal_child_ids_handle_long_parent_ids(state_root: Path) -> None:
         "goal",
         "--text",
         f"Read-only audit execution-required long parent goal for {target}",
+        "--scaffold-only",
         "--workflow-id",
         workflow_id,
         "--owner-session-key",
@@ -1150,6 +1307,7 @@ def assert_goal_does_not_collect_nonterminal_existing_child(state_root: Path) ->
         "goal",
         "--text",
         text,
+        "--scaffold-only",
         "--workflow-id",
         parent_id,
         "--owner-session-key",
@@ -1211,6 +1369,20 @@ def assert_goal_collects_blocked_existing_child_as_terminal(state_root: Path) ->
                 },
             }
         )
+        if role == "verify":
+            child["verify_state"] = {
+                "child_result_collection_mvp": {
+                    "status": "unaccepted_preliminary",
+                    "raw_ref": "verify-blocked-child-result-fixture",
+                    "preliminary_finding_count": 1,
+                },
+                "unaccepted_preliminary_findings": [
+                    {
+                        "finding_id": "blocked-child-fixture",
+                        "finding": "blocked preliminary finding",
+                    }
+                ],
+            }
         write_workflow(state_root, child_id, child)
 
     wf = run(
@@ -1231,6 +1403,19 @@ def assert_goal_collects_blocked_existing_child_as_terminal(state_root: Path) ->
     child_refs = {item["workflow_id"]: item for item in goal_state["child_workflow_refs"]}
     assert_true(child_refs[verify_child_id]["status"] == "blocked", "blocked child should be collected as blocked")
     assert_true(child_refs[verify_child_id]["terminal_status"] == "blocked", "blocked child terminal_status should be preserved")
+    assert_true(
+        child_refs[verify_child_id]["child_result_collection_mvp"]["raw_ref"] == "verify-blocked-child-result-fixture",
+        "blocked child raw collection ref should roll up to parent child ref",
+    )
+    assert_true(
+        child_refs[verify_child_id]["unaccepted_preliminary_findings"][0]["finding_id"] == "blocked-child-fixture",
+        "blocked child preliminary findings should roll up as unaccepted evidence",
+    )
+    child_status = next(item for item in goal_state["child_collection_status"]["children"] if item["workflow_id"] == verify_child_id)
+    assert_true(
+        child_status["child_result_collection_mvp"]["raw_ref"] == "verify-blocked-child-result-fixture",
+        "blocked child raw collection ref should roll up to parent collection status",
+    )
     assert_true(
         goal_state["child_collection_status"]["complete"] is True,
         "blocked terminal child should not leave parent collection incomplete",
@@ -1680,6 +1865,8 @@ def assert_terminal_goal_requires_valid_goal_state(state_root: Path) -> None:
 def main() -> int:
     with tempfile.TemporaryDirectory(prefix="converge-goal-mode-smoke-") as tmp:
         state_root = Path(tmp)
+        assert_goal_requires_approval_before_execution(state_root)
+        assert_direct_finalize_requires_explicit_approval(state_root)
         assert_default_goal_contract(state_root)
         assert_execution_required_goal_blocks_planned_children(state_root)
         assert_execution_required_goal_collects_child_evidence(state_root)
@@ -1781,6 +1968,12 @@ class FakeNativePanelBackend:
                             "tool_names": ["exec_command"],
                             "read_action_bound_by_tool_names": True,
                             "status_action_bound_by_tool_names": True,
+                            "target_ref_read_binding": {
+                                "required_count": 0,
+                                "matched_count": 0,
+                                "missing": [],
+                                "proof": "read_tool_call_arguments",
+                            },
                         },
                         "session_store_proof": {
                             "session_key": request.session_key,
@@ -1791,13 +1984,21 @@ class FakeNativePanelBackend:
                         },
                         "trajectory_proof": {
                             "session_key": request.session_key,
-                            "output_dir": f"/tmp/fixture-goal-child-trajectory-{request.mode}-{index}",
+                            "output_dir": "/tmp/converge-native-proof-"
+                            + "".join(char if char.isalnum() or char in {"-", "_"} else "-" for char in request.session_key),
                             "event_count": 2,
                             "runtime_event_count": 0,
                             "transcript_event_count": 2,
                             "tool_call_count": 1,
                             "tool_result_count": 1,
                             "tool_names": ["exec_command"],
+                            "tool_call_refs": [
+                                {
+                                    "tool_call_id": f"fixture-goal-call-{request.mode}-{index}",
+                                    "name": "exec_command",
+                                    "argument_text": "pwd",
+                                }
+                            ],
                         },
                     },
                 )

@@ -32,6 +32,7 @@ from .specialist_panel import (
     write_specialist_artifact,
 )
 from ..agents.openclaw_cli import NativePanelBlockedError
+from ..child_result import record_blocked_child_result_artifact
 from ..agents.contracts import (
     DEFAULT_TOOL_POLICY,
     NativeLaunchRequest,
@@ -1214,6 +1215,14 @@ def _record_native_specialist_review(
         artifact = existing[0]
         if artifact.get("kind") != "evidence":
             raise ValueError("native specialist findings artifact must use evidence kind")
+        artifact_path_value = artifact.get("path")
+        if not isinstance(artifact_path_value, str) or not artifact_path_value:
+            raise ValueError("native specialist findings artifact path is missing")
+        resolved_artifact_path = Path(artifact_path_value).expanduser().resolve()
+        if resolved_artifact_path != artifact_path.expanduser().resolve():
+            raise ValueError("native specialist findings artifact path is not the canonical native conv output path")
+        if not resolved_artifact_path.is_file():
+            raise ValueError("native specialist findings artifact path is missing")
     else:
         write_specialist_artifact(artifact_path, {"native_results": [item.as_dict() for item in results], "specialist_review": review["state"]})
         artifact = handler.record_artifact(
@@ -1267,21 +1276,36 @@ def _record_native_panel_blocked(
     requests: list[NativeLaunchRequest],
     error: NativePanelBlockedError,
 ) -> dict[str, Any]:
+    raw_child_ref = record_blocked_child_result_artifact(handler, workflow_id, mode=mode, error=error)
     native_panel_state = build_native_agent_pending_collection_state(
         mode=mode,
         artifact_id=artifact_id,
         requests=requests,
         status="launch_blocked",
         blocked_reason=error.reason,
+        blocked_message=error.message,
         blocked_request_id=error.blocked_request_id,
         blocked_session_key=error.blocked_session_key,
         accepted_results=error.partial_results,
     )
+    native_panel_state["child_result_collection_mvp"] = raw_child_ref
+    native_panel_state["unaccepted_preliminary_findings"] = [
+        {
+            "raw_ref": raw_child_ref["raw_ref"],
+            "request_id": raw_child_ref["request_id"],
+            "session_key": raw_child_ref["session_key"],
+            "preliminary_finding_count": raw_child_ref["preliminary_finding_count"],
+            "acceptance_status": "unaccepted_proof_failed",
+        }
+    ]
+    blocking_remaining = [
+        f"Native specialist panel blocked before complete collection: {error.reason}.",
+    ]
+    if error.message and error.message != error.reason:
+        blocking_remaining.append(f"Native panel contract detail: {error.message}")
     residuals = normalize_residuals(
         {
-            "blocking_remaining": [
-                f"Native specialist panel blocked before complete collection: {error.reason}.",
-            ],
+            "blocking_remaining": blocking_remaining,
             "accepted_risks": [],
             "implementation_backlog": [
                 "Retry native specialist panel after subagent capacity or CLI contract issue is resolved.",

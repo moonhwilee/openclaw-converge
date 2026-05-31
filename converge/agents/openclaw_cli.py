@@ -120,6 +120,7 @@ class OpenClawSessionProof:
 class OpenClawTrajectoryProof:
     session_key: str
     output_dir: str
+    workspace_dir: str | None
     event_count: int
     runtime_event_count: int
     transcript_event_count: int
@@ -132,6 +133,7 @@ class OpenClawTrajectoryProof:
         return {
             "session_key": self.session_key,
             "output_dir": self.output_dir,
+            "workspace_dir": self.workspace_dir,
             "event_count": self.event_count,
             "runtime_event_count": self.runtime_event_count,
             "transcript_event_count": self.transcript_event_count,
@@ -274,6 +276,7 @@ class OpenClawTrajectoryProofChecker:
         return OpenClawTrajectoryProof(
             session_key=request.session_key,
             output_dir=output_dir,
+            workspace_dir=self.workspace_dir,
             event_count=_int_summary(summary, "eventCount"),
             runtime_event_count=_int_summary(summary, "runtimeEventCount"),
             transcript_event_count=_int_summary(summary, "transcriptEventCount"),
@@ -415,10 +418,15 @@ def build_child_prompt(request: NativeLaunchRequest) -> str:
         "kind, checked_at, session_key, agent_session_ref, read_action, "
         "status_action, and read_target_refs. read_target_refs must be an "
         "array of every file target ref you actually inspected, with path and "
-        "source_root copied from REQUEST_JSON.target_refs. Use a separate "
-        "harmless status tool call, such as git status --short or pwd, after "
-        "the target ref reads; do not rely on the same read command as the "
-        "status check. read_action must be read_files or read_artifacts; "
+        "source_root copied from REQUEST_JSON.target_refs. Before returning "
+        "JSON, read every file target ref from REQUEST_JSON.target_refs with "
+        "read-only tool calls whose arguments visibly include each copied "
+        "path. The coordinator validates read_target_refs against actual "
+        "trajectory tool-call arguments and rejects claimed refs that were not "
+        "read. Use a separate harmless status tool call, such as git status "
+        "--short or pwd, after the target ref reads; do not rely on the same "
+        "read command as the status check. read_action must be read_files or "
+        "read_artifacts; "
         "status_action must be shell_status. Set session_key "
         "and agent_session_ref exactly to REQUEST_JSON.session_key. If "
         "tool_smoke_status is passed, error must be null or omitted; use error "
@@ -702,6 +710,8 @@ def _validate_trajectory_supports_child_actions(
     read_action = evidence["read_action"]
     if read_action not in {"read_files", "read_artifacts"}:
         raise ValueError("native CLI child read_action must be read_files or read_artifacts")
+    read_manifest = dict(read_manifest)
+    read_manifest["_workspace_dir"] = trajectory_proof.workspace_dir
     read_supported = bool(tool_names & READ_ACTION_TOOL_NAMES)
     status_supported = bool(tool_names & STATUS_ACTION_TOOL_NAMES)
     if not read_supported:
@@ -752,7 +762,16 @@ def _validate_trajectory_read_manifest(
         if not isinstance(path, str) or not isinstance(source_root, str):
             continue
         match = next(
-            (call for call in read_calls if _tool_call_ref_covers_target_ref(call, path=path, source_root=source_root)),
+            (
+                call
+                for call in read_calls
+                if _tool_call_ref_is_safe_target_read(
+                    call,
+                    path=path,
+                    source_root=source_root,
+                    workspace_dir=trajectory_proof.workspace_dir,
+                )
+            ),
             None,
         )
         if match is None:
@@ -802,6 +821,11 @@ def _validate_trajectory_has_no_unexpected_tool_calls(
     allowed_count = 0
     for call in trajectory_proof.tool_call_refs:
         if _tool_call_ref_is_harmless_status(call):
+            if _tool_call_ref_mentions_any_target_ref(call, read_manifest):
+                raise ValueError(
+                    "native CLI trajectory proof contains non-read status command mentioning target_ref path: "
+                    f"{call.name}"
+                )
             allowed_count += 1
             continue
         if call.name in READ_ACTION_TOOL_NAMES and _tool_call_ref_is_allowed_startup_read(call):
@@ -830,13 +854,47 @@ def _tool_call_ref_covers_any_read_target(call: OpenClawToolCallRef, read_manife
             continue
         path = item.get("path")
         source_root = item.get("source_root")
+        if isinstance(path, str) and isinstance(source_root, str) and _tool_call_ref_is_safe_target_read(
+            call,
+            path=path,
+            source_root=source_root,
+            workspace_dir=_read_manifest_workspace_dir(read_manifest),
+        ):
+            return True
+    return False
+
+
+def _tool_call_ref_mentions_any_target_ref(call: OpenClawToolCallRef, read_manifest: dict[str, Any]) -> bool:
+    read_refs = read_manifest.get("read_target_refs")
+    if not isinstance(read_refs, list):
+        return False
+    for item in read_refs:
+        if not isinstance(item, dict):
+            continue
+        path = item.get("path")
+        source_root = item.get("source_root")
         if isinstance(path, str) and isinstance(source_root, str) and _tool_call_ref_covers_target_ref(
             call,
             path=path,
             source_root=source_root,
+            workspace_dir=_read_manifest_workspace_dir(read_manifest),
         ):
             return True
     return False
+
+
+def _tool_call_ref_is_safe_target_read(
+    call: OpenClawToolCallRef,
+    *,
+    path: str,
+    source_root: str,
+    workspace_dir: str | None = None,
+) -> bool:
+    if not _tool_call_ref_covers_target_ref(call, path=path, source_root=source_root, workspace_dir=workspace_dir):
+        return False
+    if call.name in {"read", "view_image", "functions.view_image"}:
+        return True
+    return _tool_call_ref_is_readonly_context(call)
 
 
 def _tool_call_ref_is_harmless_status(call: OpenClawToolCallRef) -> bool:
@@ -844,9 +902,28 @@ def _tool_call_ref_is_harmless_status(call: OpenClawToolCallRef) -> bool:
     if command is None:
         return False
     normalized = _unwrap_shell_command(command)
-    if normalized in {"pwd", "git status --short", "git status --porcelain", "true"}:
+    if normalized in {"pwd", "git status --short", "git status --porcelain", "true", "date -Iseconds"}:
+        return True
+    if _shell_command_is_git_c_status(normalized):
         return True
     return bool(re.fullmatch(r"test\s+-[defrs]\s+[\w./$~-]+", normalized))
+
+
+def _shell_command_is_git_c_status(normalized: str) -> bool:
+    try:
+        parts = shlex.split(normalized)
+    except ValueError:
+        return False
+    if len(parts) != 5 or parts[:2] != ["git", "-C"]:
+        return False
+    git_root = parts[2]
+    if parts[3] != "status" or parts[4] not in {"--short", "--porcelain"}:
+        return False
+    try:
+        resolved = Path(git_root).expanduser().resolve()
+    except (OSError, RuntimeError):
+        return False
+    return resolved.is_dir()
 
 
 def _tool_call_shell_command(call: OpenClawToolCallRef) -> str | None:
@@ -876,7 +953,7 @@ def _tool_call_ref_is_allowed_startup_read(call: OpenClawToolCallRef) -> bool:
     text = call.argument_text
     cwd = call.cwd or ""
     combined = f"{cwd}\n{text}"
-    if "$WORKSPACE_DIR" not in combined and "/.openclaw/workspace" not in combined:
+    if "$WORKSPACE_DIR" not in combined and "$OPENCLAW_STATE_DIR/workspace" not in combined and "/.openclaw/workspace" not in combined:
         return False
     allowed_exact = (
         "SOUL.md",
@@ -900,7 +977,10 @@ def _tool_call_ref_is_allowed_readonly_context(call: OpenClawToolCallRef, read_m
     cwd = call.cwd or ""
     combined = f"{cwd}\n{text}"
     for source_root, prefixes in roots.items():
-        if source_root not in combined and _source_root_placeholder(source_root) not in combined:
+        if source_root not in combined and not any(
+            placeholder in combined
+            for placeholder in _source_root_placeholders(source_root, workspace_dir=_read_manifest_workspace_dir(read_manifest))
+        ):
             continue
         if any(_search_prefix_is_in_call(prefix, text) for prefix in prefixes):
             return True
@@ -908,21 +988,17 @@ def _tool_call_ref_is_allowed_readonly_context(call: OpenClawToolCallRef, read_m
 
 
 def _tool_call_ref_is_readonly_context(call: OpenClawToolCallRef) -> bool:
-    text = call.argument_text.lower()
-    readonly_markers = (
-        "rg ",
-        "grep ",
-        "grep -",
-        "sed -n",
-        "cat ",
-        "nl ",
-        "wc ",
-    )
-    if not any(marker in text for marker in readonly_markers):
+    command = _tool_call_shell_command(call)
+    if command is None:
         return False
+    normalized = _unwrap_shell_command(command)
+    if _shell_command_has_unsafe_marker(normalized):
+        return False
+    return all(_shell_read_chain_is_simple_read(segment) for segment in _split_unquoted_and_chains(normalized) if segment.strip())
+
+
+def _shell_command_has_unsafe_marker(normalized: str) -> bool:
     blocked_markers = (
-        ">",
-        ">>",
         "apply_patch",
         "curl ",
         "git push",
@@ -933,8 +1009,170 @@ def _tool_call_ref_is_readonly_context(call: OpenClawToolCallRef) -> bool:
         "trash ",
         "sed -i",
         "tee ",
+        "$(",
+        "`",
     )
-    return not any(marker in text for marker in blocked_markers)
+    lowered = normalized.lower()
+    if any(marker in lowered for marker in blocked_markers):
+        return True
+    try:
+        shlex.split(normalized)
+    except ValueError:
+        return True
+    if _shell_has_unquoted_control_or_redirection(normalized):
+        return True
+    return False
+
+
+def _split_unquoted_and_chains(value: str) -> list[str]:
+    chains: list[str] = []
+    start = 0
+    in_single = False
+    in_double = False
+    escape = False
+    index = 0
+    while index < len(value):
+        char = value[index]
+        if escape:
+            escape = False
+            index += 1
+            continue
+        if char == "\\" and not in_single:
+            escape = True
+            index += 1
+            continue
+        if char == "'" and not in_double:
+            in_single = not in_single
+            index += 1
+            continue
+        if char == '"' and not in_single:
+            in_double = not in_double
+            index += 1
+            continue
+        if not in_single and not in_double and value.startswith("&&", index):
+            chains.append(value[start:index].strip())
+            index += 2
+            start = index
+            continue
+        index += 1
+    chains.append(value[start:].strip())
+    return chains
+
+
+def _shell_has_unquoted_control_or_redirection(value: str) -> bool:
+    in_single = False
+    in_double = False
+    escape = False
+    index = 0
+    while index < len(value):
+        char = value[index]
+        if escape:
+            escape = False
+            index += 1
+            continue
+        if char == "\\" and not in_single:
+            escape = True
+            index += 1
+            continue
+        if char == "'" and not in_double:
+            in_single = not in_single
+            index += 1
+            continue
+        if char == '"' and not in_single:
+            in_double = not in_double
+            index += 1
+            continue
+        if in_single or in_double:
+            index += 1
+            continue
+        if char in {";", "\n", ">", "<"}:
+            return True
+        if char == "|":
+            if index + 1 < len(value) and value[index + 1] == "|":
+                return True
+            index += 1
+            continue
+        if char == "&":
+            if index + 1 < len(value) and value[index + 1] == "&":
+                index += 2
+                continue
+            return True
+        index += 1
+    return False
+
+
+def _shell_read_chain_is_simple_read(segment: str) -> bool:
+    chunks = _split_unquoted_pipelines(segment)
+    if not chunks:
+        return False
+    for chunk in chunks:
+        try:
+            parts = shlex.split(chunk)
+        except ValueError:
+            return False
+        if not _shell_parts_are_simple_read(parts):
+            return False
+    return True
+
+
+def _split_unquoted_pipelines(value: str) -> list[str]:
+    chunks: list[str] = []
+    start = 0
+    in_single = False
+    in_double = False
+    escape = False
+    index = 0
+    while index < len(value):
+        char = value[index]
+        if escape:
+            escape = False
+            index += 1
+            continue
+        if char == "\\" and not in_single:
+            escape = True
+            index += 1
+            continue
+        if char == "'" and not in_double:
+            in_single = not in_single
+            index += 1
+            continue
+        if char == '"' and not in_single:
+            in_double = not in_double
+            index += 1
+            continue
+        if not in_single and not in_double and char == "|":
+            if index + 1 < len(value) and value[index + 1] == "|":
+                return []
+            chunks.append(value[start:index].strip())
+            index += 1
+            start = index
+            continue
+        index += 1
+    chunks.append(value[start:].strip())
+    return [chunk for chunk in chunks if chunk]
+
+
+def _shell_segment_is_simple_read(segment: str) -> bool:
+    try:
+        parts = shlex.split(segment)
+    except ValueError:
+        return False
+    return _shell_parts_are_simple_read(parts)
+
+
+def _shell_parts_are_simple_read(parts: list[str]) -> bool:
+    if not parts:
+        return False
+    command = Path(parts[0]).name
+    if any(part in {"||", ";"} for part in parts):
+        return False
+    if command not in {"rg", "grep", "sed", "cat", "nl", "wc", "head", "tail"}:
+        return False
+    if command == "sed" and "-i" in parts:
+        return False
+    if command == "sed" and "-n" not in parts:
+        return False
+    return any(not part.startswith("-") for part in parts[1:])
 
 
 def _allowed_target_search_roots(read_manifest: dict[str, Any]) -> dict[str, set[str]]:
@@ -955,10 +1193,16 @@ def _allowed_target_search_roots(read_manifest: dict[str, Any]) -> dict[str, set
 
 
 def _search_prefix_is_in_call(prefix: str, text: str) -> bool:
-    return re.search(rf"(?<![\w./-]){re.escape(prefix)}(?:/|\b)", text) is not None
+    return re.search(rf"(?<![\w.-]){re.escape(prefix)}(?:/|\b)", text) is not None
 
 
-def _tool_call_ref_covers_target_ref(call: OpenClawToolCallRef, *, path: str, source_root: str) -> bool:
+def _tool_call_ref_covers_target_ref(
+    call: OpenClawToolCallRef,
+    *,
+    path: str,
+    source_root: str,
+    workspace_dir: str | None = None,
+) -> bool:
     argument_text = call.argument_text
     cwd = call.cwd or ""
     combined = f"{cwd}\n{argument_text}"
@@ -966,7 +1210,7 @@ def _tool_call_ref_covers_target_ref(call: OpenClawToolCallRef, *, path: str, so
         return False
     if source_root in combined:
         return True
-    if _source_root_placeholder(source_root) in combined:
+    if any(placeholder in combined for placeholder in _source_root_placeholders(source_root, workspace_dir=workspace_dir)):
         return True
     try:
         return bool(cwd) and Path(cwd).expanduser().resolve() == Path(source_root).expanduser().resolve()
@@ -974,13 +1218,33 @@ def _tool_call_ref_covers_target_ref(call: OpenClawToolCallRef, *, path: str, so
         return False
 
 
-def _source_root_placeholder(source_root: str) -> str:
+def _source_root_placeholders(source_root: str, *, workspace_dir: str | None = None) -> tuple[str, ...]:
     normalized = source_root.rstrip("/")
+    workspace_matches_source = _workspace_dir_matches_source_root(workspace_dir, source_root)
     if normalized.endswith("/.openclaw/converge"):
-        return "$OPENCLAW_STATE_DIR/converge"
-    if normalized.endswith("/.openclaw/workspace"):
-        return "$WORKSPACE_DIR"
-    return source_root
+        placeholders = ["$OPENCLAW_STATE_DIR/converge"]
+        if workspace_matches_source:
+            placeholders.append("$WORKSPACE_DIR")
+        return tuple(placeholders)
+    if normalized.endswith("/.openclaw/workspace") or workspace_matches_source:
+        return ("$WORKSPACE_DIR",)
+    return (source_root,)
+
+
+def _read_manifest_workspace_dir(read_manifest: dict[str, Any]) -> str | None:
+    value = read_manifest.get("_workspace_dir")
+    return value if isinstance(value, str) and value.strip() else None
+
+
+def _workspace_dir_matches_source_root(workspace_dir: str | None, source_root: str) -> bool:
+    if not isinstance(workspace_dir, str) or not workspace_dir.strip():
+        return False
+    if "$" in workspace_dir:
+        return False
+    try:
+        return Path(workspace_dir).expanduser().resolve() == Path(source_root).expanduser().resolve()
+    except (OSError, RuntimeError):
+        return False
 
 
 def _tool_call_cwd(arguments: Any) -> str | None:

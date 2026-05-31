@@ -29,15 +29,14 @@ DEFAULT_CONVERGE_TARGET_REF_PATHS = {
 CONVERGE_COMPARISON_TARGET_REF_PATHS = [
     ("package", "converge/agents/openclaw_cli.py", "native-launch"),
     ("package", "converge/recovery.py", "recovery"),
-    ("package", "converge/target_refs.py", "target-refs"),
     ("package", "converge/modes/verify.py", "verify-mode"),
     ("package", "converge/modes/conv.py", "conv-mode"),
     ("package", "converge/modes/goal.py", "goal-mode"),
     ("package", "converge/modes/specialist_panel.py", "native-panel"),
     ("package", "converge/modes/evidence_contract.py", "evidence-contract"),
+    ("workspace", "skills/verification-convergence/SKILL.md", "legacy-verify-conv"),
     ("package", "tests/smoke/converge_terminal_finalization_smoke.py", "report-proof-smoke"),
     ("workspace", "docs/context/goalflow.md", "legacy-goalflow"),
-    ("workspace", "skills/verification-convergence/SKILL.md", "legacy-verify-conv"),
 ]
 
 
@@ -167,6 +166,7 @@ def merge_inline_target_ref(
     _validate_inline_target_text(text)
     root = (source_root or Path.cwd()).expanduser().resolve()
     merged: list[dict[str, Any]] = [{"kind": f"{mode}_target", "text": text, "source_root": str(root)}]
+    refs_by_root: dict[Path, list[dict[str, Any]]] = {}
     for item in refs or []:
         if not isinstance(item, dict):
             raise ValueError("target refs entries must be objects")
@@ -180,9 +180,11 @@ def merge_inline_target_ref(
             raise ValueError("manifest file refs require non-empty path")
         ref = dict(item)
         source_root_value = ref.get("source_root")
-        if not isinstance(source_root_value, str) or not source_root_value:
-            ref["source_root"] = str(root)
-        merged.append(ref)
+        ref_root = Path(source_root_value).expanduser().resolve() if isinstance(source_root_value, str) and source_root_value else root
+        ref["source_root"] = str(ref_root)
+        refs_by_root.setdefault(ref_root, []).append(ref)
+    for ref_root, root_refs in refs_by_root.items():
+        merged.extend(validate_target_refs(root_refs, source_root=ref_root))
     return merged
 
 

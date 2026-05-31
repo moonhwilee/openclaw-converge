@@ -19,6 +19,7 @@ from converge.agents.contracts import NativeChildResult, stable_hash  # noqa: E4
 from converge.agents.openclaw_cli import NativePanelBlockedError  # noqa: E402
 from converge.modes.conv import ConvRecord, ConvRound, _material_change_record, _max_round_record, build_conv_record, render_conv_report, validate_conv_state  # noqa: E402
 from converge.modes.conv import ConvHandler  # noqa: E402
+from converge.modes.specialist_panel import validate_native_specialist_state  # noqa: E402
 from converge.store import WorkflowStore  # noqa: E402
 
 
@@ -1546,6 +1547,13 @@ def assert_conv_records_native_specialist_panel(state_root: Path) -> None:
         ),
         "native CLI conv should persist coordinator-verified smoke, session, and trajectory proof",
     )
+    missing_native_read_ref = json.loads(json.dumps(native_cli_state))
+    missing_native_read_ref["agent_result_refs"][0]["tool_smoke_evidence"]["target_ref_read_manifest"]["read_target_refs"] = []
+    try:
+        validate_native_specialist_state(missing_native_read_ref)
+        raise AssertionError("native conv read manifest that omits requested file refs should fail validation")
+    except ValueError as exc:
+        assert_true("read_target_refs" in str(exc), "native conv read manifest should be bound to file target refs")
     run("validate", "--workflow-id", "conv-native-cli-panel", state_root=state_root)
 
     fake_openclaw_no_evidence = _write_fake_openclaw_cli(state_root / "fake-openclaw-conv-no-evidence", include_tool_smoke_evidence=False)
@@ -1808,6 +1816,12 @@ class FakeNativePanelBackend:
                             "tool_names": ["exec_command"],
                             "read_action_bound_by_tool_names": True,
                             "status_action_bound_by_tool_names": True,
+                            "target_ref_read_binding": {
+                                "required_count": 0,
+                                "matched_count": 0,
+                                "missing": [],
+                                "proof": "read_tool_call_arguments",
+                            },
                         },
                         "session_store_proof": {
                             "session_key": request.session_key,
@@ -1818,13 +1832,21 @@ class FakeNativePanelBackend:
                         },
                         "trajectory_proof": {
                             "session_key": request.session_key,
-                            "output_dir": f"/tmp/fixture-conv-trajectory-{index}",
+                            "output_dir": "/tmp/converge-native-proof-"
+                            + "".join(char if char.isalnum() or char in {"-", "_"} else "-" for char in request.session_key),
                             "event_count": 2,
                             "runtime_event_count": 0,
                             "transcript_event_count": 2,
                             "tool_call_count": 1,
                             "tool_result_count": 1,
                             "tool_names": ["exec_command"],
+                            "tool_call_refs": [
+                                {
+                                    "tool_call_id": f"fixture-conv-call-{index}",
+                                    "name": "exec_command",
+                                    "argument_text": "pwd",
+                                }
+                            ],
                         },
                     },
                 )

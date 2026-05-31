@@ -735,6 +735,7 @@ def _build_native_agent_collection_state(
                 "evidence_refs": [result.agent_session_ref, artifact_id],
                 "session_key": result.session_key,
                 "agent_session_ref": result.agent_session_ref,
+                "target_refs": [dict(item) for item in result.target_refs],
                 "tool_smoke_status": result.tool_smoke_status,
                 "tool_smoke_evidence": result.tool_smoke_evidence,
                 "attempt": 1,
@@ -777,6 +778,7 @@ def build_native_agent_pending_collection_state(
     requests: list[NativeLaunchRequest],
     status: str = "launch_requested",
     blocked_reason: str | None = None,
+    blocked_message: str | None = None,
     blocked_request_id: str | None = None,
     blocked_session_key: str | None = None,
     resume_next_action: str | None = None,
@@ -855,6 +857,8 @@ def build_native_agent_pending_collection_state(
     if blocked_reason:
         blocked_status = _native_blocked_collection_status(blocked_reason)
         state["blocked_reason"] = blocked_reason
+        if blocked_message:
+            state["blocked_message"] = blocked_message
         state["blocked_request_id"] = blocked_request_id
         state["blocked_session_key"] = blocked_session_key
         state["pending_request_ids"] = pending_request_ids
@@ -863,6 +867,7 @@ def build_native_agent_pending_collection_state(
             **collection_status,
             "status": blocked_status,
             "blocked_reason": blocked_reason,
+            **({"blocked_message": blocked_message} if blocked_message else {}),
             "blocked_request_id": blocked_request_id,
             "blocked_session_key": blocked_session_key,
             "terminal_decision": f"blocked_{blocked_status}",
@@ -909,6 +914,15 @@ def _validate_native_session_store_evidence(item: dict[str, Any]) -> None:
         raise ValueError("native specialist target_ref_read_manifest requires read_target_refs")
     if read_manifest.get("missing") not in ([], None):
         raise ValueError("native specialist target_ref_read_manifest must not have missing refs")
+    expected_file_refs = set(_expected_native_file_target_refs(item))
+    read_target_refs = _native_read_target_refs(read_manifest)
+    if read_manifest["required_count"] != len(expected_file_refs):
+        raise ValueError(
+            "native specialist target_ref_read_manifest required_count must match file target_refs "
+            f"({read_manifest['required_count']} != {len(expected_file_refs)})"
+        )
+    if set(read_target_refs) != expected_file_refs:
+        raise ValueError("native specialist target_ref_read_manifest read_target_refs must match file target_refs")
     if evidence.get("policy_enforcement") != "prompt_and_coordinator_validation_only":
         raise ValueError("native specialist evidence requires explicit policy_enforcement scope")
     if evidence.get("lifecycle_model") != "synchronous_serial_openclaw_agent_child_process":
@@ -920,6 +934,17 @@ def _validate_native_session_store_evidence(item: dict[str, Any]) -> None:
         raise ValueError("native specialist evidence requires read_action tool-name binding")
     if action_binding.get("status_action_bound_by_tool_names") is not True:
         raise ValueError("native specialist evidence requires status_action tool-name binding")
+    target_ref_binding = action_binding.get("target_ref_read_binding")
+    if not isinstance(target_ref_binding, dict):
+        raise ValueError("native specialist evidence requires target_ref_read_binding")
+    if target_ref_binding.get("proof") != "read_tool_call_arguments":
+        raise ValueError("native specialist target_ref_read_binding proof is invalid")
+    if target_ref_binding.get("required_count") != len(expected_file_refs):
+        raise ValueError("native specialist target_ref_read_binding required_count must match file target_refs")
+    if target_ref_binding.get("matched_count") != len(expected_file_refs):
+        raise ValueError("native specialist target_ref_read_binding matched_count must match file target_refs")
+    if target_ref_binding.get("missing") not in ([], None):
+        raise ValueError("native specialist target_ref_read_binding must not have missing refs")
     proof = evidence.get("session_store_proof")
     if not isinstance(proof, dict):
         raise ValueError("native specialist evidence requires session_store_proof")
@@ -935,10 +960,45 @@ def _validate_native_session_store_evidence(item: dict[str, Any]) -> None:
         raise ValueError("native specialist trajectory_proof.session_key must match native item")
     if not isinstance(trajectory_proof.get("output_dir"), str) or not trajectory_proof["output_dir"].strip():
         raise ValueError("native specialist trajectory_proof requires output_dir")
+    expected_output_name = _native_trajectory_output_name(str(item.get("session_key", "")))
+    if expected_output_name not in trajectory_proof["output_dir"]:
+        raise ValueError("native specialist trajectory_proof output_dir must bind to session_key")
     if not isinstance(trajectory_proof.get("tool_call_count"), int) or trajectory_proof["tool_call_count"] < 1:
         raise ValueError("native specialist trajectory_proof requires tool_call_count")
     if not isinstance(trajectory_proof.get("tool_result_count"), int) or trajectory_proof["tool_result_count"] < 1:
         raise ValueError("native specialist trajectory_proof requires tool_result_count")
+    tool_call_refs = trajectory_proof.get("tool_call_refs")
+    if not isinstance(tool_call_refs, list) or not tool_call_refs:
+        raise ValueError("native specialist trajectory_proof requires tool_call_refs")
+
+
+def _expected_native_file_target_refs(item: dict[str, Any]) -> list[tuple[str, str]]:
+    refs: list[tuple[str, str]] = []
+    for target_ref in item.get("target_refs", []):
+        if not isinstance(target_ref, dict) or target_ref.get("kind") != "file":
+            continue
+        source_root = target_ref.get("source_root")
+        path = target_ref.get("path")
+        if isinstance(source_root, str) and source_root.strip() and isinstance(path, str) and path.strip():
+            refs.append((source_root, path))
+    return refs
+
+
+def _native_read_target_refs(read_manifest: dict[str, Any]) -> list[tuple[str, str]]:
+    refs: list[tuple[str, str]] = []
+    for read_ref in read_manifest.get("read_target_refs") or []:
+        if not isinstance(read_ref, dict):
+            continue
+        source_root = read_ref.get("source_root")
+        path = read_ref.get("path")
+        if isinstance(source_root, str) and source_root.strip() and isinstance(path, str) and path.strip():
+            refs.append((source_root, path))
+    return refs
+
+
+def _native_trajectory_output_name(session_key: str) -> str:
+    safe = "".join(char if char.isalnum() or char in {"-", "_"} else "-" for char in session_key)
+    return f"converge-native-proof-{safe}"[:160]
 
 
 def _build_agent_collection_state(

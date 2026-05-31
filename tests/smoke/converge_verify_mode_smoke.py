@@ -16,7 +16,7 @@ from converge.artifacts import sha256_file  # noqa: E402
 from converge.agents.contracts import NativeChildResult  # noqa: E402
 from converge.agents.openclaw_cli import NativePanelBlockedError  # noqa: E402
 from converge.messages import format_final  # noqa: E402
-from converge.modes.specialist_panel import _stable_hash, validate_specialist_state  # noqa: E402
+from converge.modes.specialist_panel import _stable_hash, validate_native_specialist_state, validate_specialist_state  # noqa: E402
 from converge.modes.verify import VerifyHandler, build_verify_record, render_verify_report  # noqa: E402
 from converge.store import WorkflowStore  # noqa: E402
 
@@ -566,13 +566,39 @@ def main() -> int:
                 item["tool_smoke_evidence"]["kind"] == "coordinator_verified_child_tool_smoke_session_and_trajectory_binding"
                 and item["tool_smoke_evidence"]["child_read_action"] == "read_files"
                 and item["tool_smoke_evidence"]["child_status_action"] == "shell_status"
+                and item["tool_smoke_evidence"]["read_action"] == "read_files"
+                and item["tool_smoke_evidence"]["status_action"] == "shell_status"
                 and item["tool_smoke_evidence"]["session_store_proof"]["session_key"] == item["session_key"]
                 and item["tool_smoke_evidence"]["trajectory_proof"]["session_key"] == item["session_key"]
                 and item["tool_smoke_evidence"]["trajectory_proof"]["tool_call_count"] >= 1
                 for item in native_cli_state["agent_result_refs"]
             ),
-            "native CLI verify should persist coordinator-verified smoke, session, and trajectory proof",
+            "native CLI verify should persist coordinator-expanded child smoke, session, and trajectory proof",
         )
+        assert_true(
+            all(
+                item["tool_smoke_evidence"]["target_ref_read_manifest"]["read_target_refs"]
+                == [{"path": "converge/modes/verify.py", "source_root": str(ROOT.resolve())}]
+                and item["tool_smoke_evidence"]["target_ref_read_manifest"]["required_count"] == 1
+                for item in native_cli_state["agent_result_refs"]
+            ),
+            "native CLI verify should translate flat child read_target_refs into a coordinator target_ref_read_manifest",
+        )
+        validate_native_specialist_state(native_cli_state)
+        missing_native_read_ref = json.loads(json.dumps(native_cli_state))
+        missing_native_read_ref["agent_result_refs"][0]["tool_smoke_evidence"]["target_ref_read_manifest"]["read_target_refs"] = []
+        try:
+            validate_native_specialist_state(missing_native_read_ref)
+            raise AssertionError("native read manifest that omits requested file refs should fail validation")
+        except ValueError as exc:
+            assert_true("read_target_refs" in str(exc), "native read manifest should be bound to file target refs")
+        wrong_native_trajectory = json.loads(json.dumps(native_cli_state))
+        wrong_native_trajectory["agent_result_refs"][0]["tool_smoke_evidence"]["trajectory_proof"]["output_dir"] = "/tmp/converge-native-proof-other"
+        try:
+            validate_native_specialist_state(wrong_native_trajectory)
+            raise AssertionError("native trajectory proof output dir for another session should fail validation")
+        except ValueError as exc:
+            assert_true("output_dir" in str(exc), "native trajectory output should be bound to session key")
         run("validate", "--workflow-id", "verify-native-cli-panel", state_root=state_root)
 
         fake_openclaw_no_evidence = _write_fake_openclaw_cli(state_root / "fake-openclaw-no-evidence", include_tool_smoke_evidence=False)
@@ -592,6 +618,7 @@ def main() -> int:
             state_root=state_root,
         )
         missing_smoke_state = native_cli_missing_smoke["verify"]
+        missing_smoke_workflow = native_cli_missing_smoke["workflow"]
         assert_true(
             missing_smoke_state["verdict"] == "blocked"
             and missing_smoke_state["blocked_reason"] == "subagent_proof_failed"
@@ -599,6 +626,18 @@ def main() -> int:
             and missing_smoke_state["agent_request_refs"],
             "native CLI verify should persist structured blocked state when child smoke evidence is missing",
         )
+        missing_smoke_reports = [
+            artifact
+            for artifact in missing_smoke_workflow["artifacts"]
+            if artifact["artifact_id"] == "verify-final-report"
+        ]
+        assert_true(len(missing_smoke_reports) == 1, "blocked native CLI verify should register a final report artifact")
+        assert_true(
+            Path(missing_smoke_reports[0]["path"]).is_file()
+            and missing_smoke_state["final_report_artifact_path"] == missing_smoke_reports[0]["path"],
+            "blocked native CLI verify should materialize the final report path recorded in verify_state",
+        )
+        run("validate", "--workflow-id", "verify-native-cli-missing-smoke", state_root=state_root)
 
         fake_openclaw_failed_smoke = _write_fake_openclaw_cli(
             state_root / "fake-openclaw-failed-smoke",
@@ -1648,6 +1687,11 @@ payload = {{
     "error": None,
 }}
 if {include_tool_smoke_evidence!r}:
+    read_target_refs = [
+        {{"path": item["path"], "source_root": item["source_root"]}}
+        for item in request["target_refs"]
+        if item.get("kind") == "file"
+    ]
     payload["tool_smoke_evidence"] = {{
         "status": {tool_smoke_status!r},
         "kind": "child_file_read_and_status_check",
@@ -1656,11 +1700,7 @@ if {include_tool_smoke_evidence!r}:
         "agent_session_ref": session_key,
         "read_action": "read_files",
         "status_action": "shell_status",
-        "read_target_refs": [
-            {{"path": "converge/modes/verify.py", "source_root": {str(ROOT.resolve())!r}}},
-            {{"path": "converge/modes/conv.py", "source_root": {str(ROOT.resolve())!r}}},
-            {{"path": "converge/modes/goal.py", "source_root": {str(ROOT.resolve())!r}}},
-        ],
+        "read_target_refs": read_target_refs,
     }}
 print(json.dumps({{"response": json.dumps(payload, sort_keys=True)}}, sort_keys=True))
 """
@@ -1733,6 +1773,12 @@ class FakeNativePanelBackend:
                             "tool_names": ["exec_command"],
                             "read_action_bound_by_tool_names": True,
                             "status_action_bound_by_tool_names": True,
+                            "target_ref_read_binding": {
+                                "required_count": 0,
+                                "matched_count": 0,
+                                "missing": [],
+                                "proof": "read_tool_call_arguments",
+                            },
                         },
                         "session_store_proof": {
                             "session_key": request.session_key,
@@ -1743,13 +1789,21 @@ class FakeNativePanelBackend:
                         },
                         "trajectory_proof": {
                             "session_key": request.session_key,
-                            "output_dir": f"/tmp/fixture-trajectory-{index}",
+                            "output_dir": "/tmp/converge-native-proof-"
+                            + "".join(char if char.isalnum() or char in {"-", "_"} else "-" for char in request.session_key),
                             "event_count": 2,
                             "runtime_event_count": 0,
                             "transcript_event_count": 2,
                             "tool_call_count": 1,
                             "tool_result_count": 1,
                             "tool_names": ["exec_command"],
+                            "tool_call_refs": [
+                                {
+                                    "tool_call_id": f"fixture-call-{index}",
+                                    "name": "exec_command",
+                                    "argument_text": "pwd",
+                                }
+                            ],
                         },
                     },
                 )

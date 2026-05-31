@@ -32,6 +32,7 @@ from .specialist_panel import (
     write_specialist_artifact,
 )
 from ..agents.openclaw_cli import NativePanelBlockedError
+from ..child_result import record_blocked_child_result_artifact
 from ..agents.contracts import NativeLaunchRequest, stable_hash
 from ..artifacts import now_iso
 from ..messages import normalize_residuals
@@ -492,6 +493,16 @@ def _record_native_specialist_review(
         if len(matches) > 1:
             raise ValueError(f"duplicate specialist findings artifact id: {artifact_id}")
         artifact = matches[0]
+        if artifact.get("kind") != "evidence":
+            raise ValueError("specialist findings artifact must use evidence kind")
+        artifact_path_value = artifact.get("path")
+        if not isinstance(artifact_path_value, str) or not artifact_path_value:
+            raise ValueError("specialist findings artifact path is missing")
+        resolved_artifact_path = Path(artifact_path_value).expanduser().resolve()
+        if resolved_artifact_path != artifact_path.expanduser().resolve():
+            raise ValueError("specialist findings artifact path is not the canonical native verify output path")
+        if not resolved_artifact_path.is_file():
+            raise ValueError("specialist findings artifact path is missing")
     else:
         write_specialist_artifact(artifact_path, {"native_results": [item.as_dict() for item in results], "specialist_review": review["state"]})
         artifact = handler.record_artifact(
@@ -546,21 +557,36 @@ def _record_native_panel_blocked(
     requests: list[NativeLaunchRequest],
     error: NativePanelBlockedError,
 ) -> dict[str, Any]:
+    raw_child_ref = record_blocked_child_result_artifact(handler, workflow_id, mode=mode, error=error)
     native_panel_state = build_native_agent_pending_collection_state(
         mode=mode,
         artifact_id=artifact_id,
         requests=requests,
         status="launch_blocked",
         blocked_reason=error.reason,
+        blocked_message=error.message,
         blocked_request_id=error.blocked_request_id,
         blocked_session_key=error.blocked_session_key,
         accepted_results=error.partial_results,
     )
+    native_panel_state["child_result_collection_mvp"] = raw_child_ref
+    native_panel_state["unaccepted_preliminary_findings"] = [
+        {
+            "raw_ref": raw_child_ref["raw_ref"],
+            "request_id": raw_child_ref["request_id"],
+            "session_key": raw_child_ref["session_key"],
+            "preliminary_finding_count": raw_child_ref["preliminary_finding_count"],
+            "acceptance_status": "unaccepted_proof_failed",
+        }
+    ]
+    blocking_remaining = [
+        f"Native specialist panel blocked before complete collection: {error.reason}.",
+    ]
+    if error.message and error.message != error.reason:
+        blocking_remaining.append(f"Native panel contract detail: {error.message}")
     residuals = normalize_residuals(
         {
-            "blocking_remaining": [
-                f"Native specialist panel blocked before complete collection: {error.reason}.",
-            ],
+            "blocking_remaining": blocking_remaining,
             "accepted_risks": [],
             "implementation_backlog": [
                 "Retry native specialist panel after subagent capacity or CLI contract issue is resolved.",
@@ -578,6 +604,7 @@ def _record_native_panel_blocked(
         native_panel_state=native_panel_state,
         residuals=residuals,
     )
+    state = _record_native_panel_blocked_report(handler, workflow_id, state=state)
     checkpoint = handler.record_outcome(
         workflow_id,
         ModeOutcome(
@@ -594,6 +621,38 @@ def _record_native_panel_blocked(
         ),
     )
     return {"blocked": True, "state": state, "checkpoint": checkpoint, "error": error.message}
+
+
+def _record_native_panel_blocked_report(handler: ModeHandler, workflow_id: str, *, state: dict[str, Any]) -> dict[str, Any]:
+    artifact_path = Path(state["final_report_artifact_path"]).expanduser().resolve()
+    rendered_report = render_verify_report(
+        VerifyRecord(
+            target=state["target"],
+            check_plan=state["check_plan"],
+            deterministic_checks=state["deterministic_checks"],
+            reviewer_findings=state["reviewer_findings"],
+            verdict=state["verdict"],
+            evidence_records=state["evidence"],
+            residuals=state["residuals"],
+            final_report_summary=state["final_report_summary"],
+        )
+    )
+    workflow = handler.load_workflow(workflow_id)
+    artifact = _existing_verify_artifact(workflow, expected_path=artifact_path, rendered_report=rendered_report)
+    if artifact is None:
+        artifact_path.parent.mkdir(parents=True, exist_ok=True)
+        artifact_path.write_text(rendered_report, encoding="utf-8")
+        artifact = handler.record_artifact(
+            workflow_id,
+            kind="report",
+            artifact_id=VERIFY_REPORT_ARTIFACT_ID,
+            path=artifact_path,
+            note="blocked native verification report artifact",
+        )["artifact"]
+    updated = dict(state)
+    updated["final_report_artifact_id"] = artifact["artifact_id"]
+    updated["final_report_artifact_path"] = artifact["path"]
+    return updated
 
 
 def _native_panel_verify_state(
